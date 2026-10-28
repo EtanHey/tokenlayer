@@ -27,7 +27,10 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
   and values named by sensitive fields, regardless of the value's prefix. Field matching covers camelCase,
   snake_case and hyphenated names, including env prefixes ending in `_PASSWORD`, `_KEY`, `_TOKEN` or `_SECRET`.
   Text assignments accept single/double quotes and escaped JSON quotes; CLI flags accept `--password x`
-  and `--token=x`. Authorization, Cookie, Set-Cookie and X-*-Key header values are removed in full.
+  and `--token=x`, including escaped spaces and adjacent quoted segments in one argument. JSON string
+  escapes are decoded before scanning their content, so encoded line endings separate env lines while
+  literal backslash+n/r bytes remain part of the secret. Authorization, Cookie, Set-Cookie and X-*-Key
+  header values are removed in full.
   Structured numeric values and ordinary usage fields are preserved. This is shape-based sanitization,
   not a guarantee for arbitrary unlabeled secrets, encoded payloads or unknown credential formats.
 - An insert counts as acknowledged only when ClickHouse confirms it: `wait_end_of_query=1`, no

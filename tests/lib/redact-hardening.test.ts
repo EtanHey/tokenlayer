@@ -1,8 +1,62 @@
 import { describe, expect, test } from "bun:test";
 import { REDACTED, redactDeep, redactText } from "../../src/lib/redact";
+import { newFileState, parseLine } from "../../src/ship/parse";
 
 // Synthetic only. Each of these shapes leaked at the issue #5 baseline.
 const secret = "syntheticOpaqueCredential";
+
+describe("review round 1 persistence regressions", () => {
+  const probes = [
+    `tool --password first\\ ${secret} --count 123`,
+    `tool --password 'first'"${secret}" --count 123`,
+    `DATABASE_PASSWORD=prefix\\n${secret}\nPUBLIC_COUNT=123`,
+    `DATABASE_PASSWORD=prefix\\r${secret}\nPUBLIC_COUNT=123`,
+  ];
+  for (const [index, probe] of probes.entries()) {
+    const retained = index < 2 ? "--count 123" : "PUBLIC_COUNT=123";
+    for (const [path, persist] of [
+      ["text", (s: string) => redactText(s)],
+      ["parsed raw", (s: string) => parseLine(JSON.stringify({ type: "tool_result", content: s }), newFileState("claude", "claude", 0)).raw],
+      ["invalid raw", (s: string) => parseLine(s, newFileState("claude", "claude", 0)).raw],
+    ] as const) {
+      test(`probe ${index + 1}: ${path}`, () => {
+        const out = persist(probe);
+        expect(out).not.toContain(secret);
+        expect(out).toContain(REDACTED);
+        expect(out).toContain(retained);
+      });
+    }
+  }
+
+  test("JSON encoding preserves shell arguments and literal env escapes at each nesting depth", () => {
+    for (const probe of probes) {
+      let input = probe;
+      for (let depth = 0; depth < 4; depth++) {
+        const out = redactText(input);
+        expect(out).not.toContain(secret);
+        expect(out).toContain(probe.includes("PUBLIC_COUNT") ? "PUBLIC_COUNT=123" : "--count 123");
+        expect(redactText(out)).toBe(out);
+        if (depth) expect(() => JSON.parse(out)).not.toThrow();
+        input = JSON.stringify(input);
+      }
+    }
+  });
+
+  test("shell argument scanning respects escapes, quote transitions and command separators", () => {
+    for (const value of [
+      `first\\ ${secret}`, `first\\\t${secret}`, `'first'"${secret}"`,
+      `"first"'${secret}'`, `first'${secret}'last`, `first\\;${secret}`,
+      `"first\\\"${secret}"`, `'first\\${secret}'`,
+    ]) {
+      const input = `tool --client-secret=${value}; echo 123`;
+      const out = redactText(input);
+      expect(out).not.toContain(secret);
+      expect(out).toBe(`tool --client-secret=${REDACTED}; echo 123`);
+      expect(redactText(out)).toBe(out);
+    }
+    expect(redactText(`tool --password 'unfinished ${secret}`)).not.toContain(secret);
+  });
+});
 const leakingShapes = [
   ...["CLICKHOUSE_PASSWORD", "CLIPROXY_MGMT_KEY", "PREFIX_PASSWORD", "PREFIX_KEY", "SERVICE_TOKEN", "SERVICE_SECRET"].flatMap(
     (key) => ["", '"', "'"].map((quote) => `${key}=${quote}${secret}${quote}`),

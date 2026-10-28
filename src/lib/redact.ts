@@ -34,6 +34,22 @@ const ASSIGNMENT = new RegExp(String.raw`(?:\\+[nr]|(?<![\w-]))(?:--(${KEY_NAME}
 const normalizeKey = (k: string) => k.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/-/g, "_");
 const sensitiveKey = (key: string) => SENSITIVE_KEYS.has(key) || /_(?:password|passwd|key|token|secret)$/.test(key);
 
+/** Shell arguments can join quoted/unquoted segments and escape otherwise separating bytes. */
+function shellArgumentEnd(text: string, start: number): number {
+  let quote = "";
+  let i = start;
+  for (; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\\" && quote !== "'") { i++; continue; }
+    if (quote) {
+      if (ch === quote) quote = "";
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (/[\s;&|<>()]/.test(ch)) break;
+  }
+  return Math.min(i, text.length);
+}
+
 /** Consume an entire quoted value, including escaped quotes at any JSON-string nesting depth. */
 function valueEnd(text: string, start: number, wholeLine: boolean, wrapperAt: number): { start: number; end: number } {
   let quoteAt = start;
@@ -59,7 +75,7 @@ function valueEnd(text: string, start: number, wholeLine: boolean, wrapperAt: nu
   while (text[wrapperStart - 1] === "\\") wrapperStart--;
   while (end < text.length) {
     if (!wholeLine && stop.test(text[end])) break;
-    if (wholeLine && (/[\r\n]/.test(text[end]) || (text[end] === "\\" && /[nr]/.test(text[end + 1] ?? "")))) break;
+    if (wholeLine && /[\r\n]/.test(text[end])) break;
     if (wholeLine && /["']/.test(text[wrapperAt] ?? "") && text[end] === text[wrapperAt]) {
       let slashStart = end;
       while (text[slashStart - 1] === "\\") slashStart--;
@@ -70,22 +86,39 @@ function valueEnd(text: string, start: number, wholeLine: boolean, wrapperAt: nu
   return { start, end };
 }
 
-function redactAssignments(text: string): string {
+function redactAssignments(text: string, nesting = 0): string {
   const parts: string[] = [];
   let copied = 0;
-  ASSIGNMENT.lastIndex = 0;
-  for (let match = ASSIGNMENT.exec(text); match; match = ASSIGNMENT.exec(text)) {
+  // Walk JSON string tokens once, in step with assignments. Decode only a token containing an
+  // assignment, so real encoded newlines are boundaries while literal backslash+n/r stays secret.
+  // A local matcher keeps recursive decoding from changing the outer scan's cursor.
+  const assignment = new RegExp(ASSIGNMENT);
+  const strings = /"(?:[^"\\\r\n]|\\.)*"/g;
+  let string: RegExpExecArray | null | undefined;
+  for (let match = assignment.exec(text); match; match = assignment.exec(text)) {
     const rawKey = match[1] ?? match[2];
     const key = normalizeKey(rawKey);
     if (!sensitiveKey(key)) continue;
+    while (string === undefined || (string && string.index + string[0].length <= match.index)) string = strings.exec(text);
+    if (string && string.index < match.index && assignment.lastIndex < string.index + string[0].length) {
+      try {
+        const decoded = JSON.parse(string[0]) as string;
+        const safe = nesting < 32 ? redactAssignments(decoded, nesting + 1) : REDACTED;
+        parts.push(text.slice(copied, string.index), JSON.stringify(safe));
+        copied = assignment.lastIndex = string.index + string[0].length;
+        continue;
+      } catch { /* A shell-quoted or malformed string is handled as raw text below. */ }
+    }
     const header = /^(?:(?:proxy_)?authorization|(?:set_)?cookie|x_.*_key)$/.test(key) && match[0].includes(":");
     const lineStart = text.lastIndexOf("\n", match.index - 1) + 1;
     const env = !!match[2] && match[0].includes("=") && (rawKey === rawKey.toUpperCase() || /^(?:export[ \t]+)?[ \t]*$/.test(text.slice(lineStart, match.index)));
-    const span = valueEnd(text, ASSIGNMENT.lastIndex, header || env, match.index - 1);
+    const span = match[1]
+      ? { start: assignment.lastIndex, end: shellArgumentEnd(text, assignment.lastIndex) }
+      : valueEnd(text, assignment.lastIndex, header || env, match.index - 1);
     if (span.end <= span.start) continue;
     parts.push(text.slice(copied, span.start), REDACTED);
     copied = span.end;
-    ASSIGNMENT.lastIndex = span.end;
+    assignment.lastIndex = span.end;
   }
   return copied ? parts.join("") + text.slice(copied) : text;
 }
