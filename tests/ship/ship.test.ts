@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClickHouse } from "../../src/lib/clickhouse";
 import { shipOnce, type ShipOptions } from "../../src/ship/ship";
+import { loadState } from "../../src/ship/state";
 
 type Row = Record<string, unknown>;
 
@@ -267,6 +268,22 @@ test("legacy state upgrades once in place", async () => {
   writeFileSync(opts.statePath, JSON.stringify({ version: 1, files: {} }));
   await expect(shipOnce(opts)).resolves.toBeDefined();
   expect(JSON.parse(await Bun.file(opts.statePath).text()).version).toBe(3);
+});
+
+test.each([1, 2])("v%i upgrade retains old tracked files across startup, failure and the daemon cutoff", async (version) => {
+  writeFileSync(claudeFile(), `${claudeLine(1)}\n${claudeLine(2)}\n`);
+  const old = new Date("2026-01-01T00:00:00Z");
+  utimesSync(claudeFile(), old, old);
+  mkdirSync(join(root, "state"));
+  writeFileSync(opts.statePath, JSON.stringify({ version, files: { [claudeFile()]: { offset: claudeLine(1).length + 1 } } }));
+  loadState(opts.statePath); // main.ts upgrades before its first shipOnce.
+  const daemon = { ...opts, sinceMs: Date.parse("2026-10-01T00:00:00Z") };
+  db.setFail(true);
+  await expect(shipOnce(daemon)).rejects.toThrow();
+  db.setFail(false);
+  expect((await shipOnce(daemon)).lines).toBe(2);
+  expect(db.rows.map((r) => JSON.parse(String(r.raw)).message.content)).toEqual(["m1", "m2"]);
+  expect((await shipOnce(daemon)).lines).toBe(0);
 });
 
 test("a failed file does not block another file in the pass", async () => {

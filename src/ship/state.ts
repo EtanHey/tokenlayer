@@ -8,6 +8,7 @@ export type FileCheckpoint = {
   identity: string;
   /** mtime when last checked; an unchanged size, inode and mtime skips the file without reading it. */
   mtimeMs: number;
+  ctimeMs: number;
   offset: number;
   /** sha256 of all bytes in [0, offset). */
   fingerprint: string;
@@ -18,14 +19,14 @@ export type FileCheckpoint = {
   parser: FileState;
 };
 
-export type ShipState = { version: 3; files: Record<string, FileCheckpoint> };
+export type ShipState = { version: 3; files: Record<string, FileCheckpoint>; legacyReplay?: string[] };
 
 export function loadState(path: string): ShipState {
   if (!existsSync(path)) return { version: 3, files: {} };
   const parsed = JSON.parse(readFileSync(path, "utf8")) as ShipState;
   if ([1, 2].includes(parsed.version)) {
     // Older fingerprints and generations cannot safely resume. Replay once with file identities.
-    const upgraded: ShipState = { version: 3, files: {} };
+    const upgraded: ShipState = { version: 3, files: {}, legacyReplay: Object.keys(parsed.files) };
     saveState(path, upgraded);
     return upgraded;
   }

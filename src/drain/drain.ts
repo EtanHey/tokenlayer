@@ -1,5 +1,6 @@
 import type { ClickHouse } from "../lib/clickhouse";
 import { redactDeep, redactText } from "../lib/redact";
+import { sha256Hex } from "../lib/hash";
 import { mapUsageRecord } from "./record";
 import type { Spool } from "./spool";
 
@@ -35,8 +36,9 @@ async function fetchPage(opts: DrainOptions, count: number): Promise<unknown[]> 
     body = JSON.parse(text);
     if (!Array.isArray(body)) throw new Error("non-array");
   } catch {
-    // Retain malformed pages with known identity fields scrubbed before the shared text redactor.
-    opts.spool.reject({ reason: "malformed hub page", bytes: Buffer.byteLength(text), body: redactText(text.replace(/("(?:access_token|refresh_token|api_key|source)"\s*:\s*")[^"]*/g, "$1[redacted]")) });
+    // Malformed bodies can contain encoded JSON that cannot be safely scrubbed by field name.
+    const receipt = { reason: "malformed hub page", bytes: Buffer.byteLength(text), sha256: sha256Hex(text) };
+    opts.spool.reject(redactDeep(receipt, { extraKeys: SECRET_FIELDS }) as typeof receipt);
     throw new Error("usage queue returned malformed page; durable reject receipt saved");
   }
   return body;

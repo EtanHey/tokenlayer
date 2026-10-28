@@ -85,6 +85,7 @@ function freshCheckpoint(path: string, kind: SourceKind, st: Stats): FileCheckpo
     inode: st.ino,
     identity: identity(st),
     mtimeMs: st.mtimeMs,
+    ctimeMs: st.ctimeMs,
     offset: 0,
     fingerprint: "",
     generation: identity(st),
@@ -94,15 +95,12 @@ function freshCheckpoint(path: string, kind: SourceKind, st: Stats): FileCheckpo
   };
 }
 
-/** True when the file is no longer the one the checkpoint describes (rotated, rewritten or truncated). */
-function replaced(path: string, cp: FileCheckpoint, st: Stats): boolean {
-  if (identity(st) !== cp.identity || st.size < cp.offset) return true;
-  return cp.offset > 0 && prefixHash(path, cp.offset).digest("hex") !== cp.fingerprint;
-}
-
 /** Ship each file independently, save acknowledged progress, then report aggregate failures. */
 export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
   const state: ShipState = loadState(opts.statePath);
+  // Separate write-ahead generation record: deleting the progress checkpoint must not reuse archive keys.
+  const generationPath = `${opts.statePath}.generations`;
+  const generations = loadState(generationPath);
   const rate = opts.rateBytesPerSec ?? 5 * 1024 * 1024;
   const batchBytes = opts.batchBytes ?? 4 * 1024 * 1024;
   const saveEveryMs = opts.saveEveryMs ?? 5000;
@@ -129,28 +127,48 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             continue;
           }
           let cp: FileCheckpoint | undefined = state.files[path];
+          const recorded = generations.files[path];
+          const replay = !cp || (recorded && (recorded.generation !== cp.generation || recorded.offset > cp.offset));
+          if (replay && recorded) cp = structuredClone(recorded);
+          // Bootstrap the journal for checkpoints created before this version, including unchanged files.
+          if (cp && !recorded) {
+            generations.files[path] = structuredClone(cp);
+            saveState(generationPath, generations);
+          }
           if (!cp) {
-            if (opts.sinceMs !== undefined && st.mtimeMs < opts.sinceMs) continue;
+            if (!state.legacyReplay?.includes(path) && opts.sinceMs !== undefined && st.mtimeMs < opts.sinceMs) continue;
             if (st.size === 0) continue;
-          } else if (st.size === cp.offset && identity(st) === cp.identity && st.mtimeMs === cp.mtimeMs) {
+          } else if (!replay && st.size === cp.offset && identity(st) === cp.identity && st.mtimeMs === cp.mtimeMs && st.ctimeMs === cp.ctimeMs) {
             continue;
           }
 
           // Touched since the last pass: verify identity before trusting the offset, even when the size is unchanged.
-          if (cp && replaced(path, cp, st)) {
+          let hash = createHash("sha256");
+          const sameFile = cp && identity(st) === cp.identity && st.size >= cp.offset;
+          if (sameFile) hash = prefixHash(path, cp.offset);
+          if (cp && (!sameFile || (cp.offset > 0 && hash.copy().digest("hex") !== cp.fingerprint))) {
             opts.log?.(`reset ${path}: rotated or truncated`);
             const revision = identity(st) === cp.identity
               ? sha256Hex(`${cp.generation}:${prefixHash(path, st.size).digest("hex")}`).slice(0, 16)
               : identity(st);
             cp = freshCheckpoint(path, root.kind, st);
             cp.generation = revision;
+            hash = createHash("sha256");
             result.resets++;
+          } else if (cp && replay) {
+            const generation = cp.generation;
+            cp = freshCheckpoint(path, root.kind, st);
+            cp.generation = generation;
+            hash = createHash("sha256");
           }
           if (cp && !cp.harnessDecided) {
             const decided = detectHarness(root.kind, headLines(path));
             if (decided && decided !== cp.parser.harness) {
               // Earlier rows carry the default harness; reship the file so every row agrees.
-              cp = undefined;
+              const generation = cp.generation;
+              cp = freshCheckpoint(path, root.kind, st);
+              cp.generation = generation;
+              hash = createHash("sha256");
               result.resets++;
             } else if (decided) {
               cp.harnessDecided = true;
@@ -158,13 +176,13 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           }
           if (!cp) cp = freshCheckpoint(path, root.kind, st);
           cp.mtimeMs = st.mtimeMs;
+          cp.ctimeMs = st.ctimeMs;
           state.files[path] = cp;
           dirty = true;
 
           let shippedFromFile = false;
-          const hash = prefixHash(path, cp.offset);
           for (;;) {
-            const { lines, nextOffset } = readCompleteLines(path, cp.offset, batchBytes);
+            const { lines, nextOffset, raw } = readCompleteLines(path, cp.offset, batchBytes);
             if (lines.length === 0) break;
             // A fresh checkpoint starts at offset 0, so lines[0] is the file's first line.
 
@@ -181,13 +199,19 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             // Deterministic token over the rows themselves: an identical retry is deduplicated server-side,
             // while changed rows for the same range (rewrite, late harness decision) are a new insert.
             const token = sha256Hex(`${opts.machine}\0${path}\0${cp.generation}\0${cp.offset}\0${nextOffset}\0${sha256Hex(JSON.stringify(rows))}`);
+            // Hash the exact source buffer used by the parser, before yielding to the insert.
+            const nextHash = hash.copy().update(raw);
+            const fingerprint = nextHash.copy().digest("hex");
+            generations.files[path] = { ...cp, offset: nextOffset, fingerprint, parser };
+            saveState(generationPath, generations);
             await opts.clickhouse.insert("session_events", rows, token);
 
             const shippedBytes = nextOffset - cp.offset;
             cp.parser = parser;
-            prefixHash(path, nextOffset, cp.offset, hash);
+            hash = nextHash;
             cp.offset = nextOffset;
-            cp.fingerprint = hash.copy().digest("hex");
+            cp.fingerprint = fingerprint;
+            state.legacyReplay = state.legacyReplay?.filter((p) => p !== path);
             dirty = true;
             shippedFromFile = true;
             result.lines += rows.length;
@@ -198,6 +222,9 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
               if (ahead > 0) await Bun.sleep(ahead * 1000);
             }
             if (performance.now() - lastSave > saveEveryMs) save();
+            const after = statSync(path);
+            // Re-enter identity verification next pass if the source changed while insertion was pending.
+            if (identity(after) !== identity(st) || after.mtimeMs !== st.mtimeMs || after.ctimeMs !== st.ctimeMs) break;
           }
           if (shippedFromFile) result.files++;
         } catch (err) { failures.push(err); }

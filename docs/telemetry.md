@@ -21,6 +21,8 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
   spool only after ClickHouse confirms the insert (below). Each batch carries a fixed `insert_deduplication_token`, and the table has
   `non_replicated_deduplication_window`, so a retry after an ambiguous failure inserts nothing twice.
 - Items that cannot be mapped go to `rejects.ndjson` with identity fields redacted. Nothing is dropped silently.
+- Malformed pages retain only a byte count and SHA-256 receipt through the ordinary reject deep redactor.
+  Raw bodies are never retained, including non-array JSON and encoded strings.
 - Every persisted value (rows, spool, rejects, logged ClickHouse errors) passes the shared deep redactor
   (`src/lib/redact.ts`): API keys, bearer/OAuth tokens, JWTs, private keys, auth-file JSON and emails become `[redacted]`.
 - An insert counts as acknowledged only when ClickHouse confirms it: `wait_end_of_query=1`, no
@@ -38,12 +40,20 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
 - A line is `(machine, path, generation, byte_offset)`. Generation starts as a SHA-256 identity of
   device, inode and birthtime. Rotation preserves the previous generation even with identical content.
   An in-place rewrite adds a revision hash to preserve archived rows.
+- A write-ahead `<statePath>.generations` sidecar reserves each generation and its source fingerprint before
+  insertion. Keep it when resetting progress: checkpoint loss replays the current generation, and late harness
+  classification preserves that generation. Losing both files loses the information needed to recover revisions;
+  restore the sidecar from backup before replaying an archive with in-place rewrites.
 - Version 3 checkpoints hash the entire acknowledged prefix using streaming 64 KiB buffers. Changed files
   verify that prefix before resuming; batch hashes extend incrementally, avoiding a full rehash per chunk.
-  This costs one prefix verification per changed file, with bounded memory. The 5 MB/s setting caps shipped
+  The verified prefix hash is reused to extend batches from their exact source buffers before insertion;
+  checkpoint hashes never come from a post-acknowledgement path read. A rewrite additionally hashes the current
+  file to derive its revision. The 5 MB/s setting caps shipped
   bytes; verification reads are additional local disk I/O. Unchanged files skip reads.
 - v1/v2 state upgrades atomically to v3 by discarding incompatible checkpoints and replaying files once.
-  Old content-based generations remain archived; counts across that upgrade can include both histories.
+  A durable replay list keeps previously tracked files eligible even under the daemon's 24-hour cutoff and
+  across startup or insert failures. Old content-based generations remain archived; counts and token sums
+  across that upgrade can include both histories even with `FINAL`, and do not represent unique source lines.
 - Stop all shippers before `bun run schema:apply`. Legacy session tables migrate through a copy and atomic
   exchange, retaining `session_events_legacy`. Missing generation values become `legacy`; missing message IDs
   become empty strings. Reapplying is safe; interrupted copies can leave physical duplicates collapsed by FINAL.
@@ -94,7 +104,8 @@ ORDER BY cache_write DESC
 LIMIT 50
 ```
 
-Activity per machine / harness / project:
+Activity per machine / harness / project (provenance histories; legacy upgrade replays can double counts and
+token sums even with `FINAL`):
 
 ```sql
 SELECT machine, harness, project, toDate(ts) AS day,

@@ -266,3 +266,22 @@ test("malformed popped page is durably rejected with secrets redacted", async ()
     expect(rejected).not.toContain("synthetic-secret");
   } finally { hub.stop(true); }
 });
+
+test.each(["truncated", "non-array", "encoded-string", "nested-string"])("%s page receipts enforce the ordinary reject denylist", async (form) => {
+  const item = { timestamp: "invalid", access_token_sha256: "synthetic-digest", client_ip: "192.0.2.123", response_headers: { "X-ClickHouse-Key": "synthetic-password" } };
+  const ordinary = fakeHub([[item]]);
+  const spool = new Spool(dir);
+  try {
+    await drainOnce({ hubUrl: `http://127.0.0.1:${ordinary.server.port}`, mgmtKey: "fake", hub: "test", spool, clickhouse: ch(1) });
+  } finally { ordinary.server.stop(true); }
+  const body = form === "truncated" ? JSON.stringify([item]).slice(0, -1)
+    : form === "encoded-string" ? JSON.stringify(JSON.stringify(item))
+    : form === "nested-string" ? JSON.stringify({ payload: JSON.stringify(item) }) : JSON.stringify(item);
+  const hub = Bun.serve({ port: 0, fetch: () => new Response(body) });
+  try {
+    await expect(drainOnce({ hubUrl: `http://127.0.0.1:${hub.port}`, mgmtKey: "fake", hub: "test", spool, clickhouse: ch(1) })).rejects.toThrow();
+    const receipts = readFileSync(spool.rejectsFile, "utf8");
+    expect(receipts.trim().split("\n")).toHaveLength(2);
+    for (const sentinel of [item.access_token_sha256, item.client_ip, item.response_headers["X-ClickHouse-Key"]]) expect(receipts.includes(sentinel)).toBe(false);
+  } finally { hub.stop(true); }
+});

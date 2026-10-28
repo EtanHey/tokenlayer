@@ -119,6 +119,57 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse: rewrites, 
        FROM tokenlayer.session_events FINAL WHERE machine = '${machine}' ORDER BY ingested_at, byte_offset`,
     );
 
+  test("checkpoint loss after a rewrite preserves both archived generations", async () => {
+    const { file, o } = setup("it-recovery");
+    writeFileSync(file, `${line("old")}\n${line("old-tail")}\n`);
+    await shipOnce(o);
+    const archived = await finalRows(o.machine);
+    writeFileSync(file, `${line("new")}\n`);
+    await shipOnce(o);
+    const revised = await finalRows(o.machine);
+    rmSync(o.statePath);
+    await shipOnce(o);
+    const rows = await finalRows(o.machine);
+    expect(rows.filter((r) => r.generation === archived[0].generation)).toEqual(archived);
+    expect(rows).toHaveLength(3);
+    expect(rows.find((r) => r.content === "new")?.generation).toBe(revised.find((r) => r.content === "new")?.generation);
+  });
+
+  test("late harness detection after a rewrite keeps its revision", async () => {
+    const { file, o } = setup("it-revision-harness");
+    writeFileSync(file, `${line("old")}\n`);
+    await shipOnce(o);
+    const [archived] = await finalRows(o.machine);
+    writeFileSync(file, `${line("new")}\n`);
+    await shipOnce(o);
+    const revision = (await finalRows(o.machine)).find((r) => r.content === "new")!.generation;
+    appendFileSync(file, `${line("sdk", { entrypoint: "sdk-ts" })}\n`);
+    await shipOnce(o);
+    const rows = await finalRows(o.machine);
+    expect(rows.filter((r) => r.generation === archived.generation)).toEqual([archived]);
+    expect(rows.filter((r) => r.generation === revision).map((r) => [r.content, r.harness])).toEqual([["new", "t3"], ["sdk", "t3"]]);
+  });
+
+  test("a rewrite before insert acknowledgement cannot certify unshipped bytes", async () => {
+    const { file, o } = setup("it-ack-rewrite");
+    const old = `${line("old")}\n`;
+    const replacement = old.replace('"old"', '"new"');
+    writeFileSync(file, old);
+    const insert = ch.client.insert.bind(ch.client);
+    o.clickhouse = Object.create(ch.client);
+    let rewrite = true;
+    o.clickhouse.insert = async (...args) => {
+      await insert(...args);
+      if (rewrite) { rewrite = false; writeFileSync(file, replacement); }
+    };
+    await shipOnce(o);
+    const result = await shipOnce(o);
+    expect(result).toMatchObject({ lines: 1, resets: 1 });
+    const rows = await finalRows(o.machine);
+    expect(rows.map((r) => r.content).sort()).toEqual(["new", "old"]);
+    expect(new Set(rows.map((r) => r.generation)).size).toBe(2);
+  });
+
   test("a late harness decision replaces the first chunk even when its byte range is unchanged", async () => {
     const { file, o } = setup("it-late", 1);
     writeFileSync(file, `${JSON.stringify({ type: "queue-operation", sessionId: "s", timestamp: new Date().toISOString() })}\n`);
