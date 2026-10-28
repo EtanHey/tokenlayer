@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { verifySessionSchema } from "../../src/lib/session-schema";
 import { applySchema } from "../../src/lib/schema";
 import { shipOnce, type ShipOptions } from "../../src/ship/ship";
 import { clickhouseBinary, startLocalClickHouse, type LocalClickHouse } from "../support/local-clickhouse";
@@ -185,4 +186,22 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse: rewrites, 
       await ch.client.exec("SYSTEM START MERGES tokenlayer.session_events");
     }
   });
+});
+
+describe.skipIf(!clickhouseBinary())("legacy schema migration", () => {
+  test("changes the replacement key, preserves rows, and is restartable", async () => {
+    const ch = await startLocalClickHouse();
+    try {
+      await ch.client.exec("CREATE DATABASE tokenlayer");
+      await ch.client.exec("CREATE TABLE tokenlayer.session_events (machine String, path String, byte_offset UInt64, ts DateTime64(3), raw String) ENGINE=ReplacingMergeTree ORDER BY (machine,path,byte_offset)");
+      await ch.client.exec("INSERT INTO tokenlayer.session_events VALUES ('test','synthetic',0,now(),'{}')");
+      await expect(verifySessionSchema(ch.client)).rejects.toThrow("schema mismatch");
+      await applySchema(ch.client);
+      await verifySessionSchema(ch.client);
+      const [{ sorting_key }] = await ch.client.queryJSON<{ sorting_key: string }>("SELECT sorting_key FROM system.tables WHERE database='tokenlayer' AND name='session_events'");
+      expect(sorting_key).toBe("machine, path, generation, byte_offset");
+      expect((await ch.client.queryJSON("SELECT generation,message_id FROM tokenlayer.session_events FINAL"))).toEqual([{ generation: "legacy", message_id: "" }]);
+      await applySchema(ch.client);
+    } finally { await ch.stop(); }
+  }, 40000);
 });

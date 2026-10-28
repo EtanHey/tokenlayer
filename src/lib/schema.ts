@@ -1,3 +1,4 @@
+import { migrateSessionSchema } from "./session-schema";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ClickHouse } from "./clickhouse";
@@ -18,6 +19,7 @@ export async function applySchema(ch: ClickHouse, dir = SCHEMA_DIR): Promise<str
       .replace(/;\s*$/, "");
     await ch.exec(sql);
   }
+  await migrateSessionSchema(ch);
   return files;
 }
 

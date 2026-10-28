@@ -255,3 +255,14 @@ describe("Spool", () => {
     expect(new Spool(dir).pending()).toBe(1);
   });
 });
+
+test("malformed popped page is durably rejected with secrets redacted", async () => {
+  const hub = Bun.serve({ port: 0, fetch: () => new Response('{"access_token":"synthetic-secret",broken') });
+  const spool = new Spool(dir);
+  try {
+    await expect(drainOnce({ hubUrl: `http://127.0.0.1:${hub.port}`, mgmtKey: "fake", hub: "test", spool, clickhouse: ch(1) })).rejects.toThrow();
+    const rejected = readFileSync(spool.rejectsFile, "utf8");
+    expect(rejected).toContain("malformed");
+    expect(rejected).not.toContain("synthetic-secret");
+  } finally { hub.stop(true); }
+});

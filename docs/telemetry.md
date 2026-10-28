@@ -35,17 +35,21 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
 - `harness`: Claude files whose lines carry `entrypoint: "sdk-ts"` → `t3` (T3 drives Claude Code via the Agent SDK),
   otherwise `claude`. Codex files whose `session_meta.payload.originator` is `"T3 Code"` → `t3`, otherwise `codex`.
   A file whose head has no deciding line yet ships with the default and is reshipped once it is decided.
-- A line is `(machine, path, generation, byte_offset)`. `generation` is the file's content identity,
-  `sha256(first line)[:16]`: a file rotated, replaced or rewritten at the same path with a different first line is a
-  new generation, and the earlier generation's rows stay as archived history. Re-reading the same file (lost
-  checkpoint, retry, late harness decision) maps to the same generation, so its rows replace rather than duplicate.
-  A rewrite that keeps the first line stays in the same generation: rows at the same offsets are replaced, and rows
-  past the new end stay.
-- Checkpoints live in `~/.config/tokenlayer/ship-state.json` (inode, mtime, offset, a sha256 of the first and last
-  4 KiB of the shipped range, generation, parser carry-forward). Only `\n`-terminated lines ship; a partial last line
-  waits. A file with unchanged size, inode and mtime is skipped without reading. Any other change is checked against the
-  fingerprint first, so an equal-size in-place rewrite is caught too. A new inode, a shorter file, or a changed
-  fingerprint restarts the file from 0.
+- A line is `(machine, path, generation, byte_offset)`. Generation starts as a SHA-256 identity of
+  device, inode and birthtime. Rotation preserves the previous generation even with identical content.
+  An in-place rewrite adds a revision hash to preserve archived rows.
+- Version 3 checkpoints hash the entire acknowledged prefix using streaming 64 KiB buffers. Changed files
+  verify that prefix before resuming; batch hashes extend incrementally, avoiding a full rehash per chunk.
+  This costs one prefix verification per changed file, with bounded memory. The 5 MB/s setting caps shipped
+  bytes; verification reads are additional local disk I/O. Unchanged files skip reads.
+- v1/v2 state upgrades atomically to v3 by discarding incompatible checkpoints and replaying files once.
+  Old content-based generations remain archived; counts across that upgrade can include both histories.
+- Stop all shippers before `bun run schema:apply`. Legacy session tables migrate through a copy and atomic
+  exchange, retaining `session_events_legacy`. Missing generation values become `legacy`; missing message IDs
+  become empty strings. Reapplying is safe; interrupted copies can leave physical duplicates collapsed by FINAL.
+  The shipper checks the live schema before starting and refuses incompatible tables.
+- A file failure is isolated until the end of the pass; acknowledged progress for other files is saved before
+  the pass reports failure. All progress after intermediate saves is included in the final checkpoint.
 - Each chunk is inserted with an `insert_deduplication_token` derived from its range and its row content, and the
   checkpoint advances only after ClickHouse confirms the insert. An identical retry is a server-side no-op; changed rows
   for the same range are a new insert.

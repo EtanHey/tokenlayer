@@ -8,6 +8,8 @@
 //   TOKENLAYER_CLAUDE_DIR (default ~/.claude/projects), TOKENLAYER_CODEX_DIR (default ~/.codex/sessions),
 //   TOKENLAYER_SHIP_STATE (default ~/.config/tokenlayer/ship-state.json), TOKENLAYER_SHIP_RATE_MB (default 5).
 // The daemon only picks up files without a checkpoint if they changed in the last day; run --backfill once for history.
+import { loadState } from "./state";
+import { verifySessionSchema } from "../lib/session-schema";
 import { ClickHouse } from "../lib/clickhouse";
 import { expandHome, loadEnvFiles } from "../lib/env";
 import { shipOnce, type ShipOptions } from "./ship";
@@ -49,6 +51,9 @@ const opts: ShipOptions = {
   log: (m) => console.log(`${new Date().toISOString()} ${m}`),
 };
 const intervalMs = Number(env.TOKENLAYER_SHIP_INTERVAL_MS ?? 10_000);
+
+loadState(opts.statePath);
+await verifySessionSchema(opts.clickhouse);
 
 let stopping = false;
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => (stopping = true));

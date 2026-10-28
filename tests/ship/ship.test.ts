@@ -237,3 +237,46 @@ describe("shipOnce", () => {
     expect(db.rows[0]).toMatchObject({ session_id: "s-1", project: "golems", type: "user" });
   });
 });
+
+test("rotation with identical first line gets a distinct generation", async () => {
+  writeFileSync(claudeFile(), claudeLine(1) + "\n");
+  await shipOnce(opts);
+  renameSync(claudeFile(), claudeFile() + ".bak");
+  writeFileSync(claudeFile(), claudeLine(1) + "\n");
+  await shipOnce(opts);
+  expect(db.rows[1].generation).not.toBe(db.rows[0].generation);
+});
+
+test("middle-only rewrite before the checkpoint is detected", async () => {
+  const lines = Array.from({ length: 150 }, () => claudeLine(1));
+  writeFileSync(claudeFile(), lines.join("\n") + "\n");
+  await shipOnce(opts);
+  lines[75] = claudeLine(2);
+  writeFileSync(claudeFile(), lines.join("\n") + "\n");
+  expect((await shipOnce(opts)).resets).toBe(1);
+});
+
+test("final checkpoint includes progress after an intermediate save", async () => {
+  writeFileSync(claudeFile(), claudeLine(1) + "\n" + claudeLine(2) + "\n");
+  await shipOnce({ ...opts, batchBytes: 1, saveEveryMs: -1 });
+  expect((await shipOnce(opts)).lines).toBe(0);
+});
+
+test("legacy state upgrades once in place", async () => {
+  mkdirSync(join(root, "state"));
+  writeFileSync(opts.statePath, JSON.stringify({ version: 1, files: {} }));
+  await expect(shipOnce(opts)).resolves.toBeDefined();
+  expect(JSON.parse(await Bun.file(opts.statePath).text()).version).toBe(3);
+});
+
+test("a failed file does not block another file in the pass", async () => {
+  writeFileSync(claudeFile(), claudeLine(1) + "\n");
+  writeFileSync(codexFile(), codexMeta("codex_exec") + "\n");
+  const insert = db.client.insert.bind(db.client);
+  db.client.insert = async (table, rows, token) => {
+    if (JSON.stringify(rows).includes("s-1")) throw new Error("synthetic file failure");
+    return insert(table, rows, token);
+  };
+  await expect(shipOnce(opts)).rejects.toThrow();
+  expect(db.rows).toHaveLength(1);
+});

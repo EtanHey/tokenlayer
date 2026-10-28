@@ -29,8 +29,16 @@ async function fetchPage(opts: DrainOptions, count: number): Promise<unknown[]> 
     await res.body?.cancel();
     throw new Error(`usage queue GET failed: HTTP ${res.status}`);
   }
-  const body = (await res.json()) as unknown;
-  if (!Array.isArray(body)) throw new Error("usage queue returned a non-array body");
+  const text = await res.text();
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+    if (!Array.isArray(body)) throw new Error("non-array");
+  } catch {
+    // Retain malformed pages with known identity fields scrubbed before the shared text redactor.
+    opts.spool.reject({ reason: "malformed hub page", bytes: Buffer.byteLength(text), body: redactText(text.replace(/("(?:access_token|refresh_token|api_key|source)"\s*:\s*")[^"]*/g, "$1[redacted]")) });
+    throw new Error("usage queue returned malformed page; durable reject receipt saved");
+  }
   return body;
 }
 
