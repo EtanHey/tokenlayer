@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- tokenlayer-ship (both Macs). Render: replace __BUN__, __REPO__, __HOME__, __MACHINE__ (m4 | m1);
+     install to ~/Library/LaunchAgents. ClickHouse credentials are read at runtime from
+     ~/.config/tokenlayer/clickhouse.env (mode 600), never placed here. Run `--backfill` once by hand for history. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.tokenlayer.ship</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__BUN__</string>
+    <string>__REPO__/src/ship/main.ts</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TOKENLAYER_MACHINE</key>
+    <string>__MACHINE__</string>
+    <key>TOKENLAYER_ENV_FILES</key>
+    <string>__HOME__/.config/tokenlayer/ship.env:__HOME__/.config/tokenlayer/clickhouse.env</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/tokenlayer/ship.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/tokenlayer/ship.log</string>
+</dict>
+</plist>
