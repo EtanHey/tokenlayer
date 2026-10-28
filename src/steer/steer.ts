@@ -1,4 +1,5 @@
-import { labelHash } from "./hash";
+import { HubError } from "./client";
+import { labelHash } from "../lib/hash";
 import { assess, rank, type Tiers } from "./rank";
 import type { Credential, SnapshotRow } from "./types";
 
@@ -22,6 +23,7 @@ export interface TickResult {
   credentials: number;
   changes: number;
   errors: number;
+  retryAfterMs?: number;
 }
 
 /** ClickHouse DateTime64(3) text in UTC: `YYYY-MM-DD hh:mm:ss.sss`. */
@@ -67,6 +69,7 @@ export async function tick(hub: SteerHub, opts: TickOptions = {}): Promise<TickR
             log(`${stamp} steer credential=${label} priority ${current}->${target} ${resets}${why}`);
           } catch (err) {
             result.errors++;
+            if (err instanceof HubError) result.retryAfterMs = Math.max(result.retryAfterMs ?? 0, err.retryAfterMs);
             action = "error";
             log(`${stamp} steer error credential=${label} priority ${current}->${target}: ${(err as Error).message}`);
           }

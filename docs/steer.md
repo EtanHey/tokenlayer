@@ -40,7 +40,9 @@ launchd: render `launchd/com.tokenlayer.steer.plist` (`__BUN__`, `__REPO__`, `__
 **API path (implemented).** `PATCH /v8/management/credentials/fields {"name": <id>, "priority": N}`. The handler
 writes `priority` into the credential metadata and syncs the `priority` attribute that the selector reads. It commits
 through `Manager.Modify`, which persists the auth JSON, so the value survives a restart. Priority 0 deletes the
-attribute, so GET then shows `priority: null`, and steer reads null as 0.
+attribute, but GET can return numeric `0` from metadata or null/missing; steer treats all as 0.
+Source: `internal/api/handlers/management/auth_files_fields.go:422,751-753` and
+`internal/api/handlers/management/auth_files.go:755-765`.
 
 **File path (designed, not built; fallback only).** On the hub, rewrite `~/.cli-proxy-api/<file>.json` with a
 top-level `"priority"`. Write a temp file in the same directory with the same mode, then `rename`; the watcher
@@ -55,3 +57,7 @@ sessions. The management `POST /v8/management/requests/api-call` takes an `auth_
 `quota.signals`, and it would use the subscription outside Claude Code, so it is ruled out. The viable option is a
 **priority flip**: for one tick, put the no-signal account alone at 100 so that the next cold Claude Code session lands
 on it and records its headers.
+
+Failed GETs and ticks with PATCH/snapshot errors use exponential backoff with up to 25% jitter,
+capped at five minutes. Retry-After (seconds or HTTP date) is honoured up to that cap.
+Failure delays begin after the tick finishes; a clean tick restores the configured interval.

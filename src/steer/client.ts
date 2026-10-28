@@ -1,5 +1,18 @@
+import { redactText, REDACTED } from "../lib/redact";
 import type { SteerHub } from "./steer";
 import type { Credential } from "./types";
+
+export const BACKOFF_CAP_MS = 300_000;
+
+export class HubError extends Error {
+  constructor(message: string, readonly retryAfterMs: number) { super(message); }
+}
+
+function retryAfter(value: string | null): number {
+  if (!value) return 0;
+  const ms = /^\d+(?:\.\d+)?$/.test(value) ? Number(value) * 1000 : Date.parse(value) - Date.now();
+  return Number.isFinite(ms) ? Math.min(BACKOFF_CAP_MS, Math.max(0, ms)) : 0;
+}
 
 /** CLIProxyAPI v8 management API (internal/api/server_management_v8.go). */
 export class HubClient implements SteerHub {
@@ -36,7 +49,12 @@ export class HubClient implements SteerHub {
       try {
         detail = (JSON.parse(text) as { error?: string }).error ?? text;
       } catch {}
-      throw new Error(`${method} ${path} -> ${res.status}: ${detail.slice(0, 200)}`);
+      // Strip the exact configured key before any pattern matching or truncation.
+      const stripped = String(detail).split(this.mgmtKey).join(REDACTED);
+      const safe = redactText(stripped)
+        .replace(/\b(?:authorization|proxy-authorization)\s*[:=]\s*[^\r\n]*/gi, REDACTED)
+        .replace(/\bbearer\s+[^\s"',;]+/gi, REDACTED);
+      throw new HubError(`${method} ${path} -> ${res.status}: ${safe.slice(0, 200)}`, retryAfter(res.headers.get("retry-after")));
     }
     return text ? JSON.parse(text) : {};
   }

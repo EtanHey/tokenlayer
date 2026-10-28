@@ -8,6 +8,7 @@
 //   TOKENLAYER_STEER_INTERVAL_MS (default 60000)
 import { HubClient } from "./client";
 import { loadEnv } from "./env";
+import { runLoop } from "./loop";
 import { tick } from "./steer";
 
 const env = loadEnv(process.env.TOKENLAYER_ENV ?? "~/.config/tokenlayer/hub.env");
@@ -34,25 +35,17 @@ const opts = {
 let stopping = false;
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => (stopping = true));
 
-let lastError = "";
-let exitCode = 0;
-do {
-  const started = Date.now();
-  try {
+const exitCode = await runLoop({
+  intervalMs, once, stopping: () => stopping,
+  execute: async () => {
     const r = await tick(client, opts);
-    if (lastError) console.error(`${new Date().toISOString()} tokenlayer-steer: recovered`);
-    lastError = "";
     if (once) console.error(`${new Date().toISOString()} tokenlayer-steer: credentials=${r.credentials} changes=${r.changes} errors=${r.errors}${dryRun ? " (dry-run)" : ""}`);
-    exitCode = r.errors ? 1 : 0;
-  } catch (err) {
-    const message = (err as Error).message;
-    // Log a failing hub once, not every minute.
-    if (message !== lastError) console.error(`${new Date().toISOString()} tokenlayer-steer: ${message}`);
-    lastError = message;
-    exitCode = 1;
-  }
-  if (once) break;
-  const wait = Math.max(0, intervalMs - (Date.now() - started));
-  for (let waited = 0; waited < wait && !stopping; waited += 250) await Bun.sleep(Math.min(250, wait - waited));
-} while (!stopping);
+    return r;
+  },
+  log: message => console.error(`${new Date().toISOString()} tokenlayer-steer: ${message}`),
+  sleep: async wait => {
+    for (let waited = 0; waited < wait && !stopping; waited += 250)
+      await Bun.sleep(Math.min(250, wait - waited));
+  },
+});
 process.exit(exitCode);

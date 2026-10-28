@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { labelHash } from "../../src/steer/hash";
+import { labelHash } from "../../src/lib/hash";
 import { type SteerHub, tick } from "../../src/steer/steer";
 import type { Credential } from "../../src/steer/types";
 
