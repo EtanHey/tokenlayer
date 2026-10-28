@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import { redactDeep, redactText } from "../lib/redact";
 import { parseTimestampMs, toClickHouseTime } from "../lib/time";
 
 export type SourceKind = "claude" | "codex";
@@ -148,9 +149,11 @@ function codexColumns(o: Obj, st: FileState) {
 /**
  * Parse one JSONL line into session_events columns, updating the file's carry-forward state.
  * Token columns are credited once per API response: input_tokens is uncached input for both harnesses.
+ * The line passes the shared redactor first; every column, raw included, comes from the redacted value.
  */
 export function parseLine(line: string, st: FileState): ParsedLine {
-  const o = tryParse(line);
+  const parsed = tryParse(line);
+  const o = parsed && (redactDeep(parsed) as Obj);
   if (!o) {
     return {
       ts: toClickHouseTime(st.lastTsMs),
@@ -162,7 +165,7 @@ export function parseLine(line: string, st: FileState): ParsedLine {
       model: "",
       message_id: "",
       ...zeroTokens,
-      raw: line,
+      raw: redactText(line),
     };
   }
   const ms = parseTimestampMs(o.timestamp);
@@ -174,6 +177,6 @@ export function parseLine(line: string, st: FileState): ParsedLine {
     project: projectFromCwd(st.cwd),
     cwd: st.cwd,
     ...cols,
-    raw: line,
+    raw: JSON.stringify(o),
   };
 }

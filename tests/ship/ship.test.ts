@@ -168,5 +168,72 @@ describe("shipOnce", () => {
       [queueOp.length + 1, "t3"],
     ]);
   });
-});
 
+  test("a reshipped chunk with changed rows gets a new dedup token; an identical retry keeps it", async () => {
+    const queueOp = JSON.stringify({ type: "queue-operation", sessionId: "s-1", timestamp: "2026-10-28T08:00:00Z" });
+    writeFileSync(claudeFile(), `${queueOp}\n`);
+    await shipOnce({ ...opts, batchBytes: 1 });
+    const first = db.tokens[0];
+    appendFileSync(claudeFile(), `${claudeLine(2, "sdk-ts")}\n`);
+    await shipOnce({ ...opts, batchBytes: 1 });
+    // Same file, same first-chunk range [0, len), but the rows now say t3: the server must not drop it as a retry.
+    expect(db.rows[1]).toMatchObject({ byte_offset: 0, harness: "t3" });
+    expect(db.tokens[1]).not.toBe(first);
+    rmSync(opts.statePath);
+    await shipOnce({ ...opts, batchBytes: 1 });
+    expect(db.tokens.slice(3, 5)).toEqual(db.tokens.slice(1, 3));
+  });
+
+  test("an equal-size in-place rewrite of a completed file is detected and reshipped", async () => {
+    writeFileSync(claudeFile(), `${claudeLine(1)}\n`);
+    await shipOnce(opts);
+    expect(claudeLine(2).length).toBe(claudeLine(1).length);
+    writeFileSync(claudeFile(), `${claudeLine(2)}\n`);
+    const r = await shipOnce(opts);
+    expect(r).toMatchObject({ files: 1, lines: 1, resets: 1 });
+    expect(String(db.rows.at(-1)!.raw)).toContain("m2");
+  });
+
+  test("an untouched completed file is skipped without re-reading it", async () => {
+    writeFileSync(claudeFile(), `${claudeLine(1)}\n`);
+    await shipOnce(opts);
+    const r = await shipOnce(opts);
+    expect(r).toEqual({ files: 0, lines: 0, bytes: 0, resets: 0 });
+  });
+
+  test("rows carry a generation: stable across checkpoint loss, new for a different file at the same path", async () => {
+    writeFileSync(claudeFile(), `${claudeLine(1)}\n`);
+    await shipOnce(opts);
+    const gen = db.rows[0].generation;
+    expect(gen).toMatch(/^[0-9a-f]{16}$/);
+    rmSync(opts.statePath);
+    await shipOnce(opts);
+    expect(db.rows[1].generation).toBe(gen);
+    renameSync(claudeFile(), `${claudeFile()}.bak`);
+    writeFileSync(claudeFile(), `${claudeLine(7)}\n`);
+    await shipOnce(opts);
+    expect(db.rows[2].generation).not.toBe(gen);
+  });
+
+  test("raw and parsed columns never carry credentials or emails", async () => {
+    const key = "sk-ant-api03-FAKEfakeFAKEfake0123456789";
+    const email = "erin.fake@example.invalid";
+    const authFile = JSON.stringify({ type: "claude", email, access_token: "sk-ant-oat01-FAKEfakeFAKE0123456789", refresh_token: "opaque-refresh-fake" });
+    const toolResult = JSON.stringify({
+      type: "user",
+      sessionId: "s-1",
+      cwd: "/Users/u/Gits/golems",
+      entrypoint: "cli",
+      timestamp: "2026-10-28T08:00:01Z",
+      message: { role: "user", content: [{ type: "tool_result", content: [{ type: "text", text: `$ cat auth.json\n${authFile}\nexport ANTHROPIC_API_KEY=${key}` }] }] },
+    });
+    writeFileSync(claudeFile(), `${toolResult}\n{"broken": "Authorization: Bearer fakeBearer0123456789abcdef ${email}\n`);
+    await shipOnce(opts);
+    expect(db.rows).toHaveLength(2);
+    const all = JSON.stringify(db.rows);
+    for (const secret of [key, email, "sk-ant-oat01-FAKEfakeFAKE0123456789", "opaque-refresh-fake", "fakeBearer0123456789abcdef"]) {
+      expect(all).not.toContain(secret);
+    }
+    expect(db.rows[0]).toMatchObject({ session_id: "s-1", project: "golems", type: "user" });
+  });
+});

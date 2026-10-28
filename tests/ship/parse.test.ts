@@ -157,3 +157,41 @@ describe("parseLine (codex)", () => {
     expect(parseLine(codexTokens, st).output_tokens).toBe(0);
   });
 });
+
+describe("parseLine secret hygiene", () => {
+  const KEY = "sk-ant-api03-FAKEfakeFAKEfake0123456789";
+  const EMAIL = "frank.fake@example.invalid";
+  const OAUTH = "sk-ant-oat01-FAKEfakeFAKE0123456789";
+  const authFile = { type: "codex", email: EMAIL, tokens: { access_token: OAUTH, refresh_token: "opaque-refresh-fake", id_token: "opaque-id-fake" } };
+  const SENTINELS = [KEY, EMAIL, OAUTH, "opaque-refresh-fake", "opaque-id-fake", "fakeBearer0123456789abcdef"];
+  const clean = (row: unknown) => {
+    const s = JSON.stringify(row);
+    for (const secret of SENTINELS) expect(s).not.toContain(secret);
+  };
+
+  test("nested tool output with an auth file, a key and an email is redacted in raw", () => {
+    const st = newFileState("claude", "claude", 0);
+    const line = JSON.stringify({
+      ...JSON.parse(claudeUser),
+      message: { role: "user", content: [{ type: "tool_result", content: [{ type: "text", text: `${JSON.stringify(authFile)}\nkey=${KEY}` }] }] },
+      toolUseResult: { stdout: JSON.stringify(authFile, null, 2), stderr: `contact ${EMAIL}` },
+    });
+    const row = parseLine(line, st);
+    clean(row);
+    expect(row).toMatchObject({ session_id: "s-1", project: "golems", type: "user", role: "user" });
+    expect(JSON.parse(row.raw).message.content[0].type).toBe("tool_result");
+  });
+
+  test("codex function-call output and invalid lines are redacted too", () => {
+    const st = newFileState("codex", "codex", 0);
+    const call = JSON.stringify({
+      timestamp: "2026-10-28T08:00:03.000Z",
+      type: "response_item",
+      payload: { type: "function_call_output", output: `curl -H 'Authorization: Bearer fakeBearer0123456789abcdef' -H 'x-api-key: ${KEY}'` },
+    });
+    clean(parseLine(call, st));
+    const bad = parseLine(`{"oops": ${JSON.stringify(authFile)} ${EMAIL}`, st);
+    expect(bad.type).toBe("invalid");
+    clean(bad);
+  });
+});
