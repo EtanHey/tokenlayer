@@ -1,6 +1,6 @@
 -- One row per JSONL line of a Claude Code / Codex / T3 session, shipped by tokenlayer-ship on each Mac.
--- Idempotent: a line is identified by (machine, path, byte_offset); harness is a pure function of path,
--- so it can lead the sort key without changing the dedupe identity.
+-- Idempotent: a line is identified by (machine, path, byte_offset), the whole sort key. harness stays out of it:
+-- a Claude file's harness can be decided only after its first lines, and a reshipped row must replace, not duplicate.
 CREATE TABLE IF NOT EXISTS tokenlayer.session_events
 (
     machine               LowCardinality(String),
@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS tokenlayer.session_events
     type                  LowCardinality(String),
     role                  LowCardinality(String),
     model                 LowCardinality(String),
+    message_id            String                 CODEC(ZSTD(3)),
     input_tokens          UInt64                 CODEC(T64, ZSTD(3)),
     output_tokens         UInt64                 CODEC(T64, ZSTD(3)),
     cache_read_tokens     UInt64                 CODEC(T64, ZSTD(3)),
@@ -28,5 +29,5 @@ CREATE TABLE IF NOT EXISTS tokenlayer.session_events
 )
 ENGINE = ReplacingMergeTree(ingested_at)
 PARTITION BY toYYYYMM(ts)
-ORDER BY (machine, harness, path, byte_offset)
+ORDER BY (machine, path, byte_offset)
 SETTINGS non_replicated_deduplication_window = 10000;

@@ -7,7 +7,7 @@ Apply the schema with `bun run schema:apply` (reads `CLICKHOUSE_*` from the envi
 |---|---|---|---|
 | `proxy_usage` | `tokenlayer-drain` ← `GET /v8/management/observability/usage/queue` | `(credential, toDate(ts), ts, execution_id)` | ReplacingMergeTree, monthly partitions |
 | `credentials_snap` | `tokenlayer-steer` (P3) | `(credential, ts)` | MergeTree, monthly partitions |
-| `session_events` | `tokenlayer-ship` on each Mac | `(machine, harness, path, byte_offset)` | ReplacingMergeTree, monthly partitions |
+| `session_events` | `tokenlayer-ship` on each Mac | `(machine, path, byte_offset)` | ReplacingMergeTree, monthly partitions |
 
 Identity values never land in ClickHouse in the clear: `credential` = `labelHash(auth_index)`,
 `account_hash` = `labelHash(source)` (email / project / upstream key), `client_key_hash` = `labelHash(api_key)`.
@@ -24,6 +24,26 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
 - Known gap: if the process dies between the HTTP pop and the spool fsync, that page is lost (milliseconds wide).
 - If a Redis-protocol subscriber is attached to the hub's usage channel, CLIProxyAPI publishes to it *instead of*
   queueing (`internal/redisqueue/queue.go` `Enqueue`). Nothing in this setup subscribes; keep it that way.
+
+## Shipper guarantees (`tokenlayer-ship`)
+
+- Sources: `~/.claude/projects/**/*.jsonl` (includes `<session>/subagents/agent-*.jsonl`) and `~/.codex/sessions/**/*.jsonl`.
+- `harness`: Claude files whose lines carry `entrypoint: "sdk-ts"` → `t3` (T3 drives Claude Code via the Agent SDK),
+  otherwise `claude`. Codex files whose `session_meta.payload.originator` is `"T3 Code"` → `t3`, otherwise `codex`.
+  A file whose head has no deciding line yet ships with the default and is reshipped once it is decided.
+- A line is `(machine, path, byte_offset)`. Checkpoints live in `~/.config/tokenlayer/ship-state.json`
+  (inode, offset, a sha256 of the first 4 KiB, parser carry-forward). Only `\n`-terminated lines ship; a partial last
+  line waits. A new inode, a shorter file, or a changed head restarts the file from 0 (rows at the same offsets are
+  replaced; rows past the new end of a truncated file stay).
+- Each chunk is inserted with a deterministic `insert_deduplication_token` and the checkpoint advances only after
+  ClickHouse returns 200. Losing the checkpoint and re-running adds 0 rows after `FINAL`/merge.
+- Token columns are credited once per API response: Claude repeats `message.usage` on every content-block line of a
+  message (credited on the first line per `message.id`); Codex `token_count.last_token_usage` is credited unless the
+  running total is unchanged, and `token_usage_record` lines (same numbers) are not credited.
+  `input_tokens` means uncached input for both harnesses (Codex `input_tokens - cached_input_tokens`).
+- The daemon picks up un-checkpointed files only if modified in the last 24 h; `--backfill [--since DATE]` does history
+  at `--rate-mb` (default 5 MB/s).
+- Not shipped yet: T3 Code's own thread store (SQLite, see the PR-b body) and the stray Codex rollout at `~/.t3/*.jsonl`.
 
 ## Example queries
 
