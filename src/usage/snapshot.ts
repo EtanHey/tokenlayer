@@ -39,8 +39,36 @@ export function snapshot(input: unknown, now = Date.now()) {
     })),
   };
 }
-export function staleSnapshot(previous: ReturnType<typeof snapshot>) {
-  return { ...previous, stale: true, last_error: 'hub unavailable' };
+// Previous files are untrusted input too: validate values and rebuild every level.
+function record(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid previous snapshot');
+  return value as Record<string, unknown>;
+}
+function date(value: unknown): string | null {
+  if (value === null) return null;
+  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value) throw new Error('invalid snapshot date');
+  return value;
+}
+function window(value: unknown) {
+  const v = record(value);
+  if (v.used_pct !== null && (typeof v.used_pct !== 'number' || !Number.isFinite(v.used_pct) || v.used_pct < 0 || v.used_pct > 100)) throw new Error('invalid snapshot percentage');
+  return { used_pct: v.used_pct, resets_at: date(v.resets_at) };
+}
+export function staleSnapshot(input: unknown) {
+  const previous = record(input);
+  if (previous.source !== 'cliproxy-hub' || typeof previous.stale !== 'boolean' || !Array.isArray(previous.accounts)
+    || ('last_error' in previous && previous.last_error !== 'hub unavailable')) throw new Error('invalid previous snapshot');
+  const generated_at = date(previous.generated_at);
+  if (generated_at === null && (!previous.stale || previous.accounts.length !== 0)) throw new Error('invalid empty snapshot');
+  const accounts = previous.accounts.map(value => {
+    const a = record(value);
+    if (typeof a.label !== 'string' || !/^claude-[a-f0-9]{8}$/.test(a.label)
+      || typeof a.active !== 'boolean' || typeof a.disabled !== 'boolean'
+      || typeof a.priority !== 'number' || !Number.isFinite(a.priority)
+      || !['allowed', 'rejected', 'unknown'].includes(a.status as string)) throw new Error('invalid snapshot account');
+    return { label: a.label, active: a.active, five_hour: window(a.five_hour), weekly: window(a.weekly), status: a.status, priority: a.priority, disabled: a.disabled };
+  });
+  return { generated_at, source: 'cliproxy-hub', stale: true, accounts, last_error: 'hub unavailable' };
 }
 export function serialize(value: unknown): string {
   return JSON.stringify(redactDeep(value)) + '\n';

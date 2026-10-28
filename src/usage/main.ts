@@ -19,8 +19,6 @@ try {
 } catch {
   try {
     const previous = JSON.parse(await readFile(target, 'utf8'));
-    // Reuse only snapshots produced by this writer; never persist exception text.
-    if (previous.source !== 'cliproxy-hub' || !Array.isArray(previous.accounts) || typeof previous.generated_at !== 'string') throw new Error('invalid previous snapshot');
     value = staleSnapshot(previous);
   } catch {
     value = { generated_at: null, source: 'cliproxy-hub', stale: true, accounts: [], last_error: 'hub unavailable' };
