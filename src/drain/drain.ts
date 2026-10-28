@@ -1,4 +1,5 @@
 import type { ClickHouse } from "../lib/clickhouse";
+import { redactDeep, redactText } from "../lib/redact";
 import { mapUsageRecord } from "./record";
 import type { Spool } from "./spool";
 
@@ -18,15 +19,8 @@ export type DrainOptions = {
 
 export type DrainResult = { drained: number; inserted: number; spooled: number; rejected: number };
 
-// Identity fields never reach disk, even in the rejects file.
+// Identity fields never reach disk, even in the rejects file; everything else goes through the deep redactor.
 const SECRET_FIELDS = ["source", "api_key", "access_token_sha256", "response_headers", "client_ip", "resolved_client_ip", "x_forwarded_for"];
-
-function redact(item: unknown): unknown {
-  if (!item || typeof item !== "object" || Array.isArray(item)) return item;
-  const copy: Record<string, unknown> = { ...(item as Record<string, unknown>) };
-  for (const f of SECRET_FIELDS) if (f in copy) copy[f] = "[redacted]";
-  return copy;
-}
 
 async function fetchPage(opts: DrainOptions, count: number): Promise<unknown[]> {
   const url = `${opts.hubUrl.replace(/\/$/, "")}${USAGE_QUEUE_PATH}?count=${count}`;
@@ -68,7 +62,7 @@ export async function drainOnce(opts: DrainOptions): Promise<DrainResult> {
         rows.push(mapUsageRecord(item, { hub: opts.hub }));
       } catch (err) {
         result.rejected++;
-        opts.spool.reject({ reason: (err as Error).message, item: redact(item) });
+        opts.spool.reject({ reason: redactText((err as Error).message), item: redactDeep(item, { extraKeys: SECRET_FIELDS }) });
       }
     }
     if (rows.length) opts.spool.append(rows);
