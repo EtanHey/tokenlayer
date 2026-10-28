@@ -29,13 +29,13 @@ const SENSITIVE_KEYS = new Set([
   "key",
 ]);
 const KEY_NAME = "[a-z_][a-z0-9_-]*";
-const ASSIGNMENT = new RegExp(String.raw`(?<![\w-])(?:--(${KEY_NAME})(?:[ \t]+|=[ \t]*)|(${KEY_NAME})(?:\\*["'])?[ \t]*[=:][ \t]*)`, "gi");
+const ASSIGNMENT = new RegExp(String.raw`(?:\\+[nr]|(?<![\w-]))(?:--(${KEY_NAME})(?:[ \t]+|=[ \t]*)|(${KEY_NAME})(?:\\*["'])?[ \t]*[=:][ \t]*)`, "gi");
 
 const normalizeKey = (k: string) => k.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/-/g, "_");
 const sensitiveKey = (key: string) => SENSITIVE_KEYS.has(key) || /_(?:password|passwd|key|token|secret)$/.test(key);
 
 /** Consume an entire quoted value, including escaped quotes at any JSON-string nesting depth. */
-function valueEnd(text: string, start: number, header: boolean, wrapperAt: number): { start: number; end: number } {
+function valueEnd(text: string, start: number, wholeLine: boolean, wrapperAt: number): { start: number; end: number } {
   let quoteAt = start;
   while (text[quoteAt] === "\\") quoteAt++;
   const quote = text[quoteAt];
@@ -52,15 +52,15 @@ function valueEnd(text: string, start: number, header: boolean, wrapperAt: numbe
   }
   let end = start;
   const stop = /[\s"'&,;{}\]\\]/;
-  if (!header && text.startsWith(REDACTED, start) && (start + REDACTED.length === text.length || stop.test(text[start + REDACTED.length]))) {
+  if (!wholeLine && text.startsWith(REDACTED, start) && (start + REDACTED.length === text.length || stop.test(text[start + REDACTED.length]))) {
     return { start, end: start + REDACTED.length };
   }
   let wrapperStart = wrapperAt;
   while (text[wrapperStart - 1] === "\\") wrapperStart--;
   while (end < text.length) {
-    if (!header && stop.test(text[end])) break;
-    if (header && (/[\r\n]/.test(text[end]) || (text[end] === "\\" && /[nr]/.test(text[end + 1] ?? "")))) break;
-    if (header && /["']/.test(text[wrapperAt] ?? "") && text[end] === text[wrapperAt]) {
+    if (!wholeLine && stop.test(text[end])) break;
+    if (wholeLine && (/[\r\n]/.test(text[end]) || (text[end] === "\\" && /[nr]/.test(text[end + 1] ?? "")))) break;
+    if (wholeLine && /["']/.test(text[wrapperAt] ?? "") && text[end] === text[wrapperAt]) {
       let slashStart = end;
       while (text[slashStart - 1] === "\\") slashStart--;
       if (end - slashStart === wrapperAt - wrapperStart) { end = slashStart; break; }
@@ -75,10 +75,13 @@ function redactAssignments(text: string): string {
   let copied = 0;
   ASSIGNMENT.lastIndex = 0;
   for (let match = ASSIGNMENT.exec(text); match; match = ASSIGNMENT.exec(text)) {
-    const key = normalizeKey(match[1] ?? match[2]);
+    const rawKey = match[1] ?? match[2];
+    const key = normalizeKey(rawKey);
     if (!sensitiveKey(key)) continue;
     const header = /^(?:(?:proxy_)?authorization|(?:set_)?cookie|x_.*_key)$/.test(key) && match[0].includes(":");
-    const span = valueEnd(text, ASSIGNMENT.lastIndex, header, match.index - 1);
+    const lineStart = text.lastIndexOf("\n", match.index - 1) + 1;
+    const env = !!match[2] && match[0].includes("=") && (rawKey === rawKey.toUpperCase() || /^(?:export[ \t]+)?[ \t]*$/.test(text.slice(lineStart, match.index)));
+    const span = valueEnd(text, ASSIGNMENT.lastIndex, header || env, match.index - 1);
     if (span.end <= span.start) continue;
     parts.push(text.slice(copied, span.start), REDACTED);
     copied = span.end;

@@ -123,3 +123,20 @@ test("short opaque values in named fields, flags and authorization headers are r
     expect(redactText(input)).toContain(REDACTED);
   }
 });
+
+test("unquoted env-file values include punctuation and spaces", () => {
+  for (const value of ["fakePrefix&syntheticSecretTail", "fakePrefix;syntheticSecretTail", "fakePrefix,syntheticSecretTail", "fakePrefix syntheticSecretTail", "fakePrefix\\syntheticSecretTail"]) {
+    expect(redactText(`CLICKHOUSE_PASSWORD=${value}\nnext line`)).not.toContain("syntheticSecretTail");
+  }
+  expect(redactText("https://localhost/?token=fake&count=123")).toBe("https://localhost/?token=[redacted]&count=123");
+});
+
+test("escaped newlines cannot hide header names in nested tool output", () => {
+  for (const key of ["Cookie", "Authorization", "X-ClickHouse-Key"]) {
+    for (const encode of [(s: string) => s, JSON.stringify, (s: string) => JSON.stringify(JSON.stringify(s))]) {
+      const input = encode(`before\n${key}: syntheticSecretTail\nafter`);
+      expect(redactText(input)).not.toContain("syntheticSecretTail");
+      expect(redactText(input)).toContain("after");
+    }
+  }
+});
