@@ -1,0 +1,10 @@
+node_modules/
+dist/
+docs.local/
+.worktrees/
+*.env
+.env*
+!.env.example
+config/*.conf
+!config/cliproxyapi.conf.template
+fixtures-raw/

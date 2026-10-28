@@ -1,0 +1,33 @@
+# Rendered on the hub to $(brew --prefix)/etc/cliproxyapi.conf (mode 600). Values in ${...} come from
+# ~/.config/tokenlayer/hub.env (mode 600, outside any repo). Never commit a rendered copy.
+config-version: 8
+server:
+  host: "127.0.0.1"          # loopback only; tailscale serve is the front door
+  port: 8317
+  trusted-proxies: ["127.0.0.1", "::1"]
+management:
+  allow-remote: true
+  secret-key: "${CLIPROXY_MGMT_KEY}"
+access:
+  api-keys:
+    - "${CLIPROXY_ACCESS_KEY}"
+routing:
+  strategy: "fill-first"     # tokenlayer-steer sets per-credential priority (soonest reset = top tier)
+  session-affinity: true
+  session-affinity-ttl: "1h"
+  session-affinity-subagents: true
+  session-affinity-rebind-on: "quota"
+  retry:
+    request-retry: 3
+    max-retry-interval: 30
+upstream:
+  claude:
+    disable-claude-cloak-mode: true   # never disguise non-Claude-Code clients
+oauth:
+  auth-dir: "~/.cli-proxy-api"
+observability:
+  logs:
+    request-log: false       # would write full request bodies; JSONL shipper covers content
+  usage:
+    usage-statistics-enabled: true
+    redis-usage-queue-retention-seconds: 300
