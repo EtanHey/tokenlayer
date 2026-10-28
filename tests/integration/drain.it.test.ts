@@ -67,6 +67,13 @@ describe.skipIf(!clickhouseBinary())("drain → real local ClickHouse", () => {
     expect(ts.ts).toBe("2026-10-28 07:31:07.123");
   });
 
+  test("a rejected insert throws, so the spool keeps the batch", async () => {
+    const bad = [{ ts: "not-a-time", execution_id: "e-bad" }];
+    await expect(ch.client.insert("proxy_usage", bad)).rejects.toThrow(/clickhouse insert into proxy_usage failed/);
+    const [n] = await ch.client.queryJSON<{ n: string }>("SELECT count() AS n FROM tokenlayer.proxy_usage WHERE execution_id = 'e-bad'");
+    expect(Number(n.n)).toBe(0);
+  });
+
   test("every example query in docs/telemetry.md runs", async () => {
     const doc = await Bun.file(join(import.meta.dir, "..", "..", "docs", "telemetry.md")).text();
     const queries = [...doc.matchAll(/```sql\n([\s\S]*?)```/g)].map((m) => m[1]);

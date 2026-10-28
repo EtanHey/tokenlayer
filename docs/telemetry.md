@@ -18,9 +18,13 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
 - The usage queue is destructive on read and keeps items for `redis-usage-queue-retention-seconds` (300 on the hub),
   so the drain polls every 15 s and pages with `?count=1000` until a short page.
 - Every popped page is fsynced to `~/.local/state/tokenlayer/drain/spool.ndjson` before any insert. A batch leaves the
-  spool only after ClickHouse returns 200. Each batch carries a fixed `insert_deduplication_token`, and the table has
+  spool only after ClickHouse confirms the insert (below). Each batch carries a fixed `insert_deduplication_token`, and the table has
   `non_replicated_deduplication_window`, so a retry after an ambiguous failure inserts nothing twice.
 - Items that cannot be mapped go to `rejects.ndjson` with identity fields redacted. Nothing is dropped silently.
+- Every persisted value (rows, spool, rejects, logged ClickHouse errors) passes the shared deep redactor
+  (`src/lib/redact.ts`): API keys, bearer/OAuth tokens, JWTs, private keys, auth-file JSON and emails become `[redacted]`.
+- An insert counts as acknowledged only when ClickHouse confirms it: `wait_end_of_query=1`, no
+  `X-ClickHouse-Exception-Code` header and no exception in the body. HTTP 200 alone is not trusted.
 - Known gap: if the process dies between the HTTP pop and the spool fsync, that page is lost (milliseconds wide).
 - If a Redis-protocol subscriber is attached to the hub's usage channel, CLIProxyAPI publishes to it *instead of*
   queueing (`internal/redisqueue/queue.go` `Enqueue`). Nothing in this setup subscribes; keep it that way.

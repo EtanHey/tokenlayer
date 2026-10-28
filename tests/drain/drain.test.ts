@@ -162,6 +162,64 @@ describe("drainOnce", () => {
   });
 });
 
+describe("drainOnce secret hygiene", () => {
+  const KEY = "sk-ant-api03-FAKEfakeFAKEfake0123456789";
+  const EMAIL = "dave.fake@example.invalid";
+
+  test("rejected string records and nested failure text never reach disk unredacted", async () => {
+    const hub = fakeHub([
+      [
+        `{"source":"${EMAIL}","api_key":"${KEY}"`, // invalid queued JSON, emitted by CPA as a string
+        [KEY, { nested: EMAIL }],
+        { timestamp: "garbage", fail: { body: `bad key ${KEY} for ${EMAIL}` }, deep: { auth: { access_token: "opaque-secret-value" } } },
+      ],
+    ]);
+    const db = fakeClickHouse(0);
+    const result = await drainOnce({
+      hubUrl: `http://127.0.0.1:${hub.server.port}`,
+      mgmtKey: "k",
+      hub: "m1",
+      clickhouse: ch(db.server.port),
+      spool: new Spool(dir),
+      pageSize: 500,
+    });
+    hub.server.stop(true);
+    db.server.stop(true);
+    expect(result.rejected).toBe(3);
+    const rejects = readFileSync(join(dir, "rejects.ndjson"), "utf8");
+    expect(rejects.trim().split("\n")).toHaveLength(3);
+    for (const secret of [KEY, EMAIL, "opaque-secret-value"]) expect(rejects).not.toContain(secret);
+  });
+
+  test("an HTTP-200 insert exception keeps the batch in the spool", async () => {
+    const hub = fakeHub([fixture]);
+    const db = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        await req.text();
+        return new Response("Code: 209. DB::Exception: Timeout exceeded while writing to socket. (SOCKET_TIMEOUT)", {
+          headers: { "X-ClickHouse-Exception-Code": "209" },
+        });
+      },
+    });
+    const errors: unknown[] = [];
+    const result = await drainOnce({
+      hubUrl: `http://127.0.0.1:${hub.server.port}`,
+      mgmtKey: "k",
+      hub: "m1",
+      clickhouse: ch(db.port),
+      spool: new Spool(dir),
+      pageSize: 500,
+      onInsertError: (e) => errors.push(e),
+    });
+    hub.server.stop(true);
+    db.stop(true);
+    expect(result).toEqual({ drained: 2, inserted: 0, spooled: 2, rejected: 0 });
+    expect(new Spool(dir).pending()).toBe(1);
+    expect(errors).toHaveLength(1);
+  });
+});
+
 describe("Spool", () => {
   test("flush stops at the first failing batch and keeps it and everything after", async () => {
     const spool = new Spool(dir);

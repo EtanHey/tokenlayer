@@ -1,4 +1,5 @@
 import { labelHash } from "../lib/hash";
+import { redactDeep, redactText } from "../lib/redact";
 import { parseTimestampMs, toClickHouseTime } from "../lib/time";
 
 /**
@@ -120,7 +121,10 @@ function ratelimitHeaders(headers: UsageQueueRecord["response_headers"]): Record
   return out;
 }
 
-/** Map one queue item to a proxy_usage row. Throws on items that cannot be stored faithfully. */
+/**
+ * Map one queue item to a proxy_usage row. Throws on items that cannot be stored faithfully.
+ * Free text (failure body/code, user agent, …) passes the shared redactor: upstream auth errors echo keys and emails.
+ */
 export function mapUsageRecord(input: unknown, opts: { hub: string }): ProxyUsageRow {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("usage record is not a JSON object");
@@ -131,7 +135,7 @@ export function mapUsageRecord(input: unknown, opts: { hub: string }): ProxyUsag
   const t = r.tokens ?? {};
   const failed = r.failed === true;
 
-  return {
+  const row: ProxyUsageRow = {
     ts: toClickHouseTime(ms),
     execution_id: str(r.execution_id),
     request_id: str(r.request_id),
@@ -167,7 +171,7 @@ export function mapUsageRecord(input: unknown, opts: { hub: string }): ProxyUsag
     status_code: uint(r.fail?.status_code),
     failed,
     fail_code: str(r.fail?.code),
-    fail_body: failed ? str(r.fail?.body).slice(0, FAIL_BODY_MAX) : "",
+    fail_body: failed ? redactText(str(r.fail?.body)).slice(0, FAIL_BODY_MAX) : "",
     stream: r.stream === true,
     reasoning_effort: str(r.reasoning_effort),
     service_tier: str(r.service_tier),
@@ -176,4 +180,5 @@ export function mapUsageRecord(input: unknown, opts: { hub: string }): ProxyUsag
     user_agent: str(r.user_agent),
     ratelimit: ratelimitHeaders(r.response_headers),
   };
+  return redactDeep(row) as ProxyUsageRow;
 }

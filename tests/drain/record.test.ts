@@ -77,6 +77,25 @@ describe("mapUsageRecord", () => {
     expect(mapUsageRecord(huge, { hub: "m1" }).fail_body.length).toBe(2048);
   });
 
+  test("failure text, codes and user agent are redacted before persistence", () => {
+    const key = "sk-ant-api03-FAKEfakeFAKEfake0123456789";
+    const email = "carol.fake@example.invalid";
+    const leaky = {
+      ...rateLimited,
+      user_agent: `curl/8 (${email})`,
+      fail: {
+        status_code: 401,
+        code: `invalid_key:${key}`,
+        body: JSON.stringify({ error: { message: `invalid x-api-key ${key} for ${email}`, refresh_token: "1//0gFAKEfakeFAKE0123456789" } }),
+      },
+    };
+    const row = mapUsageRecord(leaky, { hub: "m1" });
+    const serialized = JSON.stringify(row);
+    for (const secret of [key, email, "1//0gFAKEfakeFAKE0123456789"]) expect(serialized).not.toContain(secret);
+    expect(row.status_code).toBe(401);
+    expect(row.fail_body).toContain("invalid x-api-key");
+  });
+
   test("missing optional fields fall back to defaults", () => {
     const row = mapUsageRecord({ timestamp: "2026-10-28T00:00:00Z", execution_id: "e1" }, { hub: "m1" });
     expect(row.credential).toBe("");
