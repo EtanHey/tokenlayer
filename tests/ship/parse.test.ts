@@ -159,6 +159,19 @@ describe("parseLine (codex)", () => {
 });
 
 describe("parseLine secret hygiene", () => {
+  test("a tool printing synthetic clickhouse.env cannot persist credentials in raw", () => {
+    const output = "CLICKHOUSE_PASSWORD=syntheticClickhousePassword\nCLIPROXY_MGMT_KEY=\"syntheticManagementKey\"\n";
+    const row = parseLine(JSON.stringify({
+      type: "user", sessionId: "synthetic-session", timestamp: "2026-10-28T08:00:00Z",
+      message: { role: "user", content: [{ type: "tool_result", content: `cat clickhouse.env\n${output}` }] },
+      toolUseResult: { stdout: output },
+    }), newFileState("claude", "t3", 0));
+    expect(row.raw).not.toContain("syntheticClickhousePassword");
+    expect(row.raw).not.toContain("syntheticManagementKey");
+    expect(JSON.parse(row.raw).message.content[0].type).toBe("tool_result");
+    expect(row.raw).toContain("clickhouse.env");
+  });
+
   const KEY = "sk-ant-api03-FAKEfakeFAKEfake0123456789";
   const EMAIL = "frank.fake@example.invalid";
   const OAUTH = "sk-ant-oat01-FAKEfakeFAKE0123456789";

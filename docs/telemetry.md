@@ -21,8 +21,15 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
   spool only after ClickHouse confirms the insert (below). Each batch carries a fixed `insert_deduplication_token`, and the table has
   `non_replicated_deduplication_window`, so a retry after an ambiguous failure inserts nothing twice.
 - Items that cannot be mapped go to `rejects.ndjson` with identity fields redacted. Nothing is dropped silently.
-- Every persisted value (rows, spool, rejects, logged ClickHouse errors) passes the shared deep redactor
-  (`src/lib/redact.ts`): API keys, bearer/OAuth tokens, JWTs, private keys, auth-file JSON and emails become `[redacted]`.
+- Every persisted value (rows, spool, rejects, logged ClickHouse errors) passes the shared redactor
+  (`src/lib/redact.ts`). It removes known API/OAuth key prefixes, JWTs, PEM private keys and emails;
+  bearer tokens of at least 8 characters (including letters-only tokens); URL userinfo with a password;
+  and values named by sensitive fields, regardless of the value's prefix. Field matching covers camelCase,
+  snake_case and hyphenated names, including env prefixes ending in `_PASSWORD`, `_KEY`, `_TOKEN` or `_SECRET`.
+  Text assignments accept single/double quotes and escaped JSON quotes; CLI flags accept `--password x`
+  and `--token=x`. Authorization, Cookie, Set-Cookie and X-*-Key header values are removed in full.
+  Structured numeric values and ordinary usage fields are preserved. This is shape-based sanitization,
+  not a guarantee for arbitrary unlabeled secrets, encoded payloads or unknown credential formats.
 - An insert counts as acknowledged only when ClickHouse confirms it: `wait_end_of_query=1`, no
   `X-ClickHouse-Exception-Code` header and no exception in the body. HTTP 200 alone is not trusted.
 - Known gap: if the process dies between the HTTP pop and the spool fsync, that page is lost (milliseconds wide).
