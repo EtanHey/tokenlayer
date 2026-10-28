@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "description": "CLIProxyAPI hub sidecars: soonest-reset-first steering, usage drain, and session telemetry into ClickHouse",
-  "scripts": { "test": "bun test", "typecheck": "tsc --noEmit" },
-  "devDependencies": { "typescript": "^5.6.0", "@types/bun": "latest" }
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "schema:apply": "bun src/lib/schema.ts",
+    "drain": "bun src/drain/main.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/bun": "latest"
+  }
 }

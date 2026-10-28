@@ -8,3 +8,4 @@ docs.local/
 config/*.conf
 !config/cliproxyapi.conf.template
 fixtures-raw/
+.local/
