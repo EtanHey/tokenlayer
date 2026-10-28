@@ -152,6 +152,19 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse: rewrites, 
     expect((await finalRows("it-rotate")).map((x) => x.content).sort()).toEqual(["new", "old"]);
   });
 
+  test("a re-created file with the same first line keeps the old file's rows as their own generation", async () => {
+    const { file, o } = setup("it-recreate");
+    const first = line("same");
+    writeFileSync(file, `${first}\n${line("old tail")}\n`);
+    await shipOnce(o);
+    renameSync(file, `${file}.bak`);
+    writeFileSync(file, `${first}\n`);
+    await shipOnce(o);
+    const rows = await finalRows("it-recreate");
+    expect(rows.map((x) => x.content).sort()).toEqual(["old tail", "same", "same"]);
+    expect(new Set(rows.map((x) => x.generation)).size).toBe(2);
+  });
+
   test("the documented activity query counts a replay with shifted chunk boundaries once", async () => {
     const { file, o } = setup("it-activity");
     const assistant = (i: number) =>

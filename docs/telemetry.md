@@ -35,17 +35,25 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
 - `harness`: Claude files whose lines carry `entrypoint: "sdk-ts"` → `t3` (T3 drives Claude Code via the Agent SDK),
   otherwise `claude`. Codex files whose `session_meta.payload.originator` is `"T3 Code"` → `t3`, otherwise `codex`.
   A file whose head has no deciding line yet ships with the default and is reshipped once it is decided.
-- A line is `(machine, path, generation, byte_offset)`. `generation` is the file's content identity,
-  `sha256(first line)[:16]`: a file rotated, replaced or rewritten at the same path with a different first line is a
-  new generation, and the earlier generation's rows stay as archived history. Re-reading the same file (lost
-  checkpoint, retry, late harness decision) maps to the same generation, so its rows replace rather than duplicate.
-  A rewrite that keeps the first line stays in the same generation: rows at the same offsets are replaced, and rows
-  past the new end stay.
-- Checkpoints live in `~/.config/tokenlayer/ship-state.json` (inode, mtime, offset, a sha256 of the first and last
-  4 KiB of the shipped range, generation, parser carry-forward). Only `\n`-terminated lines ship; a partial last line
-  waits. A file with unchanged size, inode and mtime is skipped without reading. Any other change is checked against the
-  fingerprint first, so an equal-size in-place rewrite is caught too. A new inode, a shorter file, or a changed
-  fingerprint restarts the file from 0.
+- A line is `(machine, path, generation, byte_offset)`. `generation` is the file's identity on disk,
+  `sha256(dev:ino:birthtimeNs, rewrites)[:16]`: a file rotated or re-created at the same path is a new generation even
+  when its first line is the same, and so is each rewrite (truncation or in-place edit) detected in the same file.
+  The earlier generation's rows stay as archived history and are never overwritten. Re-reading the same file (retry,
+  late harness decision, lost checkpoint of a never-rewritten file) maps to the same generation, so its rows replace
+  rather than duplicate. Known limit: a lost checkpoint forgets the rewrite count, so rereading a rewritten file
+  replaces the rows of its first generation.
+- Checkpoints live in `~/.config/tokenlayer/ship-state.json` (v3: identity, mtime, offset, a hash per 1 MiB block of
+  the shipped range, rewrite count, generation, parser carry-forward). Only `\n`-terminated lines ship; a partial last
+  line waits. A file with unchanged size, identity and mtime (and no sweep in progress) is skipped without reading.
+- Rewrite detection: any change re-checks the first and last block at once and starts a sweep that re-verifies 4 MiB
+  of blocks per file per pass, cycling, until one full sweep has passed since the last change (even if the file has
+  gone idle). An edit anywhere before the offset is therefore caught within `ceil(shipped / 4 MiB)` passes, while a
+  pass never reads more than 6 MiB of an active file to check it. Verified bytes count against `--rate-mb`. A
+  full rehash on every change was rejected: a 100 MB session appended every 10 s would need 10 MB/s of reads, twice the
+  budget, for one file. A new identity, a shorter file, or a block mismatch restarts the file from 0.
+- v1 and v2 state files are upgraded in place: a checkpoint whose file still matches (same inode, old fingerprint)
+  resumes at its offset with its old generation (`""` for v1, matching the migrated #1-era rows); any other restarts
+  that file. An unrecognised state file stops the daemon with the exact command to move it aside.
 - Each chunk is inserted with an `insert_deduplication_token` derived from its range and its row content, and the
   checkpoint advances only after ClickHouse confirms the insert. An identical retry is a server-side no-op; changed rows
   for the same range are a new insert.

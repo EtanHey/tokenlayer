@@ -1,8 +1,8 @@
 -- One row per JSONL line of a Claude Code / Codex / T3 session, shipped by tokenlayer-ship on each Mac.
 -- Idempotent: a line is identified by (machine, path, generation, byte_offset), the whole sort key.
--- generation is the file's content identity (hash of its first line): a file rotated, replaced or rewritten at the
--- same path with a different first line is a new generation, so archived history is never overwritten, while a
--- re-read of the same file (lost checkpoint, retry) maps to the same rows. harness stays out of the key:
+-- generation is the file's identity (dev, inode, birthtime) plus its rewrite count: a file rotated, re-created or
+-- rewritten at the same path is a new generation, so archived history is never overwritten, while a re-read of the
+-- same file (retry, late harness decision) maps to the same rows. harness stays out of the key:
 -- a Claude file's harness can be decided only after its first lines, and a reshipped row must replace, not duplicate.
 -- Reads that count rows need FINAL (or a GROUP BY on the key): a replay with new chunk boundaries inserts
 -- duplicates that only a background merge collapses. raw is the line after the shared secret redactor.

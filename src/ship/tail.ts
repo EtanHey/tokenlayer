@@ -1,7 +1,8 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 
 export type Line = { offset: number; bytes: number; text: string };
-export type ReadResult = { lines: Line[]; nextOffset: number };
+/** `raw` is the exact bytes of [offset, nextOffset) the lines were cut from. */
+export type ReadResult = { lines: Line[]; nextOffset: number; raw: Buffer };
 
 const NL = 0x0a;
 
@@ -14,7 +15,7 @@ export function readCompleteLines(path: string, offset: number, budget: number):
   const fd = openSync(path, "r");
   try {
     const size = fstatSync(fd).size;
-    if (offset >= size) return { lines: [], nextOffset: offset };
+    if (offset >= size) return { lines: [], nextOffset: offset, raw: Buffer.alloc(0) };
     let want = Math.max(1, Math.min(budget, size - offset));
     let buf: Buffer;
     let end: number;
@@ -26,7 +27,7 @@ export function readCompleteLines(path: string, offset: number, budget: number):
       if (end >= 0 || offset + n >= size) break;
       want = Math.min(want * 2, size - offset);
     }
-    if (end < 0) return { lines: [], nextOffset: offset };
+    if (end < 0) return { lines: [], nextOffset: offset, raw: Buffer.alloc(0) };
     const lines: Line[] = [];
     let start = 0;
     while (start <= end) {
@@ -34,7 +35,7 @@ export function readCompleteLines(path: string, offset: number, budget: number):
       if (nl > start) lines.push({ offset: offset + start, bytes: nl - start + 1, text: buf.toString("utf8", start, nl) });
       start = nl + 1;
     }
-    return { lines, nextOffset: offset + end + 1 };
+    return { lines, nextOffset: offset + end + 1, raw: buf.subarray(0, end + 1) };
   } finally {
     closeSync(fd);
   }

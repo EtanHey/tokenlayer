@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClickHouse } from "../../src/lib/clickhouse";
+import { newFileState } from "../../src/ship/parse";
 import { shipOnce, type ShipOptions } from "../../src/ship/ship";
 
 type Row = Record<string, unknown>;
@@ -11,12 +13,17 @@ function fakeClickHouse() {
   const rows: Row[] = [];
   const tokens: string[] = [];
   let fail = false;
+  let delayFirstMs = 0;
   const server = Bun.serve({
     port: 0,
     async fetch(req) {
       const url = new URL(req.url);
       const body = await req.text();
       if (fail) return new Response("down", { status: 503 });
+      if (delayFirstMs) {
+        await Bun.sleep(delayFirstMs);
+        delayFirstMs = 0;
+      }
       tokens.push(url.searchParams.get("insert_deduplication_token") ?? "");
       for (const l of body.split("\n")) if (l) rows.push(JSON.parse(l));
       return new Response("");
@@ -27,6 +34,7 @@ function fakeClickHouse() {
     rows,
     tokens,
     setFail: (v: boolean) => (fail = v),
+    delayFirst: (ms: number) => (delayFirstMs = ms),
     client: new ClickHouse({ url: `http://127.0.0.1:${server.port}`, user: "u", password: "p", database: "tokenlayer" }),
   };
 }
@@ -235,5 +243,139 @@ describe("shipOnce", () => {
       expect(all).not.toContain(secret);
     }
     expect(db.rows[0]).toMatchObject({ session_id: "s-1", project: "golems", type: "user" });
+  });
+
+  test("a re-created file with the same first line is a new generation; the old generation's rows stay", async () => {
+    writeFileSync(claudeFile(), `${claudeLine(1)}\n${claudeLine(2)}\n`);
+    await shipOnce(opts);
+    const gen = db.rows[0].generation;
+    renameSync(claudeFile(), `${claudeFile()}.bak`);
+    writeFileSync(claudeFile(), `${claudeLine(1)}\n`);
+    const r = await shipOnce(opts);
+    expect(r).toMatchObject({ lines: 1, resets: 1 });
+    expect(db.rows[2]).toMatchObject({ byte_offset: 0 });
+    expect(db.rows[2].generation).not.toBe(gen);
+  });
+
+  const padded = (i: number, tag = "l") =>
+    JSON.stringify({ type: "user", sessionId: "s-1", entrypoint: "cli", message: { role: "user", content: `${tag}${String(i).padStart(4, "0")}` } });
+
+  test("an equal-size edit in the middle of a large file is caught and reshipped as a new generation", async () => {
+    const lines = Array.from({ length: 200 }, (_, i) => padded(i));
+    writeFileSync(claudeFile(), `${lines.join("\n")}\n`);
+    await shipOnce(opts);
+    const gen = db.rows[0].generation;
+    lines[100] = padded(100, "x");
+    writeFileSync(claudeFile(), `${lines.join("\n")}\n`);
+    const r = await shipOnce(opts);
+    expect(r).toMatchObject({ lines: 200, resets: 1 });
+    const edited = db.rows.slice(200).find((row) => String(row.raw).includes("x0100"));
+    expect(edited).toBeDefined();
+    expect(edited!.generation).not.toBe(gen);
+  });
+
+  test("the rewrite sweep reads a bounded amount per pass and still finishes after the file goes idle", async () => {
+    const lines = Array.from({ length: 200 }, (_, i) => padded(i));
+    const o = { ...opts, verifyBlockBytes: 1024, verifyBytesPerPass: 2048 };
+    writeFileSync(claudeFile(), `${lines.join("\n")}\n`);
+    await shipOnce(o);
+    lines[100] = padded(100, "x");
+    writeFileSync(claudeFile(), `${lines.join("\n")}\n`);
+    const passes: number[] = [];
+    for (let i = 0; i < 30 && !passes.some((n) => n > 0); i++) passes.push((await shipOnce(o)).resets);
+    // ~18 KiB of 1 KiB blocks, 2 blocks per pass plus head and tail: not on the first pass, but within one sweep.
+    expect(passes[0]).toBe(0);
+    expect(passes.length).toBeLessThanOrEqual(10);
+    expect(passes.at(-1)).toBe(1);
+  });
+
+  test("the final checkpoint keeps every acknowledged chunk, even right after a periodic save", async () => {
+    writeFileSync(claudeFile(), `${claudeLine(1)}\n${claudeLine(2)}\n`);
+    db.delayFirst(80);
+    await shipOnce({ ...opts, batchBytes: 1, saveEveryMs: 30 });
+    expect(db.rows).toHaveLength(2);
+    const again = await shipOnce(opts);
+    expect(again.lines).toBe(0);
+    expect(db.rows).toHaveLength(2);
+  });
+
+  describe("state upgrade", () => {
+    const legacyFingerprint = (buf: Buffer, end: number) => {
+      const len = Math.min(4096, end);
+      return createHash("sha256")
+        .update(`${end}\0${buf.subarray(0, len).toString("latin1")}\0${buf.subarray(end - len, end).toString("latin1")}`)
+        .digest("hex");
+    };
+    const writeState = (s: unknown) => {
+      mkdirSync(join(root, "state"), { recursive: true });
+      writeFileSync(opts.statePath, JSON.stringify(s));
+    };
+
+    test("a v2 checkpoint that still matches its file resumes in place and keeps its generation", async () => {
+      writeFileSync(claudeFile(), `${claudeLine(1)}\n${claudeLine(2)}\n`);
+      const end = claudeLine(1).length + 1;
+      const st = statSync(claudeFile());
+      writeState({
+        version: 2,
+        files: {
+          [claudeFile()]: {
+            inode: st.ino,
+            mtimeMs: st.mtimeMs,
+            offset: end,
+            fingerprint: legacyFingerprint(readFileSync(claudeFile()), end),
+            generation: "00000000000000aa",
+            harnessDecided: true,
+            parser: newFileState("claude", "claude", 0),
+          },
+        },
+      });
+      const r = await shipOnce(opts);
+      expect(r).toMatchObject({ lines: 1, resets: 0 });
+      expect(db.rows[0]).toMatchObject({ byte_offset: end, generation: "00000000000000aa" });
+      expect(JSON.parse(readFileSync(opts.statePath, "utf8")).version).toBe(3);
+      expect((await shipOnce(opts)).lines).toBe(0);
+    });
+
+    test("a v1 checkpoint resumes with the empty generation the migrated #1-era rows carry", async () => {
+      writeFileSync(claudeFile(), `${claudeLine(1)}\n${claudeLine(2)}\n`);
+      const end = claudeLine(1).length + 1;
+      const head = readFileSync(claudeFile()).subarray(0, end).toString("latin1");
+      writeState({
+        version: 1,
+        files: {
+          [claudeFile()]: {
+            inode: statSync(claudeFile()).ino,
+            offset: end,
+            headLen: end,
+            headHash: createHash("sha256").update(head).digest("hex"),
+            harnessDecided: true,
+            parser: newFileState("claude", "claude", 0),
+          },
+        },
+      });
+      await shipOnce(opts);
+      expect(db.rows.map((row) => [row.byte_offset, row.generation])).toEqual([[end, ""]]);
+    });
+
+    test("an old checkpoint whose file changed since restarts that file as a new generation", async () => {
+      writeFileSync(claudeFile(), `${claudeLine(1)}\n${claudeLine(2)}\n`);
+      writeState({
+        version: 2,
+        files: {
+          [claudeFile()]: {
+            inode: statSync(claudeFile()).ino,
+            mtimeMs: 0,
+            offset: claudeLine(1).length + 1,
+            fingerprint: "stale",
+            generation: "00000000000000aa",
+            harnessDecided: true,
+            parser: newFileState("claude", "claude", 0),
+          },
+        },
+      });
+      await shipOnce(opts);
+      expect(db.rows.map((row) => row.byte_offset)).toEqual([0, claudeLine(1).length + 1]);
+      expect(db.rows[0].generation).not.toBe("00000000000000aa");
+    });
   });
 });

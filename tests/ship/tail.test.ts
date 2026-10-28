@@ -17,6 +17,7 @@ test("returns complete lines with exact byte offsets and leaves a partial last l
     [11, '{"b":2}'],
   ]);
   expect(r.nextOffset).toBe(19);
+  expect(r.raw.toString("utf8")).toBe('{"a":"é"}\n{"b":2}\n');
 });
 
 test("resumes from an offset and respects the byte budget on line boundaries", () => {
