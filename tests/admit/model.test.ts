@@ -9,12 +9,12 @@ test('implementation finite-state enumeration', () => {
     const elapsed = paced ? 1 : 300;
     const actualPaced = used * 300 / elapsed > 80;
     const input = { generated_at:new Date(now).toISOString(), stale:!healthy, accounts:[{
-      disabled:false, status:'allowed', weekly:{used_pct:0},
+      label:'synthetic', disabled:false, status:'allowed', weekly:{used_pct:0},
       five_hour:{used_pct:used, resets_at:new Date(now+(300-elapsed)*60000).toISOString()},
     }] };
     let result;
     try { result = evaluate(input,{kind,activeLeads:active,essential,now}); } catch {result=deny('unhealthy');}
-    const expected = healthy && (kind !== 'lead' ? used<60 && !actualPaced : used>=80 ? essential && active<3 : used>=60 ? active<5 : active<10);
+    const expected = healthy && used < 100 && (kind !== 'lead' ? used<60 && !actualPaced : used>=80 ? essential && active<3 : used>=60 ? active<5 : active<10);
     expect(result.admit).toBe(expected);
   }
 });

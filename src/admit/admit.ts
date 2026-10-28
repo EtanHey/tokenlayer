@@ -31,22 +31,25 @@ export function evaluate(input: unknown, options: Options) {
     if (typeof a.disabled !== 'boolean' || (a.enabled !== undefined && typeof a.enabled !== 'boolean')) throw Error('invalid serving flags');
     return !a.disabled && a.enabled !== false;
   }).map(a => {
+    if (typeof a.label !== 'string') throw Error('invalid account label');
+    if (a.status === 'unknown' || a.status === 'rejected') return null;
     const five = record(a.five_hour), weekly = record(a.weekly);
+    if ([five.status, weekly.status].some(status => status === 'unknown' || status === 'rejected')) return null;
     if (a.status !== 'allowed' || (five.status !== undefined && five.status !== 'allowed') || (weekly.status !== undefined && weekly.status !== 'allowed')) throw Error('unhealthy serving account');
     const used = percent(five.used_pct);
-    if (percent(weekly.used_pct) >= 100) throw Error('weekly exhausted');
+    if (percent(weekly.used_pct) >= 100 || used >= 100) return null;
     const remaining = (timestamp(five.resets_at) - options.now) / 60000;
     if (remaining < 0 || remaining >= 300) throw Error('invalid reset window');
     const elapsed_min = 300 - remaining, score = used * 300 / elapsed_min;
     const warn = score > 80;
     const level: Level = used >= 80 ? 'brake80' : used >= 60 || (warn && options.kind !== 'lead') ? 'brake60' : 'green';
-    return { level, pacing: { used, elapsed_min, score, warn } };
-  });
-  if (!accounts.length) return deny('no serving accounts');
+    return { label: a.label, level, pacing: { used, elapsed_min, score, warn } };
+  }).filter(a => a !== null);
+  if (!accounts.length) return deny('no accounts with headroom');
   const rank = { green:0, brake60:1, brake80:2, 'no-headroom':3 };
   accounts.sort((a,b) => rank[b.level]-rank[a.level] || b.pacing.score-a.pacing.score);
   const worst = accounts[0];
-  if (!worst) return deny('no serving accounts');
+  if (!worst) return deny('no accounts with headroom');
   const admit = predicate(worst.level, options);
   return { admit, reason: admit ? 'within fleet limits' : 'fleet brake or lead cap', level:worst.level, pacing:worst.pacing, accounts };
 }

@@ -19,7 +19,7 @@ const cases = [
   { name: '180 seconds', data: { ...snapshot(), generated_at:'2026-10-29T11:57:00Z' }, args: [], admit:true, level:'green' },
   { name: 'future', data: { ...snapshot(), generated_at:'2026-10-29T12:01:00Z' }, args: [], admit:false, level:'no-headroom' },
   { name: 'weekly rejected', data: snapshot([{ ...account(0), weekly: { used_pct:0, status:'rejected' } }]), args: [], admit:false, level:'no-headroom' },
-  { name: 'mixed rejected', data: snapshot([account(), { ...account(), status:'rejected' }]), args: [], admit:false, level:'no-headroom' },
+  { name: 'mixed rejected', data: snapshot([account(), { ...account(), status:'rejected' }]), args: [], admit:true, level:'green' },
   { name: 'unknown', data: snapshot([{ ...account(), status:'unknown' }]), args: [], admit:false, level:'no-headroom' },
   { name: 'weekly exhausted', data: snapshot([{ ...account(), weekly:{ used_pct:100 } }]), args: [], admit:false, level:'no-headroom' },
   { name: 'no accounts', data: snapshot([]), args: [], admit:false, level:'no-headroom' },
@@ -28,6 +28,13 @@ const cases = [
   { name: 'pacing edge', data: snapshot([account(40,150)]), args: [], admit:true, level:'green' },
   { name: 'pacing warning', data: snapshot([account(40,149)]), args: [], admit:false, level:'brake60' },
   { name: 'pacing lead', data: snapshot([account(40,149)]), args: ['--kind','lead','--active-leads','0'], admit:true, level:'green' },
+  { name: 'healthy and weekly rejected lead', data: snapshot([account(15), { ...account(), weekly: { used_pct:99, status:'rejected' } }]), args: ['--kind','lead','--active-leads','0'], admit:true, level:'green' },
+  { name: 'both rejected', data: snapshot([{ ...account(), status:'rejected' }, { ...account(), weekly:{used_pct:99,status:'rejected'} }]), args: [], admit:false, level:'no-headroom' },
+  ...[4,5].map(n => ({ name: `mixed 61 lead ${n}`, data: snapshot([account(61), {...account(),status:'rejected'}]), args:['--kind','lead','--active-leads',String(n)], admit:n<5, level:'brake60' })),
+  { name: 'mixed 61 worker', data: snapshot([account(61), {...account(),status:'rejected'}]), args:[], admit:false, level:'brake60' },
+  { name: 'unknown and healthy', data: snapshot([{...account(),status:'unknown'},account(15)]), args:[], admit:true, level:'green' },
+  { name: 'five hour rejected and healthy', data: snapshot([{...account(),five_hour:{...account().five_hour,status:'rejected'}},account(15)]), args:[], admit:true, level:'green' },
+  { name: 'malformed and healthy', data: snapshot([account(),{...account(),five_hour:{used_pct:'bad'}}]), args:[], admit:false, level:'no-headroom' },
 ];
 for (const c of cases) test(c.name, () => {
   const dir = mkdtempSync(join(tmpdir(),'admit-'));
@@ -39,6 +46,7 @@ for (const c of cases) test(c.name, () => {
     expect(result).toMatchObject({ admit:c.admit, level:c.level });
     expect(typeof result.reason).toBe('string'); expect(Array.isArray(result.accounts)).toBe(true);
     expect(result.pacing).toHaveProperty('warn');
+    for (const assessment of result.accounts) expect(assessment.label).toBe('synthetic');
     if(c.name === 'pacing edge') expect(result.pacing).toEqual({used:40,elapsed_min:150,score:80,warn:false});
     if(c.name === 'pacing warning') expect(result.pacing.warn).toBe(true);
     expect(p.stderr.toString()).toBe('');
