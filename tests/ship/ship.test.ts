@@ -73,7 +73,8 @@ describe("shipOnce", () => {
     writeFileSync(claudeFile(), Buffer.concat(sources));
     await shipOnce(opts);
     expect(db.rows.map((r) => r.content_hash)).toEqual(sources.map((b) => createHash("sha256").update(b).digest("hex")));
-    for (const i of [0, 2]) expect(db.rows[i].raw).toBe(db.rows[i + 1].raw);
+    expect(db.rows[0].raw).toBe(sources[0].toString());
+    expect(db.rows[1].raw).toBe(sources[1].toString());
   });
 
   test("ships complete lines from both roots with machine, harness, path and byte offset", async () => {
@@ -226,7 +227,7 @@ describe("shipOnce", () => {
     expect(db.rows[2].generation).not.toBe(gen);
   });
 
-  test("raw and parsed columns never carry credentials or emails", async () => {
+  test("raw and parsed columns retain source text", async () => {
     const key = "sk-ant-api03-FAKEfakeFAKEfake0123456789";
     const email = "erin.fake@example.invalid";
     const authFile = JSON.stringify({ type: "claude", email, access_token: "sk-ant-oat01-FAKEfakeFAKE0123456789", refresh_token: "opaque-refresh-fake" });
@@ -243,7 +244,7 @@ describe("shipOnce", () => {
     expect(db.rows).toHaveLength(2);
     const all = JSON.stringify(db.rows);
     for (const secret of [key, email, "sk-ant-oat01-FAKEfakeFAKE0123456789", "opaque-refresh-fake", "fakeBearer0123456789abcdef"]) {
-      expect(all).not.toContain(secret);
+      expect(all).toContain(secret);
     }
     expect(db.rows[0]).toMatchObject({ session_id: "s-1", project: "golems", type: "user" });
   });
@@ -306,4 +307,16 @@ test("a failed file does not block another file in the pass", async () => {
   };
   await expect(shipOnce(opts)).rejects.toThrow();
   expect(db.rows).toHaveLength(1);
+});
+
+test('reset logs redact a synthetic secret in the source path', async () => {
+  const secret = 'sk-ant-api03-SYNTHETICfake01234567890123456789';
+  const file = join(root, 'claude', `${secret}.jsonl`);
+  const logs: string[] = [];
+  writeFileSync(file, `${claudeLine(1)}\n`);
+  await shipOnce({ ...opts, log: m => logs.push(m) });
+  writeFileSync(file, `${claudeLine(2)}\n`);
+  await shipOnce({ ...opts, log: m => logs.push(m) });
+  expect(logs).toHaveLength(1);
+  expect(logs[0]).not.toContain(secret);
 });

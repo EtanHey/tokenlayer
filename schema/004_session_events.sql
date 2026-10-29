@@ -1,10 +1,10 @@
 -- One row per JSONL line of a Claude Code / Codex / T3 session, shipped by tokenlayer-ship on each Mac.
 -- Idempotent: (machine, path, generation, byte_offset, content_hash) is the whole replacement key.
--- SHA-256 of the exact source line (including LF), before decoding/redaction, prevents content replacement.
+-- SHA-256 of the exact source line (including LF), before decoding, prevents content replacement.
 -- generation derives from device, inode and birthtime, extended by revision hashes on rewrites.
 -- harness stays out of the key so a late harness decision replaces rows.
 -- Reads that count rows need FINAL (or a GROUP BY on the key): a replay with new chunk boundaries inserts
--- duplicates that only a background merge collapses. raw is the line after the shared secret redactor.
+-- duplicates that only a background merge collapses. raw retains the source line including its terminator.
 CREATE TABLE IF NOT EXISTS tokenlayer.session_events
 (
     machine               LowCardinality(String),

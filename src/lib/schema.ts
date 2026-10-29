@@ -5,7 +5,7 @@ import type { ClickHouse } from "./clickhouse";
 
 export const SCHEMA_DIR = join(import.meta.dir, "..", "..", "schema");
 
-/** Apply schema/*.sql in name order. Every file is one idempotent statement (CREATE ... IF NOT EXISTS). */
+/** Apply schema/*.sql in name order. Files contain idempotent statements (CREATE ... IF NOT EXISTS). */
 export async function applySchema(ch: ClickHouse, dir = SCHEMA_DIR): Promise<string[]> {
   const files = readdirSync(dir)
     .filter((f) => f.endsWith(".sql"))
@@ -17,7 +17,7 @@ export async function applySchema(ch: ClickHouse, dir = SCHEMA_DIR): Promise<str
       .join("\n")
       .trim()
       .replace(/;\s*$/, "");
-    await ch.exec(sql);
+    for (const statement of sql.split(";").map((s) => s.trim()).filter(Boolean)) await ch.exec(statement);
   }
   await migrateSessionSchema(ch);
   return files;

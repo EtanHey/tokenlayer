@@ -1,7 +1,8 @@
+import { redactText } from "../lib/redact";
 import { createHash } from "node:crypto";
 import { closeSync, openSync, readdirSync, readSync, statSync, type Stats } from "node:fs";
 import { join } from "node:path";
-import type { ClickHouse } from "../lib/clickhouse";
+import { RAW_BYTES, type ClickHouse } from "../lib/clickhouse";
 import { sha256Hex } from "../lib/hash";
 import { detectHarness, newFileState, parseLine, type Harness, type SourceKind } from "./parse";
 import { loadState, saveState, type FileCheckpoint, type ShipState } from "./state";
@@ -147,7 +148,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           const sameFile = cp && identity(st) === cp.identity && st.size >= cp.offset;
           if (sameFile) hash = prefixHash(path, cp.offset);
           if (cp && (!sameFile || (cp.offset > 0 && hash.copy().digest("hex") !== cp.fingerprint))) {
-            opts.log?.(`reset ${path}: rotated or truncated`);
+            opts.log?.(redactText(`reset ${path}: rotated or truncated`));
             const revision = identity(st) === cp.identity
               ? sha256Hex(`${cp.generation}:${prefixHash(path, st.size).digest("hex")}`).slice(0, 16)
               : identity(st);
@@ -195,7 +196,8 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
               byte_offset: l.offset,
               content_hash: createHash("sha256").update(raw.subarray(l.offset - cp!.offset, l.offset - cp!.offset + l.bytes)).digest("hex"),
               line_bytes: l.bytes,
-              ...parseLine(l.text, parser),
+              [RAW_BYTES]: raw.subarray(l.offset - cp!.offset, l.offset - cp!.offset + l.bytes),
+              ...parseLine(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes), parser),
             }));
             // Deterministic token over the rows themselves: an identical retry is deduplicated server-side,
             // while changed rows for the same range (rewrite, late harness decision) are a new insert.
@@ -233,7 +235,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             if (identity(after) !== identity(st) || after.mtimeMs !== st.mtimeMs || after.ctimeMs !== st.ctimeMs) break;
           }
           if (shippedFromFile) result.files++;
-        } catch (err) { failures.push(err); }
+        } catch (err) { failures.push(new Error(redactText(err instanceof Error ? err.message : String(err)))); }
       }
     }
   } finally {

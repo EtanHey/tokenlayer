@@ -1,3 +1,4 @@
+import { redactDeep } from "../lib/redact";
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { sha256Hex } from "../lib/hash";
@@ -76,7 +77,7 @@ export class Spool {
   reject(entry: Record<string, unknown>): void {
     const fd = openSync(this.rejectsFile, "a", 0o600);
     try {
-      writeSync(fd, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
+      writeSync(fd, `${JSON.stringify({ at: new Date().toISOString(), ...(redactDeep(entry) as Record<string, unknown>) })}\n`);
       fsyncSync(fd);
     } finally { closeSync(fd); }
   }

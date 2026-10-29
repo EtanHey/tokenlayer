@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { redactText } from "../lib/redact";
 // tokenlayer-drain: poll the CLIProxyAPI usage queue every 15s and insert into ClickHouse proxy_usage.
 // Usage: bun src/drain/main.ts [--once]
 // Env (or files listed in TOKENLAYER_ENV_FILES, default ~/.config/tokenlayer/{hub,clickhouse}.env):
@@ -26,7 +27,7 @@ const opts = {
   hub: env.TOKENLAYER_HUB ?? "m1",
   clickhouse: ClickHouse.fromEnv(env),
   spool: new Spool(expandHome(env.TOKENLAYER_STATE_DIR ?? join("~/.local/state/tokenlayer", "drain"))),
-  onInsertError: (err: unknown) => console.error(`tokenlayer-drain: insert failed, spooled: ${(err as Error).message}`),
+  onInsertError: (err: unknown) => console.error(`tokenlayer-drain: insert failed, spooled: ${redactText((err as Error).message)}`),
 };
 const intervalMs = Number(env.TOKENLAYER_DRAIN_INTERVAL_MS ?? 15_000);
 const once = process.argv.includes("--once");
@@ -42,7 +43,7 @@ do {
       console.log(`${new Date().toISOString()} drained=${r.drained} inserted=${r.inserted} spooled=${r.spooled} rejected=${r.rejected}`);
     }
   } catch (err) {
-    console.error(`${new Date().toISOString()} tokenlayer-drain: ${(err as Error).message}`);
+    console.error(`${new Date().toISOString()} tokenlayer-drain: ${redactText((err as Error).message)}`);
   }
   if (once) break;
   const wait = Math.max(0, intervalMs - (Date.now() - started));

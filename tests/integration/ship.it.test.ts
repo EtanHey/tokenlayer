@@ -82,6 +82,23 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse", () => {
     );
     expect(parts.map((p) => p.partition)).toEqual(["202609", "202610"]);
   });
+  test("raw readback is byte-identical and agent views omit payload columns", async () => {
+    const line = ' { "type":"user", "message":{"content":"sk-ant-api03-SYNTHETIC01234567890123456789"} }\r\n';
+    writeFileSync(join(dir, "claude", "exact.jsonl"), line);
+    await shipOnce(opts);
+    const [row] = await ch.client.queryJSON<{ raw: string }>("SELECT raw FROM tokenlayer.session_events FINAL WHERE endsWith(path, '/exact.jsonl')");
+    expect(Buffer.from(row.raw)).toEqual(Buffer.from(line));
+    const binary = Buffer.from([0xff, 0xfe, 0x0a]);
+    writeFileSync(join(dir, "claude", "binary.jsonl"), binary);
+    await shipOnce(opts);
+    const [stored] = await ch.client.queryJSON<{ bytes: string }>("SELECT hex(raw) AS bytes FROM tokenlayer.session_events FINAL WHERE endsWith(path, '/binary.jsonl')");
+    expect(stored.bytes).toBe(binary.toString('hex').toUpperCase());
+    for (const view of ['v_session_events_meta', 'v_requests']) {
+      const cols = await ch.client.queryJSON<{ name: string }>(`DESCRIBE TABLE tokenlayer.${view}`);
+      for (const payload of ['raw', 'fail_body', 'fail_code', 'user_agent', 'ratelimit']) expect(cols.map(c => c.name)).not.toContain(payload);
+    }
+  });
+
 });
 
 describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse: rewrites, rotation, replays", () => {

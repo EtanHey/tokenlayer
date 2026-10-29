@@ -9,7 +9,7 @@ Apply the schema with `bun run schema:apply` (reads `CLICKHOUSE_*` from the envi
 | `credentials_snap` | `tokenlayer-steer` (P3) | `(credential, ts)` | MergeTree, monthly partitions |
 | `session_events` | `tokenlayer-ship` on each Mac | `(machine, path, generation, byte_offset, content_hash)` | ReplacingMergeTree, monthly partitions |
 
-Identity values never land in ClickHouse in the clear: `credential` = `labelHash(auth_index)`,
+Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
 `account_hash` = `labelHash(source)` (email / project / upstream key), `client_key_hash` = `labelHash(api_key)`.
 `labelHash` is `sha256("tokenlayer:v1:" + value)[:16]` (`src/lib/hash.ts`), shared by steer so the tables join.
 
@@ -23,7 +23,8 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
 - Items that cannot be mapped go to `rejects.ndjson` with identity fields redacted. Nothing is dropped silently.
 - Malformed pages retain only a byte count and SHA-256 receipt through the ordinary reject deep redactor.
   Raw bodies are never retained, including non-array JSON and encoded strings.
-- Every persisted value (rows, spool, rejects, logged ClickHouse errors) passes the shared redactor
+- There is no ingest redaction: rows and the recovery spool retain text exactly. Only egress
+  (rejects, logs, stderr, thrown errors and usage.json) passes the shared redactor
   (`src/lib/redact.ts`). It removes known API/OAuth key prefixes, JWTs, PEM private keys and emails;
   bearer tokens of at least 8 characters (including letters-only tokens); URL userinfo with a password;
   and values named by sensitive fields, regardless of the value's prefix. Field matching covers camelCase,
@@ -48,7 +49,7 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
   otherwise `claude`. Codex files whose `session_meta.payload.originator` is `"T3 Code"` → `t3`, otherwise `codex`.
   A file whose head has no deciding line yet ships with the default and is reshipped once it is decided.
 - A line is `(machine, path, generation, byte_offset, content_hash)`: the full SHA-256 covers exact source
-  bytes including LF (and CR if present), before decoding/redaction. Different content cannot replace an archive
+  bytes including LF (and CR if present), before decoding. Different content cannot replace an archive
   even if generation/offset recur. Generation tracks device/inode/birthtime and rewrite lineage, not archive safety.
 - A write-ahead `<statePath>.generations` sidecar reserves each generation and its source fingerprint before
   insertion. Recovery retains the longest verified prefix while replaying earlier chunks, even through repeated
@@ -79,9 +80,11 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
   for the same range are a new insert.
 - Replays with different chunk boundaries (for example after a lost checkpoint) insert duplicate rows that only a
   background merge collapses. Read `session_events` with `FINAL` (as the queries below do) for counts and sums.
-- `raw` (and every parsed column) is the line after the shared redactor (`src/lib/redact.ts`): the JSON is parsed,
-  redacted deeply and re-serialised; an invalid line is redacted as text. `line_bytes` and offsets refer to the
-  original file.
+- `raw` is the exact source line, including LF and any CR, without reserialization or ingest redaction.
+  Blank lines are skipped; an unterminated trailing line waits for LF.
+  Parsed columns come from the unredacted line. The archive is byte-exact per line, including invalid UTF-8 bytes;
+  parsed columns use UTF-8 decoding while raw bytes bypass decoding during insertion.
+  This supersedes the previous line-exact and redacted contract. Historical redacted rows cannot recover text.
 - Token columns are credited once per API response: Claude repeats `message.usage` on every content-block line of a
   message (credited on the first line per `message.id`); Codex `token_count.last_token_usage` is credited unless the
   running total is unchanged, and `token_usage_record` lines (same numbers) are not credited.
@@ -89,6 +92,10 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
 - The daemon picks up un-checkpointed files only if modified in the last 24 h; `--backfill [--since DATE]` does history
   at `--rate-mb` (default 5 MB/s).
 - Not shipped yet: T3 Code's own thread store (SQLite, see the PR-b body) and the stray Codex rollout at `~/.t3/*.jsonl`.
+
+Agents default to `v_session_events_meta` (all columns except `raw`) and `v_requests`
+(request metadata without failure bodies/codes, headers, endpoint, IP or user agent). These views
+are query conveniences, not access controls. Raw text needs an explicit query on the base table.
 
 ## Example queries
 

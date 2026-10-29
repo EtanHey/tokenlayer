@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { redactText } from "../lib/redact";
 // tokenlayer-ship: tail Claude Code / Codex / T3 session JSONL into ClickHouse session_events.
 // Usage:
 //   bun src/ship/main.ts                         # daemon: every TOKENLAYER_SHIP_INTERVAL_MS (default 10s)
@@ -33,7 +34,7 @@ const backfill = args.includes("--backfill");
 const since = flag("--since");
 const sinceMs = since ? Date.parse(since) : backfill ? undefined : Date.now() - 24 * 3600 * 1000;
 if (since && Number.isNaN(sinceMs)) {
-  console.error(`tokenlayer-ship: bad --since ${since}`);
+  console.error(`tokenlayer-ship: bad --since ${redactText(String(since))}`);
   process.exit(2);
 }
 const rateMb = Number(flag("--rate-mb") ?? env.TOKENLAYER_SHIP_RATE_MB ?? 5);
@@ -66,7 +67,7 @@ do {
       console.log(`${new Date().toISOString()} files=${r.files} lines=${r.lines} bytes=${r.bytes} resets=${r.resets}`);
     }
   } catch (err) {
-    console.error(`${new Date().toISOString()} tokenlayer-ship: ${(err as Error).message}`);
+    console.error(`${new Date().toISOString()} tokenlayer-ship: ${redactText((err as Error).message)}`);
     if (backfill) process.exit(1);
   }
   if (backfill) break;

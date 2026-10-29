@@ -159,17 +159,17 @@ describe("parseLine (codex)", () => {
 });
 
 describe("parseLine secret hygiene", () => {
-  test("a tool printing synthetic clickhouse.env cannot persist credentials in raw", () => {
+  test("a tool printing synthetic clickhouse.env retains credentials in raw", () => {
     const output = "CLICKHOUSE_PASSWORD=syntheticClickhousePassword&syntheticPasswordTail\nCLIPROXY_MGMT_KEY=\"syntheticManagementKey\"\n";
     const row = parseLine(JSON.stringify({
       type: "user", sessionId: "synthetic-session", timestamp: "2026-10-28T08:00:00Z",
       message: { role: "user", content: [{ type: "tool_result", content: `cat clickhouse.env\n${output}` }] },
       toolUseResult: { stdout: output, headers: JSON.stringify("before\nCookie: syntheticCookieTail\nafter") },
     }), newFileState("claude", "t3", 0));
-    expect(row.raw).not.toContain("syntheticClickhousePassword");
-    expect(row.raw).not.toContain("syntheticManagementKey");
-    expect(row.raw).not.toContain("syntheticPasswordTail");
-    expect(row.raw).not.toContain("syntheticCookieTail");
+    expect(row.raw).toContain("syntheticClickhousePassword");
+    expect(row.raw).toContain("syntheticManagementKey");
+    expect(row.raw).toContain("syntheticPasswordTail");
+    expect(row.raw).toContain("syntheticCookieTail");
     expect(JSON.parse(row.raw).message.content[0].type).toBe("tool_result");
     expect(row.raw).toContain("clickhouse.env");
   });
@@ -178,13 +178,8 @@ describe("parseLine secret hygiene", () => {
   const EMAIL = "frank.fake@example.invalid";
   const OAUTH = "sk-ant-oat01-FAKEfakeFAKE0123456789";
   const authFile = { type: "codex", email: EMAIL, tokens: { access_token: OAUTH, refresh_token: "opaque-refresh-fake", id_token: "opaque-id-fake" } };
-  const SENTINELS = [KEY, EMAIL, OAUTH, "opaque-refresh-fake", "opaque-id-fake", "fakeBearer0123456789abcdef"];
-  const clean = (row: unknown) => {
-    const s = JSON.stringify(row);
-    for (const secret of SENTINELS) expect(s).not.toContain(secret);
-  };
 
-  test("nested tool output with an auth file, a key and an email is redacted in raw", () => {
+  test("nested tool output with an auth file, a key and an email is retained in raw", () => {
     const st = newFileState("claude", "claude", 0);
     const line = JSON.stringify({
       ...JSON.parse(claudeUser),
@@ -192,21 +187,21 @@ describe("parseLine secret hygiene", () => {
       toolUseResult: { stdout: JSON.stringify(authFile, null, 2), stderr: `contact ${EMAIL}` },
     });
     const row = parseLine(line, st);
-    clean(row);
+    expect(row.raw).toBe(line);
     expect(row).toMatchObject({ session_id: "s-1", project: "golems", type: "user", role: "user" });
     expect(JSON.parse(row.raw).message.content[0].type).toBe("tool_result");
   });
 
-  test("codex function-call output and invalid lines are redacted too", () => {
+  test("codex function-call output and invalid lines are retained too", () => {
     const st = newFileState("codex", "codex", 0);
     const call = JSON.stringify({
       timestamp: "2026-10-28T08:00:03.000Z",
       type: "response_item",
       payload: { type: "function_call_output", output: `curl -H 'Authorization: Bearer fakeBearer0123456789abcdef' -H 'x-api-key: ${KEY}'` },
     });
-    clean(parseLine(call, st));
+    expect(parseLine(call, st).raw).toBe(call);
     const bad = parseLine(`{"oops": ${JSON.stringify(authFile)} ${EMAIL}`, st);
     expect(bad.type).toBe("invalid");
-    clean(bad);
+    expect(bad.raw).toBe(`{"oops": ${JSON.stringify(authFile)} ${EMAIL}`);
   });
 });

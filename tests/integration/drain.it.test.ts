@@ -27,7 +27,7 @@ describe.skipIf(!clickhouseBinary())("drain → real local ClickHouse", () => {
     const tables = await ch.client.queryJSON<{ name: string }>(
       "SELECT name FROM system.tables WHERE database = 'tokenlayer' ORDER BY name",
     );
-    expect(tables.map((t) => t.name)).toEqual(["credentials_snap", "proxy_usage", "session_events"]);
+    expect(tables.map((t) => t.name)).toEqual(["credentials_snap", "proxy_usage", "session_events", "v_requests", "v_session_events_meta"]);
   });
 
   test("drained rows land with the right types; a retried batch adds no rows", async () => {
