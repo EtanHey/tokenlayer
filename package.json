@@ -10,7 +10,8 @@
     "steer": "bun src/steer/main.ts",
     "schema:apply": "bun src/lib/schema.ts",
     "drain": "bun src/drain/main.ts",
-    "ship": "bun src/ship/main.ts"
+    "ship": "bun src/ship/main.ts",
+    "test:property": "TOKENLAYER_PROPERTY_N=300 bun test --path-ignore-patterns \"**/node_modules/**\" ./tests/property/ship.property.test.ts"
   },
   "devDependencies": {
     "typescript": "^5.6.0",

@@ -21,6 +21,7 @@ describe("ClickHouse.insert", () => {
     await client.insert("t", [{ a: 1 }]);
     s.stop(true);
     expect(seen[0].searchParams.get("wait_end_of_query")).toBe("1");
+    expect(seen[0].searchParams.get("async_insert")).toBe("0");
   });
 
   test("an HTTP 200 carrying X-ClickHouse-Exception-Code is a failure", async () => {
