@@ -194,3 +194,76 @@ test("escaped newlines cannot hide header names in nested tool output", () => {
     }
   }
 });
+
+describe("round 2 structural value boundaries", () => {
+  const sentinel = "ReviewR2SyntheticOpaqueSentinel";
+  const probes = [
+    `export DATABASE_PASSWORD='first'${sentinel}\nPUBLIC_COUNT=123`,
+    `export DATABASE_PASSWORD="first"${sentinel}\nPUBLIC_COUNT=123`,
+    `DATABASE_PASSWORD='first'"${sentinel}"\r\nPUBLIC_COUNT=123`,
+    ...["\r\n\t", "\n "].flatMap((fold) => [
+      `Authorization: Digest${fold}username="${sentinel}", response="syntheticDigest"\nX-Count: 123`,
+      `Authorization: Bearer first${fold}${sentinel}\nX-Count: 123`,
+      `Authorization: opaque${fold}${sentinel}\nX-Count: 123`,
+      `Cookie: first=value;${fold}session=${sentinel}\nX-Count: 123`,
+    ]),
+  ];
+  for (const [i, probe] of probes.entries()) {
+    test(`review probe ${i + 1} survives no persistence path`, () => {
+      const keep = i < 3 ? "PUBLIC_COUNT=123" : "X-Count: 123";
+      for (const input of [probe, JSON.stringify(probe), JSON.stringify(JSON.stringify(probe))]) {
+        const outputs = [redactText(input), parseLine(input, newFileState("claude", "claude", 0)).raw,
+          ...[{ type: "tool_result", content: input }, { type: "function_call_output", output: input }]
+            .map((event) => parseLine(JSON.stringify(event), newFileState("codex", "codex", 0)).raw)];
+        for (const out of outputs) {
+          expect(out).not.toContain(sentinel);
+          expect(out).toContain(keep);
+          expect(redactText(out)).toBe(out);
+        }
+      }
+    });
+  }
+  test("all sensitive key families use complete word/line/header boundaries", () => {
+    for (const key of ["PASSWORD", "client.secret", "accessTOKEN", "api-key", "Auth", "Cookie", "CREDENTIAL", "SESSION"]) {
+      for (const input of [`export ${key}='first'"${sentinel}"\nPUBLIC_COUNT=123`,
+        `tool --${key}='first'"${sentinel}" --count 123`,
+        `run ${key}='first'"${sentinel}" --count 123`,
+        `${key}='first\n${sentinel}'\nPUBLIC_COUNT=123`,
+        `${key}: first\r\n\t${sentinel}\nX-Count: 123`]) {
+        expect(redactText(input)).not.toContain(sentinel);
+        expect(redactText(input)).toContain("123");
+      }
+      expect(redactDeep({ [key]: sentinel })).toEqual({ [key]: REDACTED });
+    }
+  });
+  test("tail guard removes nearby opaque base64, hex and base64url runs only within 64 chars", () => {
+    for (const opaque of ["Q7mV2xB9nK4pR8tY3uH6dF1s", "a39f7c20e18b46d590ac3f72", "Q7mV2xB9/nK4+pR8tY3uH6dF1s==", "Q7mV2xB9_nK4-pR8tY3uH6dF1s", "/Q7mV2xB9nK4pR8tY3uH6dF1s", "/Q7mV2x/B9nK4pR8tY3uH6dF1s", "qwertyuiopasdfghjklzxcvbnm"]) {
+      expect(redactText(`password hint ${opaque}`)).not.toContain(opaque);
+      expect(redactText(`p-a-s-s-w-o-r-d hint ${opaque}`)).not.toContain(opaque);
+      expect(redactText(`${opaque} cookie hint`)).not.toContain(opaque);
+      expect(redactText(`password ${" ".repeat(65)}${opaque}`)).toContain(opaque);
+    }
+  });
+  test("telemetry identifiers and derived label hashes keep their existing contracts", () => {
+    const metadata = { sessionId: "synthetic-session", parent_session_id: "6740716a-2133-4127-bdad-a239335a23fa",
+      client_key_hash: "a373bc804e9d7eb5", auth_type: "oauth", token: 123, output_tokens_details: { thinking_tokens: 48 } };
+    expect(redactDeep(metadata)).toEqual(metadata);
+    expect(redactText(JSON.stringify(metadata))).toContain('"sessionId":"synthetic-session"');
+    expect(redactDeep({ credential: "a37b5080741be88e", session: "syntheticOpaqueCredential" }))
+      .toEqual({ credential: REDACTED, session: REDACTED });
+  });
+  test("bounded redaction retains numeric usage, paths, git SHAs, UUIDs and prose near sensitive names", () => {
+    const controls = [
+      "token_count=123 input_tokens=123 output_tokens=45 total_tokens: 168 cost=0.0042",
+      "password docs /Users/u/Gits/0123456789abcdef0123456789abcdef01234567/file.ts",
+      "secret docs C:\\Users\\u\\0123456789abcdef0123456789abcdef01234567\\file.ts",
+      "token git SHA d67ceefa8f0e29fbae6b9e0afa1854d5e8b1319b",
+      "session 6740716a-2133-4127-bdad-a239335a23fa",
+      "Explain password hashing and token counts. Authentication documentation is useful.",
+    ];
+    for (const input of controls) {
+      expect(redactText(input)).toBe(input);
+      expect(redactDeep({ content: input, token: 123, input_tokens: 45 })).toEqual({ content: input, token: 123, input_tokens: 45 });
+    }
+  });
+});

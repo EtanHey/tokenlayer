@@ -6,33 +6,12 @@
  */
 export const REDACTED = "[redacted]";
 
-// Sensitive string/object fields; camelCase and hyphens normalize to snake_case.
-const SENSITIVE_KEYS = new Set([
-  "access_token",
-  "refresh_token",
-  "id_token",
-  "session_token",
-  "token",
-  "bearer",
-  "api_key",
-  "apikey",
-  "x_api_key",
-  "authorization",
-  "proxy_authorization",
-  "cookie",
-  "set_cookie",
-  "password",
-  "passwd",
-  "secret",
-  "client_secret",
-  "private_key",
-  "key",
-]);
-const KEY_NAME = "[a-z_][a-z0-9_-]*";
-const ASSIGNMENT = new RegExp(String.raw`(?:\\+[nr]|(?<![\w-]))(?:--(${KEY_NAME})(?:[ \t]+|=[ \t]*)|(${KEY_NAME})(?:\\*["'])?[ \t]*[=:][ \t]*)`, "gi");
-
-const normalizeKey = (k: string) => k.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/-/g, "_");
-const sensitiveKey = (key: string) => SENSITIVE_KEYS.has(key) || /_(?:password|passwd|key|token|secret)$/.test(key);
+// Match key families regardless of case/separators. Usage counters are metadata, not credentials.
+const KEY_NAME = "[a-z_][a-z0-9_.-]*";
+const ASSIGNMENT = new RegExp(String.raw`(?:\\+[nr]|(?<![\w.-]))(?:--(${KEY_NAME})(?:[ \t]+|=[ \t]*)|(${KEY_NAME})(?:\\*["'])?[ \t]*[=:][ \t]*)`, "gi");
+const SENSITIVE_NAME = /password|passwd|secret|token|key|auth|cookie|credential|session|bearer/i;
+const normalizeKey = (k: string) => k.toLowerCase().replace(/[^a-z0-9]/g, "");
+const sensitiveKey = (key: string) => SENSITIVE_NAME.test(key) && !/^(?:(?:input|output|total|cached|cachereadinput|cachecreationinput)tokens(?:details)?|tokencount|totaltokenusage|lasttokenusage|sessionid|parentsessionid|clientkeyhash|authtype)$/.test(key);
 
 /** Shell arguments can join quoted/unquoted segments and escape otherwise separating bytes. */
 function shellArgumentEnd(text: string, start: number): number {
@@ -51,11 +30,11 @@ function shellArgumentEnd(text: string, start: number): number {
 }
 
 /** Consume an entire quoted value, including escaped quotes at any JSON-string nesting depth. */
-function valueEnd(text: string, start: number, wholeLine: boolean, wrapperAt: number): { start: number; end: number } {
+function valueEnd(text: string, start: number, wholeLine: boolean, wrapperAt: number, folded = false): { start: number; end: number } {
   let quoteAt = start;
   while (text[quoteAt] === "\\") quoteAt++;
   const quote = text[quoteAt];
-  if (quote === '"' || quote === "'") {
+  if (!wholeLine && (quote === '"' || quote === "'")) {
     const depth = quoteAt - start;
     for (let i = quoteAt + 1; i < text.length; i++) {
       if (text[i] !== quote) continue;
@@ -75,7 +54,11 @@ function valueEnd(text: string, start: number, wholeLine: boolean, wrapperAt: nu
   while (text[wrapperStart - 1] === "\\") wrapperStart--;
   while (end < text.length) {
     if (!wholeLine && stop.test(text[end])) break;
-    if (wholeLine && /[\r\n]/.test(text[end])) break;
+    if (wholeLine && /[\r\n]/.test(text[end])) {
+      const next = end + (text.startsWith("\r\n", end) ? 2 : 1);
+      if (folded && /[ \t]/.test(text[next] ?? "")) { end = next; continue; }
+      break;
+    }
     if (wholeLine && /["']/.test(text[wrapperAt] ?? "") && text[end] === text[wrapperAt]) {
       let slashStart = end;
       while (text[slashStart - 1] === "\\") slashStart--;
@@ -109,12 +92,15 @@ function redactAssignments(text: string, nesting = 0): string {
         continue;
       } catch { /* A shell-quoted or malformed string is handled as raw text below. */ }
     }
-    const header = /^(?:(?:proxy_)?authorization|(?:set_)?cookie|x_.*_key)$/.test(key) && match[0].includes(":");
+    // Quoted object keys have JSON value boundaries; unquoted headers own folded lines.
+    const header = match[0].includes(":") && !/["']/.test(match[0]);
     const lineStart = text.lastIndexOf("\n", match.index - 1) + 1;
-    const env = !!match[2] && match[0].includes("=") && (rawKey === rawKey.toUpperCase() || /^(?:export[ \t]+)?[ \t]*$/.test(text.slice(lineStart, match.index)));
-    const span = match[1]
+    const env = !!match[2] && match[0].includes("=") && /^[ \t]*(?:export[ \t]+)?$/.test(text.slice(lineStart, match.index));
+    const span = match[1] || (!env && match[0].includes("=") && !/[?&]/.test(text[match.index - 1] ?? ""))
       ? { start: assignment.lastIndex, end: shellArgumentEnd(text, assignment.lastIndex) }
-      : valueEnd(text, assignment.lastIndex, header || env, match.index - 1);
+      : valueEnd(text, assignment.lastIndex, header || env, match.index - 1, header);
+    // A shell word may cross physical lines inside quotes or after a backslash.
+    if (env) span.end = Math.max(span.end, shellArgumentEnd(text, assignment.lastIndex));
     if (span.end <= span.start) continue;
     parts.push(text.slice(copied, span.start), REDACTED);
     copied = span.end;
@@ -137,10 +123,29 @@ const RULES: [RegExp, string][] = [
   [/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g, REDACTED],
 ];
 
+/** Defense in depth for opaque tails near a sensitive name; never a global entropy scrub. */
+function redactTails(text: string): string {
+  return text.replace(/[A-Za-z0-9_+/-]{24,}={0,2}/g, (run, at: number) => {
+    const before = text.slice(Math.max(0, at - 64), at);
+    const after = text.slice(at + run.length, at + run.length + 64);
+    if (!SENSITIVE_NAME.test(normalizeKey(before)) && !SENSITIVE_NAME.test(normalizeKey(after))) return run;
+    // Keep identifiable paths, git hashes, UUIDs and numbers even near sensitive prose.
+    if (/^[0-9]+$/.test(run) || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(run)
+      || (/^[0-9a-f]{40,64}$/i.test(run) && /\b(?:git|sha|sha1|sha256|commit|hash)[\s:=_-]*$/i.test(before))
+      || (/^\//.test(run) && /\b(?:path|file|cwd|docs)[\s:=]*$/i.test(before)) || /[\\/]/.test(text[at - 1] ?? "")) return run;
+    const classes = [/[a-z]/, /[A-Z]/, /[0-9]/].filter((re) => re.test(run)).length;
+    const counts = new Map<string, number>();
+    for (const ch of run) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+    let entropy = 0;
+    for (const count of counts.values()) { const p = count / run.length; entropy -= p * Math.log2(p); }
+    return entropy >= (/^[0-9a-f]+$/i.test(run) ? 3 : classes < 2 ? 4.2 : 3.5) ? REDACTED : run;
+  });
+}
+
 export function redactText(text: string): string {
   let out = redactAssignments(text);
   for (const [re, replacement] of RULES) out = out.replace(re, replacement);
-  return out;
+  return redactTails(out);
 }
 
 export function redactDeep(value: unknown, opts: { extraKeys?: readonly string[] } = {}): unknown {
@@ -153,7 +158,7 @@ export function redactDeep(value: unknown, opts: { extraKeys?: readonly string[]
     for (const [k, inner] of Object.entries(v as Record<string, unknown>)) {
       const key = normalizeKey(k);
       const secret = sensitiveKey(key) || extra.has(key);
-      out[redactText(k)] = secret && inner !== null && (typeof inner === "string" || typeof inner === "object") ? REDACTED : walk(inner);
+      out[redactText(k)] = secret && inner !== "" && inner !== null && (typeof inner === "string" || typeof inner === "object") ? REDACTED : walk(inner);
     }
     return out;
   };
