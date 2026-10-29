@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { verifySessionSchema } from "../../src/lib/session-schema";
 import { applySchema } from "../../src/lib/schema";
 import { shipOnce, type ShipOptions } from "../../src/ship/ship";
+import { loadState } from "../../src/ship/state";
 import { clickhouseBinary, startLocalClickHouse, type LocalClickHouse } from "../support/local-clickhouse";
 
 describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse", () => {
@@ -118,6 +119,88 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse: rewrites, 
       `SELECT generation, byte_offset, harness, JSONExtractString(raw, 'message', 'content') AS content
        FROM tokenlayer.session_events FINAL WHERE machine = '${machine}' ORDER BY ingested_at, byte_offset`,
     );
+
+  const killAt = async (o: ShipOptions, phase: string, batch: number) => {
+    const { clickhouse, ...options } = o;
+    const child = Bun.spawn([process.execPath, join(import.meta.dir, "../support/ship-crash-child.ts"),
+      JSON.stringify({ config: clickhouse.config, options, phase, batch })], { stdout: "pipe", stderr: "pipe" });
+    const reader = child.stdout.getReader();
+    const timer = setTimeout(() => child.kill("SIGKILL"), 15_000);
+    try {
+      let output = "";
+      while (!output.includes("CRASH_BOUNDARY")) {
+        const chunk = await reader.read();
+        if (chunk.done) throw new Error(`crash boundary not reached: ${await new Response(child.stderr).text()}`);
+        output += new TextDecoder().decode(chunk.value);
+      }
+      child.kill("SIGKILL");
+      await child.exited;
+      expect(child.signalCode).toBe("SIGKILL");
+    } finally {
+      clearTimeout(timer);
+      child.kill("SIGKILL");
+      await child.exited;
+      reader.releaseLock();
+    }
+  };
+
+  const crashTrial = async (name: string, lost: boolean, phases: string[], rewriteAt = 1, width = 8, killBatch = 1) => {
+    const { file, o } = setup(name, 1);
+    const snapshot = () => ch.client.queryJSON<{ generation: string; byte_offset: string; raw: string; harness: string }>(
+      `SELECT generation, byte_offset, raw, harness FROM tokenlayer.session_events FINAL
+       WHERE machine = '${name}' ORDER BY generation, byte_offset`);
+    const source = (middle: string) => ["common", "original-middle", "tail"].map((s, i) =>
+      line(i === rewriteAt ? middle : s, { timestamp: "2026-10-28T08:00:00Z" })).join("\n") + "\n";
+    writeFileSync(file, `${line("old")}\n${line("old-tail")}\n`);
+    await shipOnce(o);
+    const old = await snapshot();
+    const original = source("a".repeat(width));
+    writeFileSync(file, original);
+    if (lost) {
+      await shipOnce(o);
+      rmSync(o.statePath);
+    } else {
+      // Last insert acknowledged, checkpoint still belongs to the previous generation.
+      await killAt({ ...o, batchBytes: 1024 * 1024 }, "after", 1);
+    }
+    const protectedPrefix = loadState(`${o.statePath}.generations`).files[file];
+    const archived = await snapshot();
+    expect(archived).toHaveLength(5);
+    for (const phase of phases) {
+      await killAt(o, phase, killBatch);
+      const current = await snapshot();
+      for (const row of archived) expect(current).toContainEqual(row);
+      const journal = loadState(`${o.statePath}.generations`).files[file];
+      expect([journal.offset, journal.fingerprint]).toEqual([protectedPrefix.offset, protectedPrefix.fingerprint]);
+    }
+    const replacement = source("b".repeat(width));
+    expect(Buffer.byteLength(replacement)).toBe(Buffer.byteLength(original));
+    writeFileSync(file, replacement);
+    const result = await shipOnce(o);
+    const rows = await snapshot();
+    for (const row of archived) expect(rows).toContainEqual(row);
+    expect(result.resets).toBe(1);
+    expect(rows.filter((r) => r.generation === old[0].generation)).toEqual(old);
+    expect(rows.filter((r) => r.generation === protectedPrefix.generation)).toHaveLength(3);
+    expect(rows).toHaveLength(8);
+    expect(loadState(o.statePath).files[file].generation).not.toBe(protectedPrefix.generation);
+    expect((await shipOnce(o)).lines).toBe(0);
+  };
+
+  for (const lost of [false, true]) for (const phase of ["before", "after"]) {
+    test(`interrupted recovery preserves archives: ${lost ? "lost" : "stale"} checkpoint, ${phase} insert`, async () => {
+      await crashTrial(`it-crash-${lost}-${phase}`, lost, [phase]);
+    }, 60_000);
+  }
+
+  test("200 seeded random kill/rewrite trials preserve every archived generation through repeated crashes", async () => {
+    let seed = 0x56914481;
+    const random = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return seed >>> 0; };
+    for (let i = 0; i < 200; i++) {
+      const phases = Array.from({ length: 2 + random() % 2 }, () => random() % 2 ? "before" : "after");
+      await crashTrial(`it-property-${i}`, Boolean(random() % 2), phases, 1 + random() % 2, 8 + random() % 200, 1 + random() % 2);
+    }
+  }, 600_000);
 
   test("checkpoint loss after a rewrite preserves both archived generations", async () => {
     const { file, o } = setup("it-recovery");

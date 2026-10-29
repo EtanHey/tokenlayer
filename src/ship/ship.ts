@@ -202,7 +202,12 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             // Hash the exact source buffer used by the parser, before yielding to the insert.
             const nextHash = hash.copy().update(raw);
             const fingerprint = nextHash.copy().digest("hex");
-            generations.files[path] = { ...cp, offset: nextOffset, fingerprint, parser };
+            // Replay progress may trail the verified archive prefix. Never discard its
+            // fingerprint: a crash here must still detect rewrites of the archived suffix.
+            const protectedPrefix = generations.files[path];
+            if (!protectedPrefix || protectedPrefix.generation !== cp.generation || nextOffset >= protectedPrefix.offset) {
+              generations.files[path] = { ...cp, offset: nextOffset, fingerprint, parser };
+            }
             saveState(generationPath, generations);
             await opts.clickhouse.insert("session_events", rows, token);
 

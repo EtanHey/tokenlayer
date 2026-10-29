@@ -41,7 +41,9 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
   device, inode and birthtime. Rotation preserves the previous generation even with identical content.
   An in-place rewrite adds a revision hash to preserve archived rows.
 - A write-ahead `<statePath>.generations` sidecar reserves each generation and its source fingerprint before
-  insertion. Keep it when resetting progress: checkpoint loss replays the current generation, and late harness
+  insertion. Recovery retains the longest verified prefix while replaying earlier chunks, even through repeated
+  crashes; progress checkpoints can lag without shortening archive protection. Keep it when resetting progress:
+  checkpoint loss replays the current generation, and late harness
   classification preserves that generation. Losing both files loses the information needed to recover revisions;
   restore the sidecar from backup before replaying an archive with in-place rewrites.
 - Version 3 checkpoints hash the entire acknowledged prefix using streaming 64 KiB buffers. Changed files
