@@ -99,6 +99,32 @@ describe("mapUsageRecord", () => {
     expect(row.fail_body).toContain("invalid x-api-key");
   });
 
+  test.each([
+    ["object", { error: { message: "  synthetic failure\nשלום  ", details: [429, false, null] } }],
+    ["number", 429],
+    ["array", ["synthetic failure", 429, { retry: true }]],
+    ["boolean", false],
+    ["null", null],
+  ])("serializes failed %s bodies losslessly", (_kind, body) => {
+    const row = mapUsageRecord({ ...rateLimited, fail: { status_code: 500, body } }, { hub: "m1" });
+    expect(typeof row.fail_body).toBe("string");
+    expect(row.fail_body).toBe(JSON.stringify(body));
+    expect(JSON.parse(row.fail_body)).toEqual(body);
+  });
+
+  test("preserves string failure bodies byte-exact, untrimmed and uncapped", () => {
+    const body = `  \t${"synthetic failure\nשלום".repeat(1000)}\r\n  `;
+    const row = mapUsageRecord({ ...rateLimited, fail: { status_code: 500, body } }, { hub: "m1" });
+    expect(row.fail_body).toBe(body);
+  });
+
+  test("missing failure bodies and successful records have empty failure text", () => {
+    const failed = { ...rateLimited, fail: { status_code: 500 } };
+    expect(mapUsageRecord(failed, { hub: "m1" }).fail_body).toBe("");
+    expect(mapUsageRecord({ ...failed, fail: undefined }, { hub: "m1" }).fail_body).toBe("");
+    expect(mapUsageRecord({ ...ok, failed: false, fail: { body: { error: "ignored" } } }, { hub: "m1" }).fail_body).toBe("");
+  });
+
   test("missing optional fields fall back to defaults", () => {
     const row = mapUsageRecord({ timestamp: "2026-10-28T00:00:00Z", execution_id: "e1" }, { hub: "m1" });
     expect(row.credential).toBe("");
@@ -111,14 +137,14 @@ describe("mapUsageRecord", () => {
     expect(() => mapUsageRecord("not-json", { hub: "m1" })).toThrow();
     expect(() => mapUsageRecord({ timestamp: "garbage" }, { hub: "m1" })).toThrow();
   });
-});
 
- test('all public rate-limit buckets round-trip exactly', () => {
- const headers = Object.fromEntries([
- ...['requests','tokens','input-tokens','output-tokens'].flatMap(b => ['limit','remaining','reset'].map(f => `anthropic-ratelimit-${b}-${f}`)),
- ...['requests','tokens'].flatMap(b => ['limit','remaining','reset'].map(f => `x-ratelimit-${f}-${b}`)),
- ...['5h','7d'].flatMap(w => ['reset','status','utilization'].map(f => `anthropic-ratelimit-unified-${w}-${f}`)),
- 'retry-after','x-codex-primary-reset-after-seconds'
- ].map((h,i) => [h, `${i}.125`]));
- expect(mapUsageRecord({...ok,response_headers:headers},{hub:'m1'}).ratelimit).toEqual(headers);
- });
+  test("all public rate-limit buckets round-trip exactly", () => {
+    const headers = Object.fromEntries([
+      ...["requests", "tokens", "input-tokens", "output-tokens"].flatMap(b => ["limit", "remaining", "reset"].map(f => `anthropic-ratelimit-${b}-${f}`)),
+      ...["requests", "tokens"].flatMap(b => ["limit", "remaining", "reset"].map(f => `x-ratelimit-${f}-${b}`)),
+      ...["5h", "7d"].flatMap(w => ["reset", "status", "utilization"].map(f => `anthropic-ratelimit-unified-${w}-${f}`)),
+      "retry-after", "x-codex-primary-reset-after-seconds",
+    ].map((h, i) => [h, `${i}.125`]));
+    expect(mapUsageRecord({ ...ok, response_headers: headers }, { hub: "m1" }).ratelimit).toEqual(headers);
+  });
+});

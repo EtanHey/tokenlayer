@@ -28,7 +28,7 @@ export type UsageQueueRecord = {
   }>;
   failed?: boolean;
   stream?: boolean;
-  fail?: { status_code?: number; body?: string; code?: string };
+  fail?: { status_code?: number; body?: unknown; code?: string };
   response_headers?: Record<string, string[] | string>;
   accounting_version?: number;
   token_breakdown?: {
@@ -132,6 +132,7 @@ export function mapUsageRecord(input: unknown, opts: { hub: string }): ProxyUsag
   if (ms === null) throw new Error("usage record has no parseable timestamp");
   const t = r.tokens ?? {};
   const failed = r.failed === true;
+  const body = r.fail?.body;
 
   const row: ProxyUsageRow = {
     ts: toClickHouseTime(ms),
@@ -169,7 +170,7 @@ export function mapUsageRecord(input: unknown, opts: { hub: string }): ProxyUsag
     status_code: uint(r.fail?.status_code),
     failed,
     fail_code: str(r.fail?.code),
-    fail_body: failed ? (r.fail?.body ?? "") : "",
+    fail_body: failed ? (typeof body === "string" ? body : JSON.stringify(body) ?? "") : "",
     stream: r.stream === true,
     reasoning_effort: str(r.reasoning_effort),
     service_tier: str(r.service_tier),

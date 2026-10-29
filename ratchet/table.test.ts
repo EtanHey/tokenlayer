@@ -16,6 +16,7 @@ import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, cpSync } f
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+// Eight CLI comparisons each install and spawn subprocesses in isolated baseline trees.
 test('CLI exits nonzero on regression and ceiling breach, zero when unchanged', () => {
   const dir = mkdtempSync(join(tmpdir(), 'ratchet-test-'));
   const table = resolve('ratchet/table.mjs');
@@ -59,7 +60,6 @@ test('CLI exits nonzero on regression and ceiling breach, zero when unchanged', 
       expect(p.status).toBe(status);
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
-// Eight CLI comparisons each install and spawn subprocesses in isolated baseline trees.
 }, 30_000);
 
 const throughput = { direction: 'min', ceiling: 5, maxRegression: 0.25 };
