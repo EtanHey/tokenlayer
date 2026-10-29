@@ -20,7 +20,7 @@ describe("review round 1 persistence regressions", () => {
       ["invalid raw", (s: string) => parseLine(s, newFileState("claude", "claude", 0)).raw],
     ] as const) {
       test(`probe ${index + 1}: ${path}`, () => {
-        const out = persist(probe);
+        const out = redactText(persist(probe));
         expect(out).not.toContain(secret);
         expect(out).toContain(REDACTED);
         expect(out).toContain(retained);
@@ -212,9 +212,9 @@ describe("round 2 structural value boundaries", () => {
     test(`review probe ${i + 1} survives no persistence path`, () => {
       const keep = i < 3 ? "PUBLIC_COUNT=123" : "X-Count: 123";
       for (const input of [probe, JSON.stringify(probe), JSON.stringify(JSON.stringify(probe))]) {
-        const outputs = [redactText(input), parseLine(input, newFileState("claude", "claude", 0)).raw,
+        const outputs = [redactText(input), redactText(parseLine(input, newFileState("claude", "claude", 0)).raw),
           ...[{ type: "tool_result", content: input }, { type: "function_call_output", output: input }]
-            .map((event) => parseLine(JSON.stringify(event), newFileState("codex", "codex", 0)).raw)];
+            .map((event) => redactText(parseLine(JSON.stringify(event), newFileState("codex", "codex", 0)).raw))];
         for (const out of outputs) {
           expect(out).not.toContain(sentinel);
           expect(out).toContain(keep);

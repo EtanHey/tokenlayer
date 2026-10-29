@@ -1,3 +1,4 @@
 [test]
-# Review archives are evidence, not this checkout's tests.
-pathIgnorePatterns = ["docs.local/**"]
+root = "./tests"
+# Review archives and the separately required property suite are excluded here.
+pathIgnorePatterns = ["docs.local/**", "**/*.property.test.ts"]

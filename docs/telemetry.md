@@ -7,9 +7,9 @@ Apply the schema with `bun run schema:apply` (reads `CLICKHOUSE_*` from the envi
 |---|---|---|---|
 | `proxy_usage` | `tokenlayer-drain` ← `GET /v8/management/observability/usage/queue` | `(credential, toDate(ts), ts, execution_id)` | ReplacingMergeTree, monthly partitions |
 | `credentials_snap` | `tokenlayer-steer` (P3) | `(credential, ts)` | MergeTree, monthly partitions |
-| `session_events` | `tokenlayer-ship` on each Mac | `(machine, path, generation, byte_offset)` | ReplacingMergeTree, monthly partitions |
+| `session_events` | `tokenlayer-ship` on each Mac | `(machine, path, generation, byte_offset, content_hash)` | ReplacingMergeTree, monthly partitions |
 
-Identity values never land in ClickHouse in the clear: `credential` = `labelHash(auth_index)`,
+Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
 `account_hash` = `labelHash(source)` (email / project / upstream key), `client_key_hash` = `labelHash(api_key)`.
 `labelHash` is `sha256("tokenlayer:v1:" + value)[:16]` (`src/lib/hash.ts`), shared by steer so the tables join.
 
@@ -21,7 +21,10 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
   spool only after ClickHouse confirms the insert (below). Each batch carries a fixed `insert_deduplication_token`, and the table has
   `non_replicated_deduplication_window`, so a retry after an ambiguous failure inserts nothing twice.
 - Items that cannot be mapped go to `rejects.ndjson` with identity fields redacted. Nothing is dropped silently.
-- Every persisted value (rows, spool, rejects, logged ClickHouse errors) passes the shared redactor
+- Malformed pages retain only a byte count and SHA-256 receipt through the ordinary reject deep redactor.
+  Raw bodies are never retained, including non-array JSON and encoded strings.
+- There is no ingest redaction: rows and the recovery spool retain text exactly. Only egress
+  (rejects, logs, stderr, thrown errors and usage.json) passes the shared redactor
   (`src/lib/redact.ts`). It removes known API/OAuth key prefixes, JWTs, PEM private keys and emails;
   bearer tokens of at least 8 characters (including letters-only tokens); URL userinfo with a password;
   and values named by sensitive fields, regardless of the value's prefix. Field matching covers camelCase,
@@ -45,32 +48,72 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
 - `harness`: Claude files whose lines carry `entrypoint: "sdk-ts"` → `t3` (T3 drives Claude Code via the Agent SDK),
   otherwise `claude`. Codex files whose `session_meta.payload.originator` is `"T3 Code"` → `t3`, otherwise `codex`.
   A file whose head has no deciding line yet ships with the default and is reshipped once it is decided.
-- A line is `(machine, path, generation, byte_offset)`. `generation` is the file's content identity,
-  `sha256(first line)[:16]`: a file rotated, replaced or rewritten at the same path with a different first line is a
-  new generation, and the earlier generation's rows stay as archived history. Re-reading the same file (lost
-  checkpoint, retry, late harness decision) maps to the same generation, so its rows replace rather than duplicate.
-  A rewrite that keeps the first line stays in the same generation: rows at the same offsets are replaced, and rows
-  past the new end stay.
-- Checkpoints live in `~/.config/tokenlayer/ship-state.json` (inode, mtime, offset, a sha256 of the first and last
-  4 KiB of the shipped range, generation, parser carry-forward). Only `\n`-terminated lines ship; a partial last line
-  waits. A file with unchanged size, inode and mtime is skipped without reading. Any other change is checked against the
-  fingerprint first, so an equal-size in-place rewrite is caught too. A new inode, a shorter file, or a changed
-  fingerprint restarts the file from 0.
+  Harness is a file-level column, excluded from generation identity so late classification and state loss
+  do not duplicate lines. On a returning inode whose head was rewritten in place, `harness` may change
+  for unchanged archived lines when they are replayed.
+- A line is `(machine, path, generation, byte_offset, content_hash)`: the full SHA-256 covers exact source
+  bytes including LF (and CR if present), before decoding. Different content cannot replace an archive
+  even if generation/offset recur. Generation tracks device/inode/birthtime and rewrite lineage, not archive safety.
+- A write-ahead `<statePath>.generations` sidecar reserves each generation and its source fingerprint before
+  insertion. Recovery retains the longest verified prefix while replaying earlier chunks, even through repeated
+  crashes; progress checkpoints can lag without shortening archive protection. Keep it when resetting progress:
+  checkpoint loss replays the current generation, and late harness
+  classification preserves that generation. Losing both files loses revision lineage and can add replay rows;
+  content hashes still protect different archived content. Restore the sidecar to retain lineage.
+- Version 3 checkpoints hash the entire acknowledged prefix using streaming 64 KiB buffers. Changed files
+  verify that prefix before resuming; batch hashes extend incrementally, avoiding a full rehash per chunk.
+  The verified prefix hash is reused to extend batches from their exact source buffers before insertion;
+  checkpoint hashes never come from a post-acknowledgement path read. A rewrite additionally hashes the current
+  file to derive its revision. The 5 MB/s setting caps shipped
+  bytes; verification reads are additional local disk I/O. Unchanged files skip reads.
+- v1/v2 state upgrades atomically to v3 by discarding incompatible checkpoints and replaying files once.
+  A durable replay list keeps previously tracked files eligible even under the daemon's 24-hour cutoff and
+  across startup or insert failures. Old content-based generations remain archived; counts and token sums
+  across that upgrade can include both histories even with `FINAL`, and do not represent unique source lines.
+- Stop all shippers before `bun run schema:apply`: copy/atomic exchange retains `session_events_pre_content_hash`
+  and any earlier `session_events_legacy`. Missing generation/message IDs become `legacy`/empty. Historical bytes
+  are unavailable: missing hashes use `legacy:` plus SHA-256 of the stored column tuple except `ingested_at` and `harness`.
+  The copy retains physical stored-content variants and applies the old FINAL harness winner to each old key.
+  This separate namespace preserves stored variants; replays can add rows. Already replaced history is unrecoverable.
+  Before copying, schema apply queries active session-table bytes and free ClickHouse disk space, refusing
+  free space below twice the active bytes. Budget roughly 2–3x storage plus merge headroom.
+  Reapplying after success is safe. An existing scratch/archive table blocks a new migration; after a crash,
+  keep `session_events_hash_next` and inspect whether EXCHANGE completed before any manual recovery.
+  Retain both archives until counts, stored-content variants and late harness winners are verified and an
+  external backup is confirmed. Then an operator may run `DROP TABLE tokenlayer.session_events_pre_content_hash`
+  and, if present, `DROP TABLE tokenlayer.session_events_legacy`. They have no TTL; schema apply never drops them.
+  Startup checks the full key and column types and refuses incompatible tables.
+- A file failure is isolated until the end of the pass; acknowledged progress for other files is saved before
+  the pass reports failure. All progress after intermediate saves is included in the final checkpoint.
 - Each chunk is inserted with an `insert_deduplication_token` derived from its range and its row content, and the
   checkpoint advances only after ClickHouse confirms the insert. An identical retry is a server-side no-op; changed rows
   for the same range are a new insert.
 - Replays with different chunk boundaries (for example after a lost checkpoint) insert duplicate rows that only a
-  background merge collapses. Read `session_events` with `FINAL` (as the queries below do) for counts and sums.
-- `raw` (and every parsed column) is the line after the shared redactor (`src/lib/redact.ts`): the JSON is parsed,
-  redacted deeply and re-serialised; an invalid line is redacted as text. `line_bytes` and offsets refer to the
-  original file.
-- Token columns are credited once per API response: Claude repeats `message.usage` on every content-block line of a
+  background merge collapses. Read `session_events` with `FINAL` for archive counts; use the context view for attributed, credited sums.
+- `raw` is the exact source line, including LF and any CR, without reserialization or ingest redaction.
+  Blank lines are skipped; an unterminated trailing line waits for LF.
+  Every parsed column is a pure function of that line: absent text is empty, absent/invalid time is Unix epoch,
+  and token columns retain each line's reported usage. File history, birthtime and earlier message IDs cannot
+  change an unchanged line's archived columns. The archive is byte-exact per line, including invalid UTF-8 bytes;
+  parsed columns use UTF-8 decoding while raw bytes bypass decoding during insertion.
+  This supersedes the previous line-exact and redacted contract. Historical redacted rows cannot recover text.
+- `v_session_events_context` derives inherited session/cwd/project/model/time and usage credit at query time,
+  exposing `(session_id, ordinal)` (ordinal is unique within the session across archive identities).
+  Attribution windows stay within `(machine, path, generation)` and order by byte offset/content hash.
+  Multiple content variants at one offset sort by hash; the view does not reconstruct an original revision's
+  sequence. Derived values/ordinals can change as archive variants arrive. Historical migrated parsed values
+  remain historical receipts; they are not reparsed or claimed to have the new line-local semantics.
+  This view credits tokens once per API response: Claude repeats `message.usage` on every content-block line of a
   message (credited on the first line per `message.id`); Codex `token_count.last_token_usage` is credited unless the
   running total is unchanged, and `token_usage_record` lines (same numbers) are not credited.
   `input_tokens` means uncached input for both harnesses (Codex `input_tokens - cached_input_tokens`).
 - The daemon picks up un-checkpointed files only if modified in the last 24 h; `--backfill [--since DATE]` does history
   at `--rate-mb` (default 5 MB/s).
 - Not shipped yet: T3 Code's own thread store (SQLite, see the PR-b body) and the stray Codex rollout at `~/.t3/*.jsonl`.
+
+Agents default to `v_session_events_meta` (an explicit metadata allowlist) and `v_requests`
+(request metadata without failure bodies/codes, headers, endpoint, IP or user agent). These views
+are query conveniences, not access controls. Raw text needs an explicit query on the base table.
 
 ## Example queries
 
@@ -100,13 +143,14 @@ ORDER BY cache_write DESC
 LIMIT 50
 ```
 
-Activity per machine / harness / project:
+Activity per machine / harness / project: the context view reads the archive with `FINAL` and derives attribution/usage credit.
+Rewound/abandoned branches with different content remain distinct. Legacy migration or lineage loss can increase sums:
 
 ```sql
 SELECT machine, harness, project, toDate(ts) AS day,
        uniqExact(session_id) AS sessions, count() AS events,
        sum(output_tokens) AS output_tokens
-FROM tokenlayer.session_events FINAL
+FROM tokenlayer.v_session_events_context
 WHERE ts >= now() - INTERVAL 30 DAY
 GROUP BY machine, harness, project, day
 ORDER BY day DESC, events DESC

@@ -1,5 +1,5 @@
 /**
- * The one secret boundary for everything tokenlayer persists (ClickHouse rows, spool, rejects, logs):
+ * Secret filtering for egress copies (logs, rejects and exported text); archive bytes stay exact.
  * API keys, bearer/OAuth tokens, JWTs, private keys, auth-file JSON and email addresses are replaced
  * with REDACTED. `redactDeep` recurses through objects, arrays and strings; `redactText` covers free text,
  * including JSON (or escaped JSON) embedded in a string.
@@ -11,7 +11,7 @@ const KEY_NAME = "[a-z_][a-z0-9_.-]*";
 const ASSIGNMENT = new RegExp(String.raw`(?:\\+[nr]|(?<![\w.-]))(?:--(${KEY_NAME})(?:[ \t]+|=[ \t]*)|(${KEY_NAME})(?:\\*["'])?[ \t]*[=:][ \t]*)`, "gi");
 const SENSITIVE_NAME = /password|passwd|secret|token|key|auth|cookie|credential|session|bearer/i;
 const normalizeKey = (k: string) => k.toLowerCase().replace(/[^a-z0-9]/g, "");
-const sensitiveKey = (key: string) => SENSITIVE_NAME.test(key) && !/^(?:(?:input|output|total|cached|cachereadinput|cachecreationinput)tokens(?:details)?|tokencount|totaltokenusage|lasttokenusage|sessionid|parentsessionid|clientkeyhash|authtype)$/.test(key);
+const sensitiveKey = (key: string) => SENSITIVE_NAME.test(normalizeKey(key).replace(/tokenlayer/g, '')) && !/^(?:(?:input|output|total|cached|cachereadinput|cachecreationinput)tokens(?:details)?|tokencount|totaltokenusage|lasttokenusage|sessionid|parentsessionid|clientkeyhash|authtype)$/.test(normalizeKey(key));
 
 /** Shell arguments can join quoted/unquoted segments and escape otherwise separating bytes. */
 function shellArgumentEnd(text: string, start: number): number {
@@ -80,8 +80,9 @@ function redactAssignments(text: string, nesting = 0): string {
   let string: RegExpExecArray | null | undefined;
   for (let match = assignment.exec(text); match; match = assignment.exec(text)) {
     const rawKey = match[1] ?? match[2];
-    const key = normalizeKey(rawKey);
-    if (!sensitiveKey(key)) continue;
+    if (!sensitiveKey(rawKey)) continue;
+    // Steer's credentials=<integer> is a counter; opaque, quoted and fractional values stay secret.
+    if (/^credentials=$/i.test(match[0]) && /^\d+(?=\s|$)/.test(text.slice(assignment.lastIndex))) continue;
     while (string === undefined || (string && string.index + string[0].length <= match.index)) string = strings.exec(text);
     if (string && string.index < match.index && assignment.lastIndex < string.index + string[0].length) {
       try {
@@ -111,15 +112,15 @@ function redactAssignments(text: string, nesting = 0): string {
 
 const RULES: [RegExp, string][] = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, REDACTED],
-  [/(\\[nr]|\b)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, `$1$2${REDACTED}`],
-  [/\b(Basic\s+)[A-Za-z0-9+/]{16,}={0,2}/g, `$1${REDACTED}`],
+  [/(\\+(?:[nrtbf]|u[0-9a-fA-F]{4})|\b)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, `$1$2${REDACTED}`],
+  [/(\\+(?:[nrtbf]|u[0-9a-fA-F]{4})|\b)(Basic\s+)[A-Za-z0-9+/]{16,}={0,2}/g, `$1$2${REDACTED}`],
   [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]*:[^\s/@]*@/gi, `$1${REDACTED}@`],
   [
-    /\b(?:sk-[A-Za-z0-9_-]{8,}|sk_(?:live|test)_[A-Za-z0-9]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|ya29\.[0-9A-Za-z_-]{10,})/g,
-    REDACTED,
+    /(\\+(?:[nrtbf]|u[0-9a-fA-F]{4})|\b)(?:sk-[A-Za-z0-9_-]{8,}|sk_(?:live|test)_[A-Za-z0-9]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|ya29\.[0-9A-Za-z_-]{10,})/g,
+    `$1${REDACTED}`,
   ],
-  [/\b1\/\/0[0-9A-Za-z_-]{20,}/g, REDACTED],
-  [/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g, REDACTED],
+  [/(\\+(?:[nrtbf]|u[0-9a-fA-F]{4})|\b)1\/\/0[0-9A-Za-z_-]{20,}/g, `$1${REDACTED}`],
+  [/(\\+(?:[nrtbf]|u[0-9a-fA-F]{4})|\b)eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g, `$1${REDACTED}`],
   [/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g, REDACTED],
 ];
 
@@ -128,7 +129,8 @@ function redactTails(text: string): string {
   return text.replace(/[A-Za-z0-9_+/-]{24,}={0,2}/g, (run, at: number) => {
     const before = text.slice(Math.max(0, at - 64), at);
     const after = text.slice(at + run.length, at + run.length + 64);
-    if (!SENSITIVE_NAME.test(normalizeKey(before)) && !SENSITIVE_NAME.test(normalizeKey(after))) return run;
+    const nearby = normalizeKey(`${before} ${after}`).replace(/tokenlayer/g, '');
+    if (!SENSITIVE_NAME.test(nearby)) return run;
     // Keep identifiable paths, git hashes, UUIDs and numbers even near sensitive prose.
     if (/^[0-9]+$/.test(run) || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(run)
       || (/^[0-9a-f]{40,64}$/i.test(run) && /\b(?:git|sha|sha1|sha256|commit|hash)[\s:=_-]*$/i.test(before))
@@ -157,7 +159,7 @@ export function redactDeep(value: unknown, opts: { extraKeys?: readonly string[]
     const out: Record<string, unknown> = {};
     for (const [k, inner] of Object.entries(v as Record<string, unknown>)) {
       const key = normalizeKey(k);
-      const secret = sensitiveKey(key) || extra.has(key);
+      const secret = sensitiveKey(k) || extra.has(key);
       out[redactText(k)] = secret && inner !== "" && inner !== null && (typeof inner === "string" || typeof inner === "object") ? REDACTED : walk(inner);
     }
     return out;

@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClickHouse } from "../../src/lib/clickhouse";
 import { shipOnce, type ShipOptions } from "../../src/ship/ship";
+import { loadState } from "../../src/ship/state";
 
 type Row = Record<string, unknown>;
 
@@ -65,6 +67,16 @@ const claudeFile = () => join(root, "claude", "-Users-u-Gits-golems", "s-1.jsonl
 const codexFile = () => join(root, "codex", "2026", "10", "28", "rollout-a.jsonl");
 
 describe("shipOnce", () => {
+  test("content hashes cover exact source bytes including LF, before decoding or redaction", async () => {
+    const sources = [Buffer.from('{"email":"one@example.invalid"}\r\n'),
+      Buffer.from('{"email":"two@example.invalid"}\r\n'), Buffer.from([0xff, 0x0a]), Buffer.from([0xfe, 0x0a])];
+    writeFileSync(claudeFile(), Buffer.concat(sources));
+    await shipOnce(opts);
+    expect(db.rows.map((r) => r.content_hash)).toEqual(sources.map((b) => createHash("sha256").update(b).digest("hex")));
+    expect(db.rows[0].raw).toBe(sources[0].toString());
+    expect(db.rows[1].raw).toBe(sources[1].toString());
+  });
+
   test("ships complete lines from both roots with machine, harness, path and byte offset", async () => {
     writeFileSync(claudeFile(), `${claudeLine(1)}\n${claudeLine(2)}\n{"partial":`);
     writeFileSync(join(root, "claude", "-Users-u-Gits-golems", "s-1", "subagents", "agent-x.jsonl"), `${claudeLine(3, "sdk-ts")}\n`);
@@ -215,7 +227,7 @@ describe("shipOnce", () => {
     expect(db.rows[2].generation).not.toBe(gen);
   });
 
-  test("raw and parsed columns never carry credentials or emails", async () => {
+  test("raw and parsed columns retain source text", async () => {
     const key = "sk-ant-api03-FAKEfakeFAKEfake0123456789";
     const email = "erin.fake@example.invalid";
     const authFile = JSON.stringify({ type: "claude", email, access_token: "sk-ant-oat01-FAKEfakeFAKE0123456789", refresh_token: "opaque-refresh-fake" });
@@ -232,8 +244,79 @@ describe("shipOnce", () => {
     expect(db.rows).toHaveLength(2);
     const all = JSON.stringify(db.rows);
     for (const secret of [key, email, "sk-ant-oat01-FAKEfakeFAKE0123456789", "opaque-refresh-fake", "fakeBearer0123456789abcdef"]) {
-      expect(all).not.toContain(secret);
+      expect(all).toContain(secret);
     }
     expect(db.rows[0]).toMatchObject({ session_id: "s-1", project: "golems", type: "user" });
   });
+});
+
+test("rotation with identical first line gets a distinct generation", async () => {
+  writeFileSync(claudeFile(), claudeLine(1) + "\n");
+  await shipOnce(opts);
+  renameSync(claudeFile(), claudeFile() + ".bak");
+  writeFileSync(claudeFile(), claudeLine(1) + "\n");
+  await shipOnce(opts);
+  expect(db.rows[1].generation).not.toBe(db.rows[0].generation);
+});
+
+test("middle-only rewrite before the checkpoint is detected", async () => {
+  const lines = Array.from({ length: 150 }, () => claudeLine(1));
+  writeFileSync(claudeFile(), lines.join("\n") + "\n");
+  await shipOnce(opts);
+  lines[75] = claudeLine(2);
+  writeFileSync(claudeFile(), lines.join("\n") + "\n");
+  expect((await shipOnce(opts)).resets).toBe(1);
+});
+
+test("final checkpoint includes progress after an intermediate save", async () => {
+  writeFileSync(claudeFile(), claudeLine(1) + "\n" + claudeLine(2) + "\n");
+  await shipOnce({ ...opts, batchBytes: 1, saveEveryMs: -1 });
+  expect((await shipOnce(opts)).lines).toBe(0);
+});
+
+test("legacy state upgrades once in place", async () => {
+  mkdirSync(join(root, "state"));
+  writeFileSync(opts.statePath, JSON.stringify({ version: 1, files: {} }));
+  await expect(shipOnce(opts)).resolves.toBeDefined();
+  expect(JSON.parse(await Bun.file(opts.statePath).text()).version).toBe(3);
+});
+
+test.each([1, 2])("v%i upgrade retains old tracked files across startup, failure and the daemon cutoff", async (version) => {
+  writeFileSync(claudeFile(), `${claudeLine(1)}\n${claudeLine(2)}\n`);
+  const old = new Date("2026-01-01T00:00:00Z");
+  utimesSync(claudeFile(), old, old);
+  mkdirSync(join(root, "state"));
+  writeFileSync(opts.statePath, JSON.stringify({ version, files: { [claudeFile()]: { offset: claudeLine(1).length + 1 } } }));
+  loadState(opts.statePath); // main.ts upgrades before its first shipOnce.
+  const daemon = { ...opts, sinceMs: Date.parse("2026-10-01T00:00:00Z") };
+  db.setFail(true);
+  await expect(shipOnce(daemon)).rejects.toThrow();
+  db.setFail(false);
+  expect((await shipOnce(daemon)).lines).toBe(2);
+  expect(db.rows.map((r) => JSON.parse(String(r.raw)).message.content)).toEqual(["m1", "m2"]);
+  expect((await shipOnce(daemon)).lines).toBe(0);
+});
+
+test("a failed file does not block another file in the pass", async () => {
+  writeFileSync(claudeFile(), claudeLine(1) + "\n");
+  writeFileSync(codexFile(), codexMeta("codex_exec") + "\n");
+  const insert = db.client.insert.bind(db.client);
+  db.client.insert = async (table, rows, token) => {
+    if (JSON.stringify(rows).includes("s-1")) throw new Error("synthetic file failure");
+    return insert(table, rows, token);
+  };
+  await expect(shipOnce(opts)).rejects.toThrow();
+  expect(db.rows).toHaveLength(1);
+});
+
+test('reset logs redact a synthetic secret in the source path', async () => {
+  const secret = 'sk-ant-api03-SYNTHETICfake01234567890123456789';
+  const file = join(root, 'claude', `${secret}.jsonl`);
+  const logs: string[] = [];
+  writeFileSync(file, `${claudeLine(1)}\n`);
+  await shipOnce({ ...opts, log: m => logs.push(m) });
+  writeFileSync(file, `${claudeLine(2)}\n`);
+  await shipOnce({ ...opts, log: m => logs.push(m) });
+  expect(logs).toHaveLength(1);
+  expect(logs[0]).not.toContain(secret);
 });

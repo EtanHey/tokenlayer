@@ -1,7 +1,9 @@
+import { registerRewriteTests } from "../support/ship-rewrites";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { verifySessionSchema } from "../../src/lib/session-schema";
 import { applySchema } from "../../src/lib/schema";
 import { shipOnce, type ShipOptions } from "../../src/ship/ship";
 import { clickhouseBinary, startLocalClickHouse, type LocalClickHouse } from "../support/local-clickhouse";
@@ -49,12 +51,13 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse", () => {
 
   const counts = async () =>
     ch.client.queryJSON<{ machine: string; harness: string; n: string; output: string }>(
-      "SELECT machine, harness, count() AS n, sum(output_tokens) AS output FROM tokenlayer.session_events FINAL GROUP BY machine, harness ORDER BY harness",
+      "SELECT machine, harness, count() AS n, sum(output_tokens) AS output FROM tokenlayer.v_session_events_context GROUP BY machine, harness ORDER BY harness",
     );
 
   test("ships both harnesses; usage is credited once per message", async () => {
     const r = await shipOnce(opts);
     expect(r.lines).toBe(5);
+    expect(Number((await ch.client.queryJSON<{ output: string }>("SELECT sum(output_tokens) AS output FROM tokenlayer.session_events FINAL"))[0].output)).toBe(40);
     expect((await counts()).map((c) => [c.machine, c.harness, Number(c.n), Number(c.output)])).toEqual([
       ["m4", "codex", 1, 0],
       ["m4", "t3", 4, 20],
@@ -80,109 +83,50 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse", () => {
     );
     expect(parts.map((p) => p.partition)).toEqual(["202609", "202610"]);
   });
-});
-
-describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse: rewrites, rotation, replays", () => {
-  let ch: LocalClickHouse;
-  let dir: string;
-
-  beforeAll(async () => {
-    ch = await startLocalClickHouse();
-    await applySchema(ch.client);
-    dir = mkdtempSync(join(tmpdir(), "tokenlayer-ship-it2-"));
-  }, 40_000);
-  afterAll(async () => {
-    await ch?.stop();
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  /** Each test gets its own machine name and root, so assertions never see another test's rows. */
-  const setup = (machine: string, batchBytes?: number) => {
-    const root = join(dir, machine);
-    mkdirSync(join(root, "p"), { recursive: true });
-    const o: ShipOptions = {
-      machine,
-      roots: [{ kind: "claude", dir: root }],
-      clickhouse: ch.client,
-      statePath: join(dir, `${machine}.state.json`),
-      rateBytesPerSec: 0,
-      batchBytes,
-    };
-    return { file: join(root, "p", "s.jsonl"), o };
-  };
-  const line = (text: string, extra: Record<string, unknown> = {}) =>
-    JSON.stringify({ type: "user", sessionId: "s", timestamp: new Date().toISOString(), message: { role: "user", content: text }, ...extra });
-  const finalRows = (machine: string) =>
-    ch.client.queryJSON<{ generation: string; byte_offset: string; harness: string; content: string }>(
-      `SELECT generation, byte_offset, harness, JSONExtractString(raw, 'message', 'content') AS content
-       FROM tokenlayer.session_events FINAL WHERE machine = '${machine}' ORDER BY ingested_at, byte_offset`,
-    );
-
-  test("a late harness decision replaces the first chunk even when its byte range is unchanged", async () => {
-    const { file, o } = setup("it-late", 1);
-    writeFileSync(file, `${JSON.stringify({ type: "queue-operation", sessionId: "s", timestamp: new Date().toISOString() })}\n`);
-    await shipOnce(o);
-    appendFileSync(file, `${line("two", { entrypoint: "sdk-ts" })}\n`);
-    await shipOnce(o);
-    expect((await finalRows("it-late")).map((r) => [Number(r.byte_offset), r.harness])).toEqual([
-      [0, "t3"],
-      [expect.any(Number), "t3"],
-    ]);
-  });
-
-  test("a same-inode equal-size rewrite is shipped, and the earlier generation is kept", async () => {
-    const { file, o } = setup("it-rewrite", 1);
-    writeFileSync(file, `${line("old")}\n${line("two")}\n`);
-    await shipOnce(o);
-    writeFileSync(file, `${line("new")}\n${line("two")}\n`);
-    const r = await shipOnce(o);
-    expect(r.resets).toBe(1);
-    const rows = await finalRows("it-rewrite");
-    expect(rows.map((x) => x.content).sort()).toEqual(["new", "old", "two", "two"]);
-    expect(new Set(rows.map((x) => x.generation)).size).toBe(2);
-  });
-
-  test("rotation to a backup name keeps the archived history of the old file", async () => {
-    const { file, o } = setup("it-rotate");
-    writeFileSync(file, `${line("old")}\n`);
-    await shipOnce(o);
-    renameSync(file, `${file}.bak`);
-    writeFileSync(file, `${line("new")}\n`);
-    await shipOnce(o);
-    expect((await finalRows("it-rotate")).map((x) => x.content).sort()).toEqual(["new", "old"]);
-  });
-
-  test("the documented activity query counts a replay with shifted chunk boundaries once", async () => {
-    const { file, o } = setup("it-activity");
-    const assistant = (i: number) =>
-      JSON.stringify({
-        type: "assistant",
-        sessionId: "s",
-        cwd: "/Users/u/Gits/golems",
-        timestamp: new Date().toISOString(),
-        message: { id: `msg_${i}`, role: "assistant", model: "claude-opus-5-5", usage: { input_tokens: 1, output_tokens: 10 } },
-      });
-    await ch.client.exec("SYSTEM STOP MERGES tokenlayer.session_events");
-    try {
-      writeFileSync(file, `${assistant(1)}\n`);
-      await shipOnce(o);
-      rmSync(o.statePath);
-      appendFileSync(file, `${assistant(2)}\n`);
-      await shipOnce(o);
-      const [{ physical }] = await ch.client.queryJSON<{ physical: string }>(
-        "SELECT count() AS physical FROM tokenlayer.session_events WHERE machine = 'it-activity'",
-      );
-      expect(Number(physical)).toBe(3);
-
-      const doc = await Bun.file(join(import.meta.dir, "..", "..", "docs", "telemetry.md")).text();
-      const activity = [...doc.matchAll(/```sql\n([\s\S]*?)```/g)].map((m) => m[1]).find((q) => q.includes("tokenlayer.session_events"));
-      expect(activity).toBeDefined();
-      const [agg] = await ch.client.queryJSON<{ events: string; output: string }>(
-        `SELECT sum(events) AS events, sum(output_tokens) AS output FROM (${activity}) WHERE machine = 'it-activity'`,
-      );
-      expect([Number(agg.events), Number(agg.output)]).toEqual([2, 20]);
-    } finally {
-      await ch.client.exec("SYSTEM START MERGES tokenlayer.session_events");
+  test("raw readback is byte-identical and agent views omit payload columns", async () => {
+    const line = ' { "type":"user", "message":{"content":"sk-ant-api03-SYNTHETIC01234567890123456789"} }\r\n';
+    writeFileSync(join(dir, "claude", "exact.jsonl"), line);
+    await shipOnce(opts);
+    const [row] = await ch.client.queryJSON<{ raw: string }>("SELECT raw FROM tokenlayer.session_events FINAL WHERE endsWith(path, '/exact.jsonl')");
+    expect(Buffer.from(row.raw)).toEqual(Buffer.from(line));
+    const binary = Buffer.from([...Array.from({ length: 32 }, (_, i) => i).filter(i => i !== 10), 0x7f, 0xff, 0xfe, 34, 92, 10]);
+    writeFileSync(join(dir, "claude", "binary.jsonl"), binary);
+    await shipOnce(opts);
+    const [stored] = await ch.client.queryJSON<{ bytes: string }>("SELECT hex(raw) AS bytes FROM tokenlayer.session_events FINAL WHERE endsWith(path, '/binary.jsonl')");
+    expect(stored.bytes).toBe(binary.toString('hex').toUpperCase());
+    for (const view of ['v_session_events_meta', 'v_requests']) {
+      const cols = await ch.client.queryJSON<{ name: string }>(`DESCRIBE TABLE tokenlayer.${view}`);
+      for (const payload of ['raw', 'fail_body', 'fail_code', 'user_agent', 'ratelimit']) expect(cols.map(c => c.name)).not.toContain(payload);
     }
   });
+
+});
+
+registerRewriteTests("normal");
+
+describe.skipIf(!clickhouseBinary())("legacy schema migration", () => {
+  test.each(["legacy", "generation"])("migrates %s key, preserves rows and is restartable", async (version) => {
+    const ch = await startLocalClickHouse();
+    try {
+      await ch.client.exec("CREATE DATABASE tokenlayer");
+      const old = version === "legacy"
+        ? "CREATE TABLE tokenlayer.session_events (machine String, path String, byte_offset UInt64, ts DateTime64(3), raw String) ENGINE=ReplacingMergeTree ORDER BY (machine,path,byte_offset)"
+        : readFileSync(join(import.meta.dir, "../../schema/004_session_events.sql"), "utf8")
+          .replace(/^    content_hash.*\n/m, "").replace("ORDER BY (machine, path, generation, byte_offset, content_hash)", "ORDER BY (machine, path, generation, byte_offset)").replace(/;\s*$/, "");
+      await ch.client.exec(old);
+      await ch.client.exec("CREATE TABLE tokenlayer.session_events_legacy (raw String) ENGINE=MergeTree ORDER BY tuple()");
+      await ch.client.exec("INSERT INTO tokenlayer.session_events (machine,path,byte_offset,ts,raw) VALUES ('test','synthetic',0,now(),'{}')");
+      await expect(verifySessionSchema(ch.client)).rejects.toThrow("schema mismatch");
+      await applySchema(ch.client);
+      await verifySessionSchema(ch.client);
+      const [{ sorting_key }] = await ch.client.queryJSON<{ sorting_key: string }>("SELECT sorting_key FROM system.tables WHERE database='tokenlayer' AND name='session_events'");
+      expect(sorting_key).toBe("machine, path, generation, byte_offset, content_hash");
+      expect((await ch.client.queryJSON("SELECT generation,message_id,raw FROM tokenlayer.session_events FINAL")))
+        .toEqual([{ generation: version === "legacy" ? "legacy" : "", message_id: "", raw: "{}" }]);
+      const [receipt] = await ch.client.queryJSON<{ content_hash: string }>("SELECT content_hash FROM tokenlayer.session_events FINAL");
+      expect(receipt.content_hash).toMatch(/^legacy:[a-f0-9]{64}$/);
+      expect(await ch.client.queryJSON("SELECT raw FROM tokenlayer.session_events_pre_content_hash")).toEqual([{ raw: "{}" }]);
+      await applySchema(ch.client);
+    } finally { await ch.stop(); }
+  }, 40000);
 });
