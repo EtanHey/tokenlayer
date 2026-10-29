@@ -32,6 +32,7 @@ test("canonical longest copy, prefix skips, renamed repo and unchanged sources",
 test("exclude synthetic corpora and telemetry; retain subagents, zst and metadata-only T3", () => {
   for (const p of ["/repo/tests/fixtures/s.jsonl", "/eval-gates/runs/corpus-snapshots/s.jsonl", "/benchmarks/s.jsonl", "/synthetic/home/.claude/projects/s.jsonl", "/registry/events.jsonl"]) expect(classify(row({ member_path: p })).session).toBe(false);
   expect(classify(row({ member_path: "/.claude/projects/x/subagents/agent-a.jsonl" })).session).toBe(true);
+  expect(classify(row({ member_path: "/.claude/projects/-Users-etanheyman-Gits-synthetic-incident-fixtures/session.jsonl" })).session).toBe(true);
   expect(classify(row({ harness: "codex", member_path: "/.codex/sessions/rollout-x.jsonl.zst" })).session).toBe(true);
   expect(classify(row({ source_kind: "t3_sqlite", harness: "t3" })).session).toBe(true);
   expect(classify(row({ member_path: "placeholder.tgz", bytes: "40" })).session).toBe(false);

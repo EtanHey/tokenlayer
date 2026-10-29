@@ -13,7 +13,7 @@ const hashOK = (hash: string) => /^[a-f0-9]{64}$/.test(hash);
 const synthetic = /(?:^|\/)(?:tests?|fixtures?(?:-raw)?|testdata|__fixtures__|benchmarks?|evals?|eval-gates[^/]*|corpus[^/]*|synthetic[^/]*|node_modules|registry|telemetry|[^/]*benchmark[^/]*|[^/]*fixtures[^/]*)(?:\/|$)|\/(?:\.vl[^/]*|\.vd[^/]*|\.tmp-[^/]*|brainlayer-live-verify)\//i;
 
 export function classify(r: Inventory): { session: boolean; reason: string } {
-  const path = `${r.container}/${r.member_path}`;
+  const path = `${r.container}/${r.member_path}`.replace(/(^|\/)-Users-[^/]+(?=\/|$)/g, "$1project");
   if (/\/(?:\.cursor|\.gemini|\.antigravity)\//.test(path)) return { session: false, reason: "outside Claude/Codex/T3 scope" };
   if (synthetic.test(path)) return { session: false, reason: "fixture/eval/benchmark/registry/telemetry path" };
   if (Number(r.bytes) === 40 && /\.tgz$/.test(r.member_path)) return { session: false, reason: "40-byte placeholder" };
