@@ -24,7 +24,7 @@ export function classify(r: Inventory): { session: boolean; reason: string } {
   return { session: true, reason: `${r.harness} session identity from inventory` };
 }
 
-export function origin(r: Inventory): string {
+export function origin(r: Pick<Inventory, "machine" | "cwd" | "member_path">): string {
   const evidence = r.cwd || r.member_path;
   if (/(?:\/Users\/|-Users-)etanheyman(?:\/|-|$)/.test(evidence)) return "m4";
   if (/(?:\/Users\/|-Users-)happycampr(?:\/|-|$)/.test(evidence)) return "m1";
