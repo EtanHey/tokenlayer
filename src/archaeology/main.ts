@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync, readFileSync, lstatSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { classify, repoMap, manifest, dryRun, parseEvidenceLine, type Inventory, type Evidence, type ExistingCount } from "./pipeline";
+import { classify, repoMap, manifest, dryRun, parseEvidenceLine, parseShipperRoots, DEFAULT_SHIPPER_ROOTS, type Inventory, type Evidence, type ExistingCount } from "./pipeline";
 import { localSources } from "./sources";
 import { validatedDryRun } from "./validation";
 
@@ -19,15 +19,15 @@ export function inventory(path: string): Inventory[] {
 const ddl = `-- PROPOSAL: tokenlayer owns final DDL. Intervals follow dated evidence; null bounds are open.\nCREATE TABLE tokenlayer.repo_map (machine LowCardinality(String), cwd String, repo_canonical String, valid_from Nullable(DateTime64(3,'UTC')), valid_to Nullable(DateTime64(3,'UTC')), evidence Array(String), confidence LowCardinality(String)) ENGINE=MergeTree ORDER BY (machine,cwd);\n`;
 
 if (import.meta.main) {
-  const { values } = parseArgs({ options: { inventory: { type: "string", multiple: true }, manifest: { type: "string" }, existing: { type: "string" }, evidence: { type: "string" }, out: { type: "string" }, validate: { type: "boolean", default: false } } });
+  const { values } = parseArgs({ options: { inventory: { type: "string", multiple: true }, manifest: { type: "string" }, existing: { type: "string" }, evidence: { type: "string" }, roots: {type:"string"}, out: { type: "string" }, validate: { type: "boolean", default: false } } });
   if (!values.out || (!values.manifest && !values.inventory?.length)) throw new Error("usage: --inventory TSV [--inventory TSV] --evidence NDJSON --out DIR [--validate]");
   const inputPaths = values.manifest ? [values.manifest] : values.inventory ?? [];
   const rows = inputPaths.flatMap(inventory);
   const evidence: Evidence[] = values.evidence ? readFileSync(values.evidence, "utf8").split("\n").filter(Boolean).map(parseEvidenceLine) : [];
   if (process.env.USER === "happycampr") throw new Error("Phase 4 dry-run is M4-only");
   const out = resolve(values.out);
-  const targets = ["dedupe.sqlite", "dedupe.sqlite-wal", "dedupe.sqlite-shm", "repo_map.ndjson", "repo_map.ddl.sql", "unresolved-cwds.ndjson", "manifest.tsv", "dry-run.json", "classification.tsv"].map(p => join(out, p));
-  if (targets.some(t => existsSync(t) && lstatSync(t).isSymbolicLink()) || [...inputPaths, values.evidence, values.existing].some(p => p && targets.includes(resolve(p)))) throw new Error("output aliases an input");
+  const targets = ["dedupe.sqlite", "dedupe.sqlite-wal", "dedupe.sqlite-shm", "repo_map.ndjson", "repo_map.ddl.sql", "unresolved-cwds.ndjson", "manifest.tsv", "dry-run.json", "classification.tsv", "shipper-roots.json"].map(p => join(out, p));
+  if (targets.some(t => existsSync(t) && lstatSync(t).isSymbolicLink()) || [...inputPaths, values.evidence, values.existing, values.roots].some(p => p && targets.includes(resolve(p)))) throw new Error("output aliases an input");
   if (rows.some(r => targets.includes(resolve(r.member_path)) || (r.container && targets.includes(resolve(r.container))))) throw new Error("output overlaps a source");
   mkdirSync(out, { recursive: true });
   if (inputPaths.some(p => ["manifest.tsv", "classification.tsv"].some(n => resolve(p) === join(out, n)))) throw new Error("output directory must not contain input inventories");
@@ -36,12 +36,14 @@ if (import.meta.main) {
     if (!r.session_id || !(r.stream || r.path) || !/^\d+$/.test(r.count ?? "")) throw new Error("existing export requires session_id, stream or path, content_hash, count");
     return [r.session_id, r.stream || r.path, r.content_hash, Number(r.count)];
   }) : [];
-  const maps = repoMap(rows.filter(r => classify(r).session), evidence), entries = manifest(rows, maps);
+  const roots=values.roots?parseShipperRoots(JSON.parse(readFileSync(values.roots,"utf8"))):DEFAULT_SHIPPER_ROOTS;
+  const maps = repoMap(rows.filter(r => classify(r).session), evidence), entries = manifest(rows, maps, roots);
   let processed = 0;
   const sources = localSources(entries);
   const options = {...sources,existing,database:join(out,"dedupe.sqlite"),onEntry:()=>{if(++processed%1000===0)process.stderr.write(`verified progress ${processed}/${entries.length}\n`);}};
   const {report,validated,baseline} = values.validate ? await validatedDryRun(entries,options) : {report:await dryRun(entries,options),validated:0,baseline:null};
   const output = (name: string, value: string) => writeFileSync(join(out, name), value);
+  output("shipper-roots.json",JSON.stringify(roots,null,2)+"\n");
   output("repo_map.ndjson", maps.map(m => JSON.stringify(m)).join("\n") + "\n"); output("repo_map.ddl.sql", ddl);
   output("unresolved-cwds.ndjson", maps.filter(m => !m.repo_canonical).map(m => JSON.stringify(m)).join("\n") + "\n");
   const keys = Object.keys(entries[0] ?? {});

@@ -78,8 +78,8 @@ test("MF-1 compressed live rollouts are historical unless the shipper covers the
   const entries = manifest([row({ source_kind: "live", harness: "codex", member_path: path, bytes: String(bytes.length), sha256: sha256(bytes) })], []);
   entries[0].container_hash = compressedHash;
   const result = await dryRun(entries, { read: async () => (async function* () { yield bytes; })() });
-  expect(shipperCovers(path)).toBe(false);
-  expect(shipperCovers(path.replace(/\.zst$/, ""))).toBe(true);
+  expect(shipperCovers(path,"m4")).toBe(false);
+  expect(shipperCovers(path.replace(/\.zst$/, ""),"m4")).toBe(true);
   expect(result.live_rows).toBe(0); expect(result.import_rows).toBe(1);
   expect(result.sample[0].path).toBe(`archive://${compressedHash}/${path}`);
 });
@@ -182,4 +182,19 @@ test("F-5 generated Antigravity logs and workflow findings are excluded by layou
   expect(classify(row({source_kind:"drive_tarball_member",member_path:"source-10/11111111-1111-4111-8111-111111111111/.system_generated/logs/transcript_full.jsonl"})).session).toBe(false);
   expect(classify(row({member_path:"session/subagents/workflows/lane/findings/result.jsonl"})).session).toBe(false);
   expect(classify(row({member_path:"session/subagents/workflows/lane/agent-a.jsonl"})).session).toBe(true);
+});
+
+test("F-8 live coverage uses explicit machine roots independent of the M4 environment", () => {
+  const prior=process.env.TOKENLAYER_CLAUDE_DIR;process.env.TOKENLAYER_CLAUDE_DIR="/Users/etanheyman/custom-claude";
+  try {
+    const path="/Users/happycampr/.claude/projects/p/session.jsonl";
+    expect(shipperCovers(path,"m1")).toBe(true);
+    expect(shipperCovers(path,"m4")).toBe(false);
+    const roots={m1:["/Users/happycampr/custom-claude"],m4:["/Users/etanheyman/custom-claude"]};
+    expect(shipperCovers(path,"m1",roots)).toBe(false);
+    expect(shipperCovers("/Users/happycampr/custom-claude/p/session.jsonl","m1",roots)).toBe(true);
+    const entry=row({machine:"m1",cwd:"/Users/happycampr/Gits/p",source_kind:"live",member_path:path});
+    expect(manifest([entry],[])[0].source_kind).toBe("live");
+    expect(manifest([entry],[],roots)[0].source_kind).toBe("archive_dir");
+  } finally {if(prior===undefined)delete process.env.TOKENLAYER_CLAUDE_DIR;else process.env.TOKENLAYER_CLAUDE_DIR=prior;}
 });

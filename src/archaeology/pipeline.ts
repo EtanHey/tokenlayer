@@ -97,16 +97,26 @@ function identityMatches(raw: string, session: string, kind: "claude" | "codex")
 }
 export type ExistingCount = [session: string, streamOrPath: string, hash: string, count: number];
 
-/** Mirrors ship.ts listJsonl: plain JSONL in configured/default Claude or Codex trees. */
-export function shipperCovers(path: string, roots?: readonly string[]): boolean {
-  if (!path.endsWith(".jsonl")) return false;
-  const under = (root: string) => path.startsWith(root.replace(/\/$/, "") + "/");
-  if (roots) return roots.some(under);
-  return (process.env.TOKENLAYER_CLAUDE_DIR ? under(process.env.TOKENLAYER_CLAUDE_DIR) : /\/\.claude\/projects\//.test(path))
-    || (process.env.TOKENLAYER_CODEX_DIR ? under(process.env.TOKENLAYER_CODEX_DIR) : /\/\.codex\/sessions\//.test(path));
+export type MachineRoots = Readonly<Record<string, readonly string[]>>;
+export const DEFAULT_SHIPPER_ROOTS: MachineRoots = {
+  m4:["/Users/etanheyman/.claude/projects","/Users/etanheyman/.codex/sessions"],
+  m1:["/Users/happycampr/.claude/projects","/Users/happycampr/.codex/sessions"],
+};
+export function parseShipperRoots(value: unknown): MachineRoots {
+  if(!value || typeof value!=="object" || Array.isArray(value))throw Error("roots must map machine names to absolute directory arrays");
+  const result:Record<string,string[]>={};
+  for(const [machine,roots]of Object.entries(value)){
+    if(!Array.isArray(roots)||!roots.every((r):r is string=>typeof r==="string"&&r.startsWith("/")))throw Error("invalid machine shipper roots");
+    result[machine]=roots;
+  }
+  return result;
+}
+/** Mirrors ship.ts listJsonl using the owning machine's explicit roots, never this process's env. */
+export function shipperCovers(path: string, machine: string, roots: MachineRoots = DEFAULT_SHIPPER_ROOTS): boolean {
+  return path.endsWith(".jsonl") && (roots[machine]??[]).some(root=>path.startsWith(root.replace(/\/$/,"")+"/"));
 }
 
-export function manifest(rows: Inventory[], maps: RepoMap[]): Entry[] {
+export function manifest(rows: Inventory[], maps: RepoMap[], roots: MachineRoots = DEFAULT_SHIPPER_ROOTS): Entry[] {
   const repos = new Map<string, RepoMap[]>();
   for (const m of maps) {const key=`${m.machine}\0${m.cwd}`,list=repos.get(key)??[];list.push(m);repos.set(key,list);}
   const copies = new Map<string, Entry>();
@@ -114,7 +124,7 @@ export function manifest(rows: Inventory[], maps: RepoMap[]): Entry[] {
     const key = JSON.stringify([r.machine, r.source_kind, r.container, r.member_path, r.sha256]);
     const ts=Date.parse(r.first_ts), matching=(repos.get(`${origin(r)}\0${r.cwd}`)??[]).filter(m=>(m.valid_from===null||ts>=Date.parse(m.valid_from))&&(m.valid_to===null||ts<Date.parse(m.valid_to)));
     const names=new Set(matching.map(m=>m.repo_canonical));
-    copies.set(key, { ...r, source_kind: r.source_kind === "live" && !shipperCovers(r.member_path) ? "archive_dir" : r.source_kind, origin: origin(r), repo: names.size===1?matching[0].repo_canonical:"", selected: false, relation: "unverified", status: "pending", container_hash: "", stream: streamId(r.session_id, r.member_path) });
+    copies.set(key, { ...r, source_kind: r.source_kind === "live" && !shipperCovers(r.member_path,origin(r),roots) ? "archive_dir" : r.source_kind, origin: origin(r), repo: names.size===1?matching[0].repo_canonical:"", selected: false, relation: "unverified", status: "pending", container_hash: "", stream: streamId(r.session_id, r.member_path) });
   }
   const entries = [...copies.values()].sort((a, b) => Number(b.bytes) - Number(a.bytes) || a.member_path.localeCompare(b.member_path));
   const largest = new Map<string, Entry>();
