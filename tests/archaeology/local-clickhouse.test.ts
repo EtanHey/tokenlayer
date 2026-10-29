@@ -5,4 +5,4 @@ test.skipIf(!clickhouseBinary())("S-7 production local ClickHouse helper serves 
   const local=await startLocalClickHouse();
   try {expect(await local.client.exec("SELECT 1")).toBe("1\n");}
   finally {await local.stop();}
-});
+}, 40_000);

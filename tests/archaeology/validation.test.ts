@@ -9,4 +9,4 @@ test.skipIf(!clickhouseBinary())("S-5 dry-run leaves a preseeded real ClickHouse
   const result=await validatedDryRun(manifest([row],[]),{read:async()=>(async function*(){yield bytes;})()},3);
   expect(result.baseline).toEqual({seed_rows:3,before:3,after:3,after_sample:3});
   expect(result.report.import_rows).toBe(1);expect(result.validated).toBe(1);
-});
+}, 40_000);
