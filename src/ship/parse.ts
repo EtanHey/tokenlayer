@@ -4,7 +4,7 @@ import { parseTimestampMs, toClickHouseTime } from "../lib/time";
 export type SourceKind = "claude" | "codex";
 export type Harness = "claude" | "codex" | "t3";
 
-/** Per-file carry-forward context. Persisted in the checkpoint so a resumed file parses like an unbroken one. */
+/** V3 checkpoint shape. Legacy context fields remain readable; line parsing never consumes them. */
 export type FileState = {
   kind: SourceKind;
   harness: Harness;
@@ -34,8 +34,6 @@ export type ParsedLine = {
   reasoning_tokens: number;
   raw: string;
 };
-
-const RECENT_IDS = 64;
 
 export function newFileState(kind: SourceKind, harness: Harness, defaultTsMs: number): FileState {
   return { kind, harness, lastTsMs: defaultTsMs, sessionId: "", cwd: "", model: "", recentIds: [], lastCodexTotal: "" };
@@ -86,18 +84,13 @@ export function projectFromCwd(cwd: string): string {
 
 const zeroTokens = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0 };
 
-function claudeColumns(o: Obj, st: FileState) {
-  st.sessionId = str(o.sessionId) || str(o.session_id) || st.sessionId;
-  st.cwd = str(o.cwd) || st.cwd;
+function claudeColumns(o: Obj) {
   const msg = isObj(o.message) ? o.message : {};
   const model = str(msg.model);
-  if (model && model !== "<synthetic>") st.model = model;
   const id = str(msg.id);
   let tokens = zeroTokens;
   const usage = isObj(msg.usage) ? msg.usage : null;
-  if (usage && id && !st.recentIds.includes(id)) {
-    st.recentIds.push(id);
-    if (st.recentIds.length > RECENT_IDS) st.recentIds.shift();
+  if (usage && id) {
     const details = isObj(usage.output_tokens_details) ? usage.output_tokens_details : {};
     tokens = {
       input_tokens: uint(usage.input_tokens),
@@ -110,27 +103,19 @@ function claudeColumns(o: Obj, st: FileState) {
   return { type: str(o.type), role: str(msg.role), model: model && model !== "<synthetic>" ? model : "", message_id: id, ...tokens };
 }
 
-function codexColumns(o: Obj, st: FileState) {
+function codexColumns(o: Obj) {
   const p = isObj(o.payload) ? o.payload : {};
   const type = str(o.type);
   let role = str(p.role) || str(p.type);
   let message_id = "";
   let tokens = zeroTokens;
   if (type === "session_meta") {
-    st.sessionId = str(p.session_id) || str(p.id) || st.sessionId;
-    st.cwd = str(p.cwd) || st.cwd;
     role = "";
-  } else if (type === "turn_context") {
-    st.cwd = str(p.cwd) || st.cwd;
-    st.model = str(p.model) || st.model;
   } else if (type === "token_usage_record") {
     message_id = str(p.response_id);
-    st.sessionId = st.sessionId || str(p.session_id);
   } else if (type === "event_msg" && p.type === "token_count" && isObj(p.info)) {
-    const total = JSON.stringify(p.info.total_token_usage ?? null);
     const last = isObj(p.info.last_token_usage) ? p.info.last_token_usage : null;
-    if (last && total !== st.lastCodexTotal) {
-      st.lastCodexTotal = total;
+    if (last) {
       const input = uint(last.input_tokens);
       const cached = uint(last.cached_input_tokens);
       tokens = {
@@ -142,23 +127,22 @@ function codexColumns(o: Obj, st: FileState) {
       };
     }
   }
-  return { type, role, model: st.model, message_id, ...tokens };
+  return { type, role, model: str(p.model), message_id, ...tokens };
 }
 
 /**
- * Parse one JSONL line into session_events columns, updating the file's carry-forward state.
- * Token columns are credited once per API response: input_tokens is uncached input for both harnesses.
- * Raw and parsed columns come from the unredacted source line.
+ * Archive columns are pure functions of this line. Missing time is the Unix epoch; missing text is empty.
+ * Token columns retain line-local usage (uncached input). Attribution/crediting belongs to the context view.
+ * The optional legacy state argument is ignored and never mutated.
  */
-export function parseLine(line: string, st: FileState): ParsedLine {
-  const parsed = tryParse(line);
-  const o = parsed;
+export function parseLine(line: string, _legacyState?: FileState): ParsedLine {
+  const o = tryParse(line);
   if (!o) {
     return {
-      ts: toClickHouseTime(st.lastTsMs),
-      session_id: st.sessionId,
-      project: projectFromCwd(st.cwd),
-      cwd: st.cwd,
+      ts: toClickHouseTime(0),
+      session_id: "",
+      project: "",
+      cwd: "",
       type: "invalid",
       role: "",
       model: "",
@@ -167,14 +151,14 @@ export function parseLine(line: string, st: FileState): ParsedLine {
       raw: line,
     };
   }
-  const ms = parseTimestampMs(o.timestamp);
-  if (ms !== null) st.lastTsMs = ms;
-  const cols = st.kind === "claude" ? claudeColumns(o, st) : codexColumns(o, st);
+  const p = isObj(o.payload) ? o.payload : {};
+  const cwd = str(o.cwd) || str(p.cwd);
+  const cols = isObj(o.payload) ? codexColumns(o) : claudeColumns(o);
   return {
-    ts: toClickHouseTime(st.lastTsMs),
-    session_id: st.sessionId,
-    project: projectFromCwd(st.cwd),
-    cwd: st.cwd,
+    ts: toClickHouseTime(parseTimestampMs(o.timestamp) ?? 0),
+    session_id: str(o.sessionId) || str(o.session_id) || str(p.session_id) || (o.type === "session_meta" ? str(p.id) : ""),
+    project: projectFromCwd(cwd),
+    cwd,
     ...cols,
     raw: line,
   };

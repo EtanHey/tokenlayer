@@ -12,6 +12,8 @@ export async function applySchema(ch: ClickHouse, dir = SCHEMA_DIR): Promise<str
     .filter((f) => f.endsWith(".sql"))
     .sort();
   for (const f of files) {
+    // Views must bind to the migrated column list, including on legacy upgrades.
+    if (f === "005_views.sql") await migrateSessionSchema(ch);
     const sql = readFileSync(join(dir, f), "utf8")
       .split("\n")
       .filter((l) => !l.trim().startsWith("--"))

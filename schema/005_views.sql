@@ -1,6 +1,9 @@
 -- Agent defaults contain metadata only. Raw text requires an explicit base-table query.
-CREATE VIEW IF NOT EXISTS tokenlayer.v_session_events_meta AS
-SELECT * EXCEPT (raw) FROM tokenlayer.session_events FINAL;
+CREATE OR REPLACE VIEW tokenlayer.v_session_events_meta AS
+SELECT machine, harness, path, generation, byte_offset, content_hash, line_bytes, ts,
+       session_id, project, cwd, type, role, model, message_id, input_tokens, output_tokens,
+       cache_read_tokens, cache_creation_tokens, reasoning_tokens, ingested_at
+FROM tokenlayer.session_events FINAL;
 
 -- All selected request columns exist in schema/002_proxy_usage.sql.
 CREATE VIEW IF NOT EXISTS tokenlayer.v_requests AS
