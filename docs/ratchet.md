@@ -21,3 +21,9 @@ Numeric CI rows may set `reportOnly: true`: they still run, display main/PR valu
 Queries have two warmups plus 20 timed requests (nearest-rank p95). After OPTIMIZE and stopping background merges, the harness also runs each golden query with the query cache disabled, one thread and fixed block size. It flushes logs and identifies exactly one QueryFinish by a unique log comment, yielding `<query>-read_rows`, `-read_bytes`, `-result_rows`, `-result_bytes` and `-memory_usage`. Query row policy should use `growth: 0.02` (memory: `0.05`); memory allocation can vary slightly. The harness emits `session-active-parts`, `ship-insert-batches`, and `ship-insert-batch-<n>-rows` for deterministic ingest budgets. Storage remains active bytes_on_disk after OPTIMIZE scaled to 10k rows. CI has a six-minute hard timeout.
 
 M1 rows are report-only until deployment; `bun ratchet/live.ts <row-id>` reads local credentials without printing them. Cache ratio is read tokens divided by total creation tokens (W5m + W1h); w1h share uses the raw one-hour creation breakdown. Unknown/zero-denominator telemetry fails the probe. Live ship lag is event timestamp to ingest timestamp p95 over the last day and can include historical replays. No M1 values are claimed by CI.
+
+Normal tests retain 40-trial shipper property smoke checks (`TOKENLAYER_PROPERTY_N` defaults to 40).
+Long `*.property.test.ts` entries are excluded from default discovery. `bun run test:property` explicitly
+runs them with `TOKENLAYER_PROPERTY_N=300`; the required `ci` job gives that step its own 10-minute budget.
+The full step retains all archive assertions and checks 300 completed operation sequences / 1,200 SIGKILLs.
+Ratchet commands and limits stay unchanged; their default measurements include the short smoke checks.

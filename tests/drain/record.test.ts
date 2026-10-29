@@ -148,3 +148,9 @@ describe("mapUsageRecord", () => {
     expect(mapUsageRecord({ ...ok, response_headers: headers }, { hub: "m1" }).ratelimit).toEqual(headers);
   });
 });
+
+test("small integer fields reject overflow instead of wrapping", () => {
+  for (const patch of [{ accounting_version: 256 }, { latency_ms: 2 ** 32 }, { fail: { status_code: 65536 } }]) {
+    expect(() => mapUsageRecord({ ...fixture[0], ...patch }, { hub: "test" })).toThrow();
+  }
+});

@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { writeOut, writeErr, installErrorHandlers } from '../lib/egress';
+installErrorHandlers();
 // tokenlayer-steer: every 60s, put the Claude Max credential whose quota resets soonest alone at priority 100.
 // Usage: bun src/steer/main.ts [--once] [--dry-run] [--snapshots]
 //   --dry-run    GET only; log the PATCHes it would make.
@@ -14,7 +16,7 @@ import { tick } from "./steer";
 const env = loadEnv(process.env.TOKENLAYER_ENV ?? "~/.config/tokenlayer/hub.env");
 const mgmtKey = env.CLIPROXY_MGMT_KEY;
 if (!mgmtKey) {
-  console.error("tokenlayer-steer: CLIPROXY_MGMT_KEY is not set");
+  writeErr("tokenlayer-steer: CLIPROXY_MGMT_KEY is not set");
   process.exit(2);
 }
 
@@ -29,7 +31,7 @@ const client = new HubClient(hubUrl, mgmtKey);
 const opts = {
   dryRun,
   hub: env.TOKENLAYER_HUB ?? "m1",
-  onSnapshot: args.has("--snapshots") ? (rows: object[]) => rows.forEach((r) => console.log(JSON.stringify(r))) : undefined,
+  onSnapshot: args.has("--snapshots") ? (rows: object[]) => rows.forEach((r) => writeOut(JSON.stringify(r))) : undefined,
 };
 
 let stopping = false;
@@ -39,10 +41,10 @@ const exitCode = await runLoop({
   intervalMs, once, stopping: () => stopping,
   execute: async () => {
     const r = await tick(client, opts);
-    if (once) console.error(`${new Date().toISOString()} tokenlayer-steer: credentials=${r.credentials} changes=${r.changes} errors=${r.errors} patch_errors=${r.patchErrors ?? 0}${dryRun ? " (dry-run)" : ""}`);
+    if (once) writeErr(`${new Date().toISOString()} tokenlayer-steer: credentials=${r.credentials} changes=${r.changes} errors=${r.errors} patch_errors=${r.patchErrors ?? 0}${dryRun ? " (dry-run)" : ""}`);
     return r;
   },
-  log: message => console.error(`${new Date().toISOString()} tokenlayer-steer: ${message}`),
+  log: message => writeErr(`${new Date().toISOString()} tokenlayer-steer: ${message}`),
   sleep: async wait => {
     for (let waited = 0; waited < wait && !stopping; waited += 250)
       await Bun.sleep(Math.min(250, wait - waited));

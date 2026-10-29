@@ -1,3 +1,4 @@
+import { writeErr } from '../lib/egress';
 import { BACKOFF_CAP_MS, HubError } from "./client";
 import { labelHash } from "../lib/hash";
 import { assess, rank, type Tiers } from "./rank";
@@ -39,7 +40,7 @@ const backoffs = new WeakMap<SteerHub, Map<string, { failures: number; until: nu
 /** One steer pass: fetch → rank → PATCH only the diffs → snapshot. Never throws for a single bad credential. */
 export async function tick(hub: SteerHub, opts: TickOptions = {}): Promise<TickResult> {
   const now = opts.now ?? Date.now();
-  const log = opts.log ?? ((line: string) => console.error(line));
+  const log = opts.log ?? ((line: string) => writeErr(line));
   const stamp = new Date(now).toISOString();
   const credentials = await hub.list();
   let pending = backoffs.get(hub);

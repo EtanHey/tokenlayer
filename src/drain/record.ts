@@ -106,6 +106,11 @@ export type ProxyUsageRow = {
 const RATELIMIT_HEADER = /^(anthropic-ratelimit-|x-ratelimit-|x-codex-|retry-after$)/;
 
 const str = (v: unknown, fallback = ""): string => (typeof v === "string" ? v : fallback) || fallback;
+const bounded = (v: unknown, bits: number): number => {
+  const n = uint(v);
+  if (n > 2 ** bits - 1) throw new Error("integer exceeds storage range");
+  return n;
+};
 const uint = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.trunc(v) : 0);
 
 function ratelimitHeaders(headers: UsageQueueRecord["response_headers"]): Record<string, string> {
@@ -163,11 +168,11 @@ export function mapUsageRecord(input: unknown, opts: { hub: string }): ProxyUsag
     output_tokens: uint(t.output_tokens),
     reasoning_tokens: uint(t.reasoning_tokens),
     total_tokens: uint(t.total_tokens),
-    accounting_version: uint(r.accounting_version),
+    accounting_version: bounded(r.accounting_version, 8),
     accounting_quality: str(r.token_breakdown?.quality),
-    latency_ms: uint(r.latency_ms),
-    ttft_ms: uint(r.ttft_ms),
-    status_code: uint(r.fail?.status_code),
+    latency_ms: bounded(r.latency_ms, 32),
+    ttft_ms: bounded(r.ttft_ms, 32),
+    status_code: bounded(r.fail?.status_code, 16),
     failed,
     fail_code: str(r.fail?.code),
     fail_body: failed ? (typeof body === "string" ? body : JSON.stringify(body) ?? "") : "",

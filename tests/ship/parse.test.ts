@@ -92,7 +92,7 @@ describe("projectFromCwd", () => {
 });
 
 describe("parseLine (claude)", () => {
-  test("extracts columns and credits usage once per message id", () => {
+  test("extracts each line usage independently of earlier message ids", () => {
     const st = newFileState("claude", "claude", 0);
     const u = parseLine(claudeUser, st);
     expect(u).toMatchObject({ ts: "2026-10-28 08:00:00.000", session_id: "s-1", project: "golems", type: "user", role: "user" });
@@ -109,15 +109,15 @@ describe("parseLine (claude)", () => {
     });
     const a2 = parseLine(claudeAssistant(2), st);
     expect(a2.message_id).toBe("msg_1");
-    expect(a2.output_tokens).toBe(0);
-    expect(a2.cache_read_tokens).toBe(0);
+    expect(a2.output_tokens).toBe(217);
+    expect(a2.cache_read_tokens).toBe(27549);
   });
 
-  test("lines without a timestamp inherit the previous one; invalid JSON is kept raw", () => {
+  test("missing timestamps use a fixed epoch; invalid JSON is kept raw", () => {
     const st = newFileState("claude", "claude", Date.UTC(2026, 0, 1));
-    expect(parseLine(JSON.stringify({ type: "atis-latch", sessionId: "s-1" }), st).ts).toBe("2026-01-01 00:00:00.000");
+    expect(parseLine(JSON.stringify({ type: "atis-latch", sessionId: "s-1" }), st).ts).toBe("1970-01-01 00:00:00.000");
     parseLine(claudeUser, st);
-    expect(parseLine(JSON.stringify({ type: "atis-latch" }), st).ts).toBe("2026-10-28 08:00:00.000");
+    expect(parseLine(JSON.stringify({ type: "atis-latch" }), st).ts).toBe("1970-01-01 00:00:00.000");
     const bad = parseLine("{not json", st);
     expect(bad.type).toBe("invalid");
     expect(bad.raw).toBe("{not json");
@@ -125,12 +125,12 @@ describe("parseLine (claude)", () => {
 });
 
 describe("parseLine (codex)", () => {
-  test("session/cwd/model carry forward from session_meta and turn_context", () => {
+  test("session/cwd/model remain line-local in the archive", () => {
     const st = newFileState("codex", "t3", 0);
     expect(parseLine(codexMeta("T3 Code"), st)).toMatchObject({ session_id: "c-1", project: "brainlayer", type: "session_meta" });
     parseLine(codexTurn, st);
     const m = parseLine(codexMessage, st);
-    expect(m).toMatchObject({ session_id: "c-1", model: "gpt-5.5", type: "response_item", role: "assistant" });
+    expect(m).toMatchObject({ session_id: "", cwd: "", model: "", type: "response_item", role: "assistant" });
   });
 
   test("tokens come from token_count.last_token_usage only (uncached input), never the duplicate usage record", () => {
@@ -151,25 +151,25 @@ describe("parseLine (codex)", () => {
     expect(r.message_id).toBe("resp_1");
   });
 
-  test("a repeated token_count (same running total, e.g. a rate-limit refresh) is not credited twice", () => {
+  test("a repeated token_count retains its line-local usage", () => {
     const st = newFileState("codex", "codex", 0);
     expect(parseLine(codexTokens, st).output_tokens).toBe(230);
-    expect(parseLine(codexTokens, st).output_tokens).toBe(0);
+    expect(parseLine(codexTokens, st).output_tokens).toBe(230);
   });
 });
 
 describe("parseLine secret hygiene", () => {
-  test("a tool printing synthetic clickhouse.env cannot persist credentials in raw", () => {
+  test("a tool printing synthetic clickhouse.env retains credentials in raw", () => {
     const output = "CLICKHOUSE_PASSWORD=syntheticClickhousePassword&syntheticPasswordTail\nCLIPROXY_MGMT_KEY=\"syntheticManagementKey\"\n";
     const row = parseLine(JSON.stringify({
       type: "user", sessionId: "synthetic-session", timestamp: "2026-10-28T08:00:00Z",
       message: { role: "user", content: [{ type: "tool_result", content: `cat clickhouse.env\n${output}` }] },
       toolUseResult: { stdout: output, headers: JSON.stringify("before\nCookie: syntheticCookieTail\nafter") },
     }), newFileState("claude", "t3", 0));
-    expect(row.raw).not.toContain("syntheticClickhousePassword");
-    expect(row.raw).not.toContain("syntheticManagementKey");
-    expect(row.raw).not.toContain("syntheticPasswordTail");
-    expect(row.raw).not.toContain("syntheticCookieTail");
+    expect(row.raw).toContain("syntheticClickhousePassword");
+    expect(row.raw).toContain("syntheticManagementKey");
+    expect(row.raw).toContain("syntheticPasswordTail");
+    expect(row.raw).toContain("syntheticCookieTail");
     expect(JSON.parse(row.raw).message.content[0].type).toBe("tool_result");
     expect(row.raw).toContain("clickhouse.env");
   });
@@ -178,13 +178,8 @@ describe("parseLine secret hygiene", () => {
   const EMAIL = "frank.fake@example.invalid";
   const OAUTH = "sk-ant-oat01-FAKEfakeFAKE0123456789";
   const authFile = { type: "codex", email: EMAIL, tokens: { access_token: OAUTH, refresh_token: "opaque-refresh-fake", id_token: "opaque-id-fake" } };
-  const SENTINELS = [KEY, EMAIL, OAUTH, "opaque-refresh-fake", "opaque-id-fake", "fakeBearer0123456789abcdef"];
-  const clean = (row: unknown) => {
-    const s = JSON.stringify(row);
-    for (const secret of SENTINELS) expect(s).not.toContain(secret);
-  };
 
-  test("nested tool output with an auth file, a key and an email is redacted in raw", () => {
+  test("nested tool output with an auth file, a key and an email is retained in raw", () => {
     const st = newFileState("claude", "claude", 0);
     const line = JSON.stringify({
       ...JSON.parse(claudeUser),
@@ -192,21 +187,32 @@ describe("parseLine secret hygiene", () => {
       toolUseResult: { stdout: JSON.stringify(authFile, null, 2), stderr: `contact ${EMAIL}` },
     });
     const row = parseLine(line, st);
-    clean(row);
+    expect(row.raw).toBe(line);
     expect(row).toMatchObject({ session_id: "s-1", project: "golems", type: "user", role: "user" });
     expect(JSON.parse(row.raw).message.content[0].type).toBe("tool_result");
   });
 
-  test("codex function-call output and invalid lines are redacted too", () => {
+  test("codex function-call output and invalid lines are retained too", () => {
     const st = newFileState("codex", "codex", 0);
     const call = JSON.stringify({
       timestamp: "2026-10-28T08:00:03.000Z",
       type: "response_item",
       payload: { type: "function_call_output", output: `curl -H 'Authorization: Bearer fakeBearer0123456789abcdef' -H 'x-api-key: ${KEY}'` },
     });
-    clean(parseLine(call, st));
+    expect(parseLine(call, st).raw).toBe(call);
     const bad = parseLine(`{"oops": ${JSON.stringify(authFile)} ${EMAIL}`, st);
     expect(bad.type).toBe("invalid");
-    clean(bad);
+    expect(bad.raw).toBe(`{"oops": ${JSON.stringify(authFile)} ${EMAIL}`);
   });
+});
+
+test("review: all parsed columns depend only on line bytes", () => {
+  for (const line of ['{bad', '{}', JSON.stringify({ type: "response_item", payload: { role: "assistant" } }),
+    JSON.stringify({ type: "assistant", message: { id: "same", usage: { input_tokens: 10, output_tokens: 20 } } })]) {
+    const cold = newFileState("codex", "codex", 0);
+    const warm = { ...newFileState("claude", "t3", Date.now()), sessionId: "other", cwd: "/other", model: "model-B", recentIds: ["same"], lastCodexTotal: "null" };
+    const before = structuredClone(warm);
+    expect(parseLine(line, warm)).toEqual(parseLine(line, cold));
+    expect(warm).toEqual(before);
+  }
 });

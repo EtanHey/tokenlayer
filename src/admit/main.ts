@@ -1,3 +1,5 @@
+import { writeOut, installErrorHandlers } from '../lib/egress';
+installErrorHandlers();
 import { parseArgs } from 'node:util';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -18,5 +20,5 @@ try {
 } catch {
   result = deny('invalid arguments or unavailable healthy telemetry');
 }
-process.stdout.write(JSON.stringify(result)+'\n');
+writeOut(JSON.stringify(result));
 process.exitCode = result.admit ? 0 : 1;

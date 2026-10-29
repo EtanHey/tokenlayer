@@ -1,5 +1,6 @@
 import type { ClickHouse } from "../lib/clickhouse";
 import { redactDeep, redactText } from "../lib/redact";
+import { sha256Hex } from "../lib/hash";
 import { mapUsageRecord } from "./record";
 import type { Spool } from "./spool";
 
@@ -29,8 +30,17 @@ async function fetchPage(opts: DrainOptions, count: number): Promise<unknown[]> 
     await res.body?.cancel();
     throw new Error(`usage queue GET failed: HTTP ${res.status}`);
   }
-  const body = (await res.json()) as unknown;
-  if (!Array.isArray(body)) throw new Error("usage queue returned a non-array body");
+  const text = await res.text();
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+    if (!Array.isArray(body)) throw new Error("non-array");
+  } catch {
+    // Malformed bodies can contain encoded JSON that cannot be safely scrubbed by field name.
+    const receipt = { reason: "malformed hub page", bytes: Buffer.byteLength(text), sha256: sha256Hex(text) };
+    opts.spool.reject(redactDeep(receipt, { extraKeys: SECRET_FIELDS }) as typeof receipt);
+    throw new Error("usage queue returned malformed page; durable reject receipt saved");
+  }
   return body;
 }
 
