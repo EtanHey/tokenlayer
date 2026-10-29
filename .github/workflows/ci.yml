@@ -52,6 +52,8 @@ jobs:
       - run: bun test
       - name: Independent admission safety mutation
         run: python3 scripts/check-admit-blind-mutation.py
+      - name: Bootstrap judge content guard regression
+        run: python3 scripts/test-ratchet-bootstrap.py
       - name: Ratchet (trusted base versus this PR)
         id: ratchet
         env:
@@ -66,8 +68,8 @@ jobs:
           if test -f "$trusted/ratchet/guard.mjs"; then
             node "$trusted/ratchet/table.mjs" ratchet/rows.json
           else
-            # One reviewed adoption only; no fallback for later bases.
-            test "$RATCHET_BASE_REF" = e1cd4224f3d6adc84f46c899cf043f5702104667
+            # Permit changed rows, but require the complete reviewed judge import closure.
+            python3 scripts/check-ratchet-bootstrap.py "$RATCHET_BASE_REF"
             TRUSTED="$trusted" node --input-type=module <<'JS'
           const root = process.env.TRUSTED;
           const [{ runRows }, { evaluate }] = await Promise.all([import(`${root}/ratchet/run-rows.mjs`), import(`${root}/ratchet/table.mjs`)]);
