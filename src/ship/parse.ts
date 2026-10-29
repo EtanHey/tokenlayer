@@ -21,6 +21,7 @@ export type FileState = {
 export type ParsedLine = {
   ts: string;
   session_id: string;
+  session_alias: string;
   project: string;
   cwd: string;
   type: string;
@@ -141,6 +142,7 @@ export function parseLine(line: string, _legacyState?: FileState): ParsedLine {
     return {
       ts: toClickHouseTime(0),
       session_id: "",
+      session_alias: "",
       project: "",
       cwd: "",
       type: "invalid",
@@ -156,7 +158,8 @@ export function parseLine(line: string, _legacyState?: FileState): ParsedLine {
   const cols = isObj(o.payload) ? codexColumns(o) : claudeColumns(o);
   return {
     ts: toClickHouseTime(parseTimestampMs(o.timestamp) ?? 0),
-    session_id: str(o.sessionId) || str(o.session_id) || str(p.session_id) || (o.type === "session_meta" ? str(p.id) : ""),
+    session_id: (o.type === "session_meta" ? str(p.id) : "") || str(o.sessionId) || str(o.session_id) || str(p.session_id),
+    session_alias: o.type === "session_meta" ? str(p.session_id) : "",
     project: projectFromCwd(cwd),
     cwd,
     ...cols,

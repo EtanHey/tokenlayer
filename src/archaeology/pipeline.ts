@@ -75,16 +75,15 @@ export function streamId(session: string, path: string): string {
   const agent = subagentFileId(path);
   return `${agent ? session : filenameSessionId(path) ?? session}::${agent ? `subagent/${agent}` : "main"}`;
 }
-/** F-1: match the installed shipper's alias-first column; dedupe uses native identity separately. */
-export function codexSessionId(native: string, alias: string): string { return alias || native; }
+/** F-1: native rollout identity; parseLine preserves the parent in session_alias. */
+export function codexSessionId(native: string): string { return native; }
 function codexIdentity(raw: string, declared: string, path: string): {native:string;session:string} | null {
   try {
     const o: unknown=JSON.parse(raw);
     if (!o || typeof o!=="object" || !("type"in o) || o.type!=="session_meta" || !("payload"in o) || !o.payload || typeof o.payload!=="object" || !("id"in o.payload) || typeof o.payload.id!=="string" || !o.payload.id) return null;
     const native=o.payload.id;
     if(native!==declared && native!==filenameSessionId(path)) return null;
-    const alias="session_id"in o.payload && typeof o.payload.session_id==="string" ? o.payload.session_id : "";
-    return {native,session:codexSessionId(native,alias)};
+    return {native,session:codexSessionId(native)};
   } catch {return null;}
 }
 function identityMatches(raw: string, session: string, kind: "claude" | "codex"): boolean {

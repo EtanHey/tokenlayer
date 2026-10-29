@@ -147,7 +147,7 @@ test("MF-3 Codex native header id is authoritative over parser session_id aliase
   const entries=manifest([row({harness:"codex",member_path:"rollout-session.jsonl",bytes:String(bytes.length),sha256:sha256(bytes)})],[]);
   const result=await dryRun(entries,{read:async()=>(async function*(){yield bytes;})()});
   expect(result.import_rows).toBe(2);expect(result.not_transcript).toBe(0);
-  expect(result.sample.every(e=>e.session_id==="older-parent")).toBe(true);
+  expect(result.sample.every(e=>e.session_id==="session")).toBe(true);
   expect(Buffer.concat(result.sample.map(e=>Buffer.from(e.raw))).equals(bytes)).toBe(true);
 });
 
@@ -163,7 +163,8 @@ test("NF-1 native child rollout stream is accepted and isolated from its parent 
   const result=await dryRun(entries,{read});
   expect(result.import_rows).toBe(4);expect(result.skip_copy).toBe(2);expect(result.not_transcript).toBe(0);
   expect(entries.filter(e=>e.member_path.includes(child)).every(e=>e.stream===`${child}::main`)).toBe(true);
-  expect(result.sample.every(e=>e.session_id===parent)).toBe(true);
+  expect(result.sample.filter(e=>e.path.includes(child)).every(e=>e.session_id===child)).toBe(true);
+  expect(result.sample.filter(e=>!e.path.includes(child)).every(e=>e.session_id===parent)).toBe(true);
   const seeded=await dryRun(manifest([rows[1]],[]),{read,existing:[[parent,path,sha256(childBytes.subarray(0,childBytes.indexOf(10)+1)),1],[parent,path,sha256(Buffer.from(common)),1]]});
   expect(seeded.import_rows).toBe(0);expect(seeded.skip_live).toBe(2);
 });
