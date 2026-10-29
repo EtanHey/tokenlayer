@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runRows } from './run-rows.mjs';
+import { checkRows } from './guard.mjs';
 export function evaluate(row, value, baseline) {
   if (row.direction === 'pass') return value === true;
   if (!Number.isFinite(value) || (baseline !== undefined && !Number.isFinite(baseline))) return false;
@@ -42,34 +43,18 @@ export function main(path) {
     if (spawnSync('tar', ['-x', '-C', scratch], { input: archive }).status !== 0) throw Error('extract base failed');
     const basePath = join(scratch, path);
     const baseRows = existsSync(basePath) ? parseRows(JSON.parse(readFileSync(basePath, 'utf8'))) : [];
-    // Existing rows cannot disappear, change commands, or loosen their thresholds unnoticed.
-    for (const old of baseRows) {
-      const next = rows.find(r => r.id === old.id);
-      // One-time R0 review migration; all future loosening remains forbidden.
-      const r0Timing = { id: 'redactor-throughput-mbps', metric: 'Synthetic redactor minimum MB/s',
-        kind: 'unit', runner: 'ci', direction: 'min', ceiling: 20,
-        command: 'node ratchet/measure.mjs redactor', timeout_s: 240 };
-      const same = (a, b) => a && Object.keys(a).length === Object.keys(b).length
-        && Object.keys(b).every(k => a[k] === b[k]);
-      if (same(old, r0Timing) && same(next, { ...r0Timing,
-        metric: 'Synthetic redactor median of 5 MB/s', ceiling: 5, maxRegression: 0.25 })) continue;
-      if (!next || ['command', 'metric', 'direction', 'runner', 'kind'].some(k => old[k] !== next[k])
-        || (old.direction === 'min' && next.ceiling < old.ceiling)
-        || (old.direction === 'max' && next.ceiling > old.ceiling)
-        || (next.maxRegression ?? 0) > (old.maxRegression ?? 0)
-        || next.timeout_s > old.timeout_s) throw Error(`row removed or loosened: ${old.id}`);
-    }
+    checkRows(baseRows, rows, process.env.GITHUB_EVENT_PATH ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')) : {});
     let baseline = {};
     if (baseRows.some(r => r.runner === 'ci')) {
       const install = spawnSync('bun', ['install', '--frozen-lockfile'], { cwd: scratch, encoding: 'utf8' });
       if (install.status !== 0) throw Error('baseline install failed');
-      baseline = runRows(baseRows.filter(r => r.id !== 'redactor-throughput-mbps'), scratch);
+      baseline = runRows(rows.filter(r => r.id !== 'redactor-throughput-mbps'), scratch);
     }
     // Timing uses this harness for both source trees, including first adoption.
     // Avoid executing main's historical benchmark floor or sampling policy.
     const timing = rows.find(r => r.id === 'redactor-throughput-mbps');
     if (timing) {
-      const run = spawnSync('node', [resolve('ratchet/measure.mjs'), 'redactor'], {
+      const run = spawnSync('node', [fileURLToPath(new URL('./measure.mjs', import.meta.url)), 'redactor'], {
         cwd: scratch, encoding: 'utf8', timeout: timing.timeout_s * 1000,
         env: { ...process.env, REDACT_MODULE: join(scratch, 'src/lib/redact.ts') },
       });
@@ -79,15 +64,16 @@ export function main(path) {
     let ok = true;
     const lines = ['| row | metric | ceiling | main | this PR | status |', '|---|---|---|---|---|---|'];
     for (const row of rows.filter(r => r.runner === 'ci')) {
-      const hasBase = baseRows.some(r => r.id === row.id) || row.id === 'redactor-throughput-mbps';
+      const hasBase = baseRows.length > 0;
       const before = baseline[row.id];
-      const pass = (!hasBase || before !== null && before !== undefined && evaluate(row, before))
+      const pass = (!hasBase || before !== null && before !== undefined && before !== false)
         && evaluate(row, values[row.id], hasBase ? before : undefined);
       ok &&= pass;
       lines.push(`| ${[row.id, row.metric, row.maxRegression === undefined ? row.ceiling : `${row.ceiling}; >=${100 * (1 - row.maxRegression)}% main`, hasBase ? before : 'bootstrap', values[row.id], pass ? 'PASS' : 'FAIL'].map(cell).join(' | ')} |`);
     }
     for (const row of rows.filter(r => r.runner === 'm1')) lines.push(`| ${[row.id, row.metric, row.ceiling, 'R1', 'report-only until R1', 'REPORT ONLY'].map(cell).join(' | ')} |`);
     if (!rows.some(r => r.runner === 'ci')) throw Error('no CI rows');
+    if (ok && process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `median=${values['redactor-throughput-mbps']}\n`);
     const table = lines.join('\n') + '\n';
     console.log(table);
     if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, table);

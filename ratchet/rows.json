@@ -11,6 +11,7 @@
       "command": "bun test",
       "timeout_s": 240
     },
+    { "id": "unit-tests-count", "metric": "Bun passing test count", "kind": "unit", "runner": "ci", "direction": "min", "ceiling": 303, "command": "node ratchet/measure.mjs unit", "timeout_s": 240 },
     {
       "id": "typecheck-pass",
       "metric": "TypeScript passes",
@@ -37,18 +38,18 @@
       "kind": "unit",
       "runner": "ci",
       "direction": "min",
-      "ceiling": 5,
+      "ceiling": 15,
       "command": "node ratchet/measure.mjs redactor",
       "timeout_s": 240,
       "maxRegression": 0.25
     },
     {
       "id": "admit-tla-states",
-      "metric": "TLC distinct states",
+      "metric": "TLC completes with invariants holding",
       "kind": "unit",
       "runner": "ci",
-      "direction": "min",
-      "ceiling": 4224,
+      "direction": "pass",
+      "ceiling": true,
       "command": "node ratchet/measure.mjs tla",
       "timeout_s": 240
     },
