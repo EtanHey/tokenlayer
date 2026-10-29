@@ -167,3 +167,13 @@ test("NF-1 native child rollout stream is accepted and isolated from its parent 
   const seeded=await dryRun(manifest([rows[1]],[]),{read,existing:[[parent,path,sha256(childBytes.subarray(0,childBytes.indexOf(10)+1)),1],[parent,path,sha256(Buffer.from(common)),1]]});
   expect(seeded.import_rows).toBe(0);expect(seeded.skip_live).toBe(2);
 });
+
+test("NF-2 Claude positive native identity retains all carried-over foreign lines", async () => {
+  const own='{"sessionId":"A","type":"user"}\n',foreign='{"sessionId":"B","type":"assistant"}\n';
+  const bytes=Buffer.from(own.repeat(1000)+foreign);
+  const entries=manifest([row({session_id:"A",member_path:"A.jsonl",bytes:String(bytes.length),sha256:sha256(bytes)})],[]);
+  const result=await dryRun(entries,{sampleSize:1001,read:async()=>(async function*(){yield bytes;})()});
+  expect(result.import_rows).toBe(1001);expect(result.not_transcript).toBe(0);
+  expect(result.sample.every(e=>e.session_id==="A")).toBe(true);
+  expect(Buffer.concat(result.sample.map(e=>Buffer.from(e.raw))).equals(bytes)).toBe(true);
+});

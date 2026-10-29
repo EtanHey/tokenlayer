@@ -178,7 +178,7 @@ export async function dryRun(entries: Entry[], options: {
       st.cwd = e.cwd;
       const subagent = !!subagentFileId(e.member_path) && (`/${e.member_path}`).includes(`/${e.session_id}/subagents/`);
       let stream=e.stream, eventSession=e.session_id;
-      let identitySeen = st.kind === "claude" && subagent, identityConflict = false, firstLine = true, codexHeader = false;
+      let identitySeen = st.kind === "claude" && subagent, firstLine = true, codexHeader = false;
       let offset = 0, carry = Buffer.alloc(0), rows = 0, bytes = 0, skipLive = 0, skipCopy = 0, liveRows = 0;
       const counts = new Map<string, number>();
       const sample: Event[] = [], secondHash = createHash("sha256");
@@ -198,7 +198,6 @@ export async function dryRun(entries: Entry[], options: {
             } firstLine = false;
             const parsed = parseLine(text, st);
             if (st.kind === "claude") identitySeen ||= st.sessionId === e.session_id && identityMatches(text, e.session_id, "claude");
-            identityConflict ||= st.kind === "claude" && !!st.sessionId && st.sessionId !== e.session_id;
             const existing = find.get(stream.split("::")[0], stream, hash);
             const occurrence = (counts.get(hash) ?? 0) + 1; counts.set(hash, occurrence);
             if (e.source_kind === "live") {
@@ -216,7 +215,7 @@ export async function dryRun(entries: Entry[], options: {
         }
         if (secondHash.digest("hex") !== fullHash) throw new Error("source changed during second read");
         // Untagged state markers inherit a proven Claude identity. Subagents may prove it by their parent directory.
-        if (identityConflict || !(st.kind === "codex" ? codexHeader : identitySeen || subagent)) {
+        if (!(st.kind === "codex" ? codexHeader : identitySeen || subagent)) {
           db.exec("ROLLBACK"); e.status = "not_transcript"; e.relation = "not_transcript"; e.selected = false;
           report.not_transcript++; options.onEntry?.(e); continue;
         }
