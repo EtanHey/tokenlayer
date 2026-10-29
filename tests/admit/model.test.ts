@@ -14,7 +14,7 @@ test('implementation finite-state enumeration', () => {
     }] };
     let result;
     try { result = evaluate(input,{kind,activeLeads:active,essential,now}); } catch {result=deny('unhealthy');}
-    const expected = healthy && used < 100 && (kind !== 'lead' ? used<60 && !actualPaced : used>=80 ? essential && active<3 : used>=60 ? active<5 : active<10);
+    const expected = healthy && used < 100 && (kind !== 'lead' ? used<60 && !actualPaced : used>=80 ? essential && active<1 : used>=60 ? active<2 : active<5);
     expect(result.admit).toBe(expected);
   }
 });

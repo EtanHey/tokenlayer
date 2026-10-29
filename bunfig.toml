@@ -1,0 +1,3 @@
+[test]
+# Review archives are evidence, not this checkout's tests.
+pathIgnorePatterns = ["docs.local/**"]
