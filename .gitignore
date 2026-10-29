@@ -9,3 +9,4 @@ config/*.conf
 !config/cliproxyapi.conf.template
 fixtures-raw/
 .local/
+__pycache__/
