@@ -74,6 +74,30 @@
       "ceiling": 20,
       "command": "node ratchet/measure.mjs redactor",
       "timeout_s": 240
-    }
+    },
+    {"id": "payload-usage-bytes", "metric": "usage payload bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts payload-usage-bytes", "timeout_s": 120, "unit": "bytes", "allowance": 64},
+    {"id": "payload-admit-bytes", "metric": "admit payload bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts payload-admit-bytes", "timeout_s": 120, "unit": "bytes", "allowance": 64},
+    {"id": "payload-steer-bytes", "metric": "steer payload bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts payload-steer-bytes", "timeout_s": 120, "unit": "bytes", "allowance": 64},
+    {"id": "payload-drain-bytes", "metric": "drain payload bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts payload-drain-bytes", "timeout_s": 120, "unit": "bytes", "allowance": 64},
+    {"id": "payload-session-bytes", "metric": "session payload bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts payload-session-bytes", "timeout_s": 120, "unit": "bytes", "allowance": 64},
+    {"id": "bundle-usage-bytes", "metric": "usage bundle bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts bundle-usage-bytes", "timeout_s": 120, "unit": "bytes", "growth": 0.01, "allowance": 2048},
+    {"id": "bundle-admit-bytes", "metric": "admit bundle bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts bundle-admit-bytes", "timeout_s": 120, "unit": "bytes", "growth": 0.01, "allowance": 2048},
+    {"id": "bundle-steer-bytes", "metric": "steer bundle bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts bundle-steer-bytes", "timeout_s": 120, "unit": "bytes", "growth": 0.01, "allowance": 2048},
+    {"id": "bundle-drain-bytes", "metric": "drain bundle bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts bundle-drain-bytes", "timeout_s": 120, "unit": "bytes", "growth": 0.01, "allowance": 2048},
+    {"id": "bundle-ship-bytes", "metric": "ship bundle bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts bundle-ship-bytes", "timeout_s": 120, "unit": "bytes", "growth": 0.01, "allowance": 2048},
+    {"id": "ship-ingest-rows-s", "metric": "50k ship ingest rows/s", "kind": "unit", "runner": "ci", "direction": "min", "ceiling": 0, "command": "bun ratchet/r1.ts ship-ingest-rows-s", "timeout_s": 120, "maxRegression": 0.25, "unit": "rows/s"},
+    {"id": "sessions-between-p95-ms", "metric": "sessions-between query p95 ms (20 runs)", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts sessions-between-p95-ms", "timeout_s": 120, "growth": 0.25, "unit": "ms"},
+    {"id": "burn-by-role-p95-ms", "metric": "burn-by-role query p95 ms (20 runs)", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts burn-by-role-p95-ms", "timeout_s": 120, "growth": 0.25, "unit": "ms"},
+    {"id": "cache-misses-p95-ms", "metric": "cache-misses query p95 ms (20 runs)", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts cache-misses-p95-ms", "timeout_s": 120, "growth": 0.25, "unit": "ms"},
+    {"id": "session-disk-bytes-10k", "metric": "session_events bytes/10k after OPTIMIZE", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts session-disk-bytes-10k", "timeout_s": 120, "growth": 0.02, "unit": "bytes"},
+    {"id": "ship-replay-lag-ms", "metric": "append to visible FINAL ms", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts ship-replay-lag-ms", "timeout_s": 120, "growth": 0.25, "unit": "ms"},
+    {"id": "hub_mgmt_latency_p50_ms", "metric": "hub_mgmt_latency_p50_ms", "kind": "unit", "runner": "m1", "direction": "max", "ceiling": 100, "unit": "ms", "command": "bun ratchet/live.ts hub_mgmt_latency_p50_ms", "timeout_s": 30},
+    {"id": "hub_mgmt_latency_p95_ms", "metric": "hub_mgmt_latency_p95_ms", "kind": "unit", "runner": "m1", "direction": "max", "ceiling": 250, "unit": "ms", "command": "bun ratchet/live.ts hub_mgmt_latency_p95_ms", "timeout_s": 30},
+    {"id": "cache_read_write_ratio_24h", "metric": "cache_read_write_ratio_24h", "kind": "unit", "runner": "m1", "direction": "min", "ceiling": 1, "unit": "ratio", "command": "bun ratchet/live.ts cache_read_write_ratio_24h", "timeout_s": 30},
+    {"id": "w1h_share_24h", "metric": "w1h_share_24h", "kind": "unit", "runner": "m1", "direction": "min", "ceiling": 0, "unit": "ratio", "command": "bun ratchet/live.ts w1h_share_24h", "timeout_s": 30},
+    {"id": "shipper_live_lag_s", "metric": "shipper_live_lag_s", "kind": "unit", "runner": "m1", "direction": "max", "ceiling": 60, "unit": "s", "command": "bun ratchet/live.ts shipper_live_lag_s", "timeout_s": 30},
+    {"id": "usage_json_age_s", "metric": "usage_json_age_s", "kind": "unit", "runner": "m1", "direction": "max", "ceiling": 120, "unit": "s", "command": "bun ratchet/live.ts usage_json_age_s", "timeout_s": 30},
+    {"id": "ch_live_query_p95_ms", "metric": "ch_live_query_p95_ms", "kind": "unit", "runner": "m1", "direction": "max", "ceiling": 250, "unit": "ms", "command": "bun ratchet/live.ts ch_live_query_p95_ms", "timeout_s": 30},
+    {"id": "m1_disk_free_gb", "metric": "m1_disk_free_gb", "kind": "unit", "runner": "m1", "direction": "min", "ceiling": 20, "unit": "GB", "command": "bun ratchet/live.ts m1_disk_free_gb", "timeout_s": 30}
   ]
 }
