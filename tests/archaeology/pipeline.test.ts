@@ -141,3 +141,12 @@ test("MF-3 a generic session_id field cannot impersonate Claude sessionId", asyn
   const result=await dryRun(manifest([row({member_path:"notes.jsonl",bytes:String(bytes.length),sha256:sha256(bytes)})],[]),{read:async()=>(async function*(){yield bytes;})()});
   expect(result.import_rows).toBe(0);expect(result.not_transcript).toBe(1);
 });
+
+test("MF-3 Codex native header id is authoritative over parser session_id aliases", async () => {
+  const bytes=Buffer.from('{"type":"session_meta","payload":{"id":"session","session_id":"older-parent"}}\n{"type":"event_msg","payload":{"type":"fixture"}}\n');
+  const entries=manifest([row({harness:"codex",member_path:"rollout-session.jsonl",bytes:String(bytes.length),sha256:sha256(bytes)})],[]);
+  const result=await dryRun(entries,{read:async()=>(async function*(){yield bytes;})()});
+  expect(result.import_rows).toBe(2);expect(result.not_transcript).toBe(0);
+  expect(result.sample.every(e=>e.session_id==="session")).toBe(true);
+  expect(Buffer.concat(result.sample.map(e=>Buffer.from(e.raw))).equals(bytes)).toBe(true);
+});

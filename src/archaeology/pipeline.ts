@@ -179,7 +179,7 @@ export async function dryRun(entries: Entry[], options: {
             if (firstLine && st.kind === "codex") codexHeader = identityMatches(text, e.session_id, "codex"); firstLine = false;
             const parsed = parseLine(text, st);
             if (st.kind === "claude") identitySeen ||= st.sessionId === e.session_id && identityMatches(text, e.session_id, "claude");
-            identityConflict ||= !!st.sessionId && st.sessionId !== e.session_id;
+            identityConflict ||= st.kind === "claude" && !!st.sessionId && st.sessionId !== e.session_id;
             const existing = find.get(e.session_id, e.stream, hash);
             const occurrence = (counts.get(hash) ?? 0) + 1; counts.set(hash, occurrence);
             if (e.source_kind === "live") {
