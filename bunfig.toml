@@ -1,0 +1,2 @@
+[test]
+pathIgnorePatterns = ["**/*.property.test.ts"]
