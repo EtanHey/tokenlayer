@@ -12,7 +12,7 @@ test('max regression, missing values, and pass failures fail closed', () => {
   expect(evaluate({ direction: 'pass' }, false, true)).toBe(false);
 });
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -37,6 +37,21 @@ test('CLI exits nonzero on regression and ceiling breach, zero when unchanged', 
     command(['git', 'add', '.']);
     command(['git', 'commit', '-qm', 'baseline']);
     for (const [value, status] of [['12', 0], ['11', 1], ['9', 1], ['missing', 1]] as const) {
+      writeFileSync(join(dir, 'value'), value);
+      const p = spawnSync('node', [table, 'ratchet/rows.json'], {
+        cwd: dir, env: { ...process.env, RATCHET_BASE_REF: 'HEAD', GITHUB_STEP_SUMMARY: '' },
+      });
+      expect(p.status).toBe(status);
+    }
+    // Exercise the full CLI comparison path with a numeric timing policy.
+    const policy = JSON.parse(readFileSync(join(dir, 'ratchet/rows.json'), 'utf8'));
+    policy.rows[0].maxRegression = 0.25;
+    policy.rows[0].ceiling = 5;
+    writeFileSync(join(dir, 'ratchet/rows.json'), JSON.stringify(policy));
+    writeFileSync(join(dir, 'value'), '20');
+    command(['git', 'add', '.']);
+    command(['git', 'commit', '-qm', 'relative baseline']);
+    for (const [value, status] of [['14', 1], ['18', 0], ['4', 1], ['15', 0]] as const) {
       writeFileSync(join(dir, 'value'), value);
       const p = spawnSync('node', [table, 'ratchet/rows.json'], {
         cwd: dir, env: { ...process.env, RATCHET_BASE_REF: 'HEAD', GITHUB_STEP_SUMMARY: '' },

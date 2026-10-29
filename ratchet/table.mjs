@@ -84,7 +84,7 @@ export function main(path) {
       const pass = (!hasBase || before !== null && before !== undefined && evaluate(row, before))
         && evaluate(row, values[row.id], hasBase ? before : undefined);
       ok &&= pass;
-      lines.push(`| ${[row.id, row.metric, row.maxRegression === undefined ? row.ceiling : `${row.ceiling}; >=75% main`, hasBase ? before : 'bootstrap', values[row.id], pass ? 'PASS' : 'FAIL'].map(cell).join(' | ')} |`);
+      lines.push(`| ${[row.id, row.metric, row.maxRegression === undefined ? row.ceiling : `${row.ceiling}; >=${100 * (1 - row.maxRegression)}% main`, hasBase ? before : 'bootstrap', values[row.id], pass ? 'PASS' : 'FAIL'].map(cell).join(' | ')} |`);
     }
     for (const row of rows.filter(r => r.runner === 'm1')) lines.push(`| ${[row.id, row.metric, row.ceiling, 'R1', 'report-only until R1', 'REPORT ONLY'].map(cell).join(' | ')} |`);
     if (!rows.some(r => r.runner === 'ci')) throw Error('no CI rows');

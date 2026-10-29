@@ -29,4 +29,3 @@ for (let run = 0; run < 5; run++) {
 }
 rates.sort((a, b) => a - b);
 console.log(JSON.stringify({ bun: Bun.version, medianMBps: rates[2], minMBps: rates[0], maxMBps: rates[4] }));
-
