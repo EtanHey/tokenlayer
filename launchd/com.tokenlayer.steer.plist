@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- tokenlayer-steer (M1 hub). Render: replace __BUN__, __REPO__, __HOME__; install to ~/Library/LaunchAgents.
+     The management key is read at runtime from ~/.config/tokenlayer/hub.env (mode 600), never placed here. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.tokenlayer.steer</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__BUN__</string>
+    <string>__REPO__/src/steer/main.ts</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TOKENLAYER_HUB</key>
+    <string>m1</string>
+    <key>TOKENLAYER_HUB_URL</key>
+    <string>http://127.0.0.1:8317</string>
+    <key>TOKENLAYER_ENV</key>
+    <string>__HOME__/.config/tokenlayer/hub.env</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/tokenlayer/steer.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/tokenlayer/steer.log</string>
+</dict>
+</plist>
