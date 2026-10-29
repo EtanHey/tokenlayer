@@ -1,0 +1,37 @@
+{
+  "generated_at": "2026-10-29T12:00:00.000Z",
+  "source": "cliproxy-hub",
+  "stale": false,
+  "accounts": [
+    {
+      "label": "claude-bb03e678",
+      "active": true,
+      "five_hour": {
+        "used_pct": 20,
+        "resets_at": "2026-10-29T14:30:00.000Z"
+      },
+      "weekly": {
+        "used_pct": 20,
+        "resets_at": "2026-11-01T12:00:00.000Z"
+      },
+      "status": "allowed",
+      "priority": 0,
+      "disabled": false
+    },
+    {
+      "label": "claude-5f3616e5",
+      "active": false,
+      "five_hour": {
+        "used_pct": 20,
+        "resets_at": "2026-10-29T14:30:00.000Z"
+      },
+      "weekly": {
+        "used_pct": null,
+        "resets_at": null
+      },
+      "status": "allowed",
+      "priority": 0,
+      "disabled": false
+    }
+  ]
+}

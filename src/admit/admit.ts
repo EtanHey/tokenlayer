@@ -1,3 +1,4 @@
+import { redactText, REDACTED } from '../lib/redact';
 export type Kind = 'lead' | 'claude.judgment' | 'claude.subagent.cheap' | 'claude.subagent.mechanical';
 export type Level = 'green' | 'brake60' | 'brake80' | 'no-headroom';
 export type Options = { kind: Kind; activeLeads: number; essential: boolean; now: number };
@@ -19,9 +20,28 @@ function percent(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 100) throw Error('invalid utilization');
   return value;
 }
-function timestamp(value: unknown): number {
-  if (typeof value !== 'string' || !/^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(value) || !Number.isFinite(Date.parse(value))) throw Error('invalid timestamp');
-  return Date.parse(value);
+export function timestamp(value: unknown): number {
+  const match = typeof value === 'string' && /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!match || match[0] !== value) throw Error('invalid timestamp');
+  const [, year, month, day, hour, minute, second, fraction, zone] = match;
+  const local = `${year}-${month}-${day}T${hour}:${minute}:${second}.${(fraction ?? '').padEnd(3,'0')}Z`;
+  const wall = Date.parse(local);
+  // Date.parse normalizes impossible calendar dates; require an exact round trip.
+  if (!Number.isFinite(wall) || new Date(wall).toISOString() !== local) throw Error('invalid timestamp');
+  const offsetHours = zone === 'Z' ? 0 : Number(zone!.slice(1,3));
+  const offsetMinutes = zone === 'Z' ? 0 : Number(zone!.slice(4,6));
+  if (offsetHours > 23 || offsetMinutes > 59) throw Error('invalid timezone');
+  const offset = (offsetHours * 60 + offsetMinutes) * 60000 * (zone![0] === '-' ? -1 : 1);
+  const parsed = Date.parse(value as string);
+  if (!Number.isFinite(parsed) || parsed !== wall - offset) throw Error('invalid timestamp');
+  return parsed;
+}
+function windowReading(value: unknown, resetRequired: boolean) {
+  const window = record(value);
+  if (window.used_pct === null && window.resets_at === null) return null;
+  const used = percent(window.used_pct);
+  const reset = resetRequired || window.resets_at !== undefined ? timestamp(window.resets_at) : undefined;
+  return { used, reset };
 }
 export function evaluate(input: unknown, options: Options) {
   const root = record(input);
@@ -36,14 +56,16 @@ export function evaluate(input: unknown, options: Options) {
     const five = record(a.five_hour), weekly = record(a.weekly);
     if ([five.status, weekly.status].some(status => status === 'unknown' || status === 'rejected')) return null;
     if (a.status !== 'allowed' || (five.status !== undefined && five.status !== 'allowed') || (weekly.status !== undefined && weekly.status !== 'allowed')) throw Error('unhealthy serving account');
-    const used = percent(five.used_pct);
-    if (percent(weekly.used_pct) >= 100 || used >= 100) return null;
-    const remaining = (timestamp(five.resets_at) - options.now) / 60000;
+    const fiveReading = windowReading(five, true), weeklyReading = windowReading(weekly, false);
+    if (!fiveReading || !weeklyReading) return null;
+    const used = fiveReading.used;
+    if (weeklyReading.used >= 100 || used >= 100) return null;
+    const remaining = (fiveReading.reset! - options.now) / 60000;
     if (remaining < 0 || remaining >= 300) throw Error('invalid reset window');
     const elapsed_min = 300 - remaining, score = used * 300 / elapsed_min;
     const warn = score > 80;
     const level: Level = used >= 80 ? 'brake80' : used >= 60 || (warn && options.kind !== 'lead') ? 'brake60' : 'green';
-    return { label: a.label, level, pacing: { used, elapsed_min, score, warn } };
+    return { label: redactText(a.label.length === 15 && /^claude-[0-9a-f]{8}$/.test(a.label) ? a.label : REDACTED), level, pacing: { used, elapsed_min, score, warn } };
   }).filter(a => a !== null);
   if (!accounts.length) return deny('no accounts with headroom');
   const rank = { green:0, brake60:1, brake80:2, 'no-headroom':3 };
