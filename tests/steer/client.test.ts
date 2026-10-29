@@ -64,3 +64,13 @@ test("env file values load under the process env, which wins", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('non-JSON success never echoes body', async () => {
+ const fake = Bun.serve({port:0,fetch:()=>new Response(`${KEY} private-body`)});
+ try {
+ const err = await new HubClient(`http://127.0.0.1:${fake.port}`,KEY).list().catch(e=>e);
+ expect(String(err)).toContain('invalid JSON');
+ expect(String(err)).not.toContain(KEY);
+ expect(String(err)).not.toContain('private-body');
+ } finally { fake.stop(true); }
+});

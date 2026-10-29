@@ -6,7 +6,7 @@ test('fixture produces only safe exact account fields', () => {
   const result = snapshot(fixture, now);
   expect(result.generated_at).toBe('2026-10-28T09:00:00.000Z');
   expect(result.accounts).toHaveLength(2);
-  expect(result.accounts[0]).toEqual({ label: expect.stringMatching(/^claude-[a-f0-9]{8}$/), active: true, five_hour: { used_pct: 64, resets_at: '2026-10-28T12:50:00.000Z' }, weekly: { used_pct: 10, resets_at: '2026-10-30T19:00:00.000Z' }, status: 'allowed', priority: 0, disabled: false });
+  expect(result.accounts[0]).toEqual({ label: expect.stringMatching(/^[a-f0-9]{16}$/), active: true, five_hour: { used_pct: 64, resets_at: '2026-10-28T12:50:00.000Z' }, weekly: { used_pct: 10, resets_at: '2026-10-30T19:00:00.000Z' }, status: 'allowed', priority: 0, disabled: false });
   expect(JSON.stringify(result)).not.toMatch(/@|sk-|Bearer/);
 });
 test('priority wins, blocked credentials cannot be active, ties follow rank', () => {
@@ -29,4 +29,12 @@ test('unknown windows stay null and empty fleet has no active account', () => {
   expect(result.accounts[0]?.five_hour).toEqual({used_pct:null,resets_at:null});
   expect(result.accounts[0]?.status).toBe('unknown');
   expect(snapshot({files:[]},now).accounts).toEqual([]);
+});
+
+test('labels share hub credential identity with steer and drain', async()=>{
+ const {labelHash}=await import('../../src/lib/hash');
+ const c={...fixture.files[0]!,id:'synthetic@example.invalid',auth_index:'hub-id'};
+ expect(snapshot({files:[c]},now).accounts[0]!.label).toBe(labelHash(c.auth_index));
+ const {auth_index, ...withoutIndex} = c;
+ expect(snapshot({files:[withoutIndex]},now).accounts[0]!.label).toBe(labelHash(c.id));
 });

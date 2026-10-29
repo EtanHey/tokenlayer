@@ -4,7 +4,7 @@
   "stale": false,
   "accounts": [
     {
-      "label": "claude-bb03e678",
+      "label": "bb03e678bb03e678",
       "active": true,
       "five_hour": {
         "used_pct": 20,
@@ -19,7 +19,7 @@
       "disabled": false
     },
     {
-      "label": "claude-5f3616e5",
+      "label": "5f3616e55f3616e5",
       "active": false,
       "five_hour": {
         "used_pct": null,

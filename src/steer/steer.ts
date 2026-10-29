@@ -1,4 +1,4 @@
-import { HubError } from "./client";
+import { BACKOFF_CAP_MS, HubError } from "./client";
 import { labelHash } from "../lib/hash";
 import { assess, rank, type Tiers } from "./rank";
 import type { Credential, SnapshotRow } from "./types";
@@ -23,6 +23,7 @@ export interface TickResult {
   credentials: number;
   changes: number;
   errors: number;
+  patchErrors?: number;
   retryAfterMs?: number;
 }
 
@@ -33,12 +34,18 @@ const chTimeOrNull = (ts: string | null | undefined) => {
   return Number.isFinite(ms) ? chTime(ms) : null;
 };
 
+const backoffs = new WeakMap<SteerHub, Map<string, { failures: number; until: number }>>();
+
 /** One steer pass: fetch → rank → PATCH only the diffs → snapshot. Never throws for a single bad credential. */
 export async function tick(hub: SteerHub, opts: TickOptions = {}): Promise<TickResult> {
   const now = opts.now ?? Date.now();
   const log = opts.log ?? ((line: string) => console.error(line));
   const stamp = new Date(now).toISOString();
   const credentials = await hub.list();
+  let pending = backoffs.get(hub);
+  if (!pending) { pending = new Map(); backoffs.set(hub, pending); }
+  const ids = new Set(credentials.map(c => c.id));
+  for (const id of pending.keys()) if (!ids.has(id)) pending.delete(id);
   const targets = rank(credentials, now, { tiers: opts.tiers });
   const result: TickResult = { credentials: credentials.length, changes: 0, errors: 0 };
   const rows: SnapshotRow[] = [];
@@ -61,15 +68,20 @@ export async function tick(hub: SteerHub, opts: TickOptions = {}): Promise<TickR
         if (opts.dryRun) {
           action = `plan:${verb}`;
           log(`${stamp} steer dry-run credential=${label} priority ${current}->${target} ${resets}${why}`);
+        } else if ((pending.get(c.id)?.until ?? 0) > now) {
+          action = "backoff";
         } else {
           try {
             await hub.setPriority(c.id, target);
+            pending.delete(c.id);
             priority = target;
             action = verb;
             log(`${stamp} steer credential=${label} priority ${current}->${target} ${resets}${why}`);
           } catch (err) {
-            result.errors++;
-            if (err instanceof HubError) result.retryAfterMs = Math.max(result.retryAfterMs ?? 0, err.retryAfterMs);
+            result.patchErrors = (result.patchErrors ?? 0) + 1;
+            const failures = Math.min((pending.get(c.id)?.failures ?? 0) + 1, 30);
+            const delay = Math.min(BACKOFF_CAP_MS, Math.max(60_000 * 2 ** failures, err instanceof HubError ? err.retryAfterMs : 0));
+            pending.set(c.id, { failures, until: now + delay });
             action = "error";
             log(`${stamp} steer error credential=${label} priority ${current}->${target}: ${(err as Error).message}`);
           }

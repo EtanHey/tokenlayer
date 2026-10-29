@@ -21,7 +21,10 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
   spool only after ClickHouse confirms the insert (below). Each batch carries a fixed `insert_deduplication_token`, and the table has
   `non_replicated_deduplication_window`, so a retry after an ambiguous failure inserts nothing twice.
 - Items that cannot be mapped go to `rejects.ndjson` with identity fields redacted. Nothing is dropped silently.
-- Every persisted value (rows, spool, rejects, logged ClickHouse errors) passes the shared redactor
+- Drain proxy_usage rows and their spool preserve telemetry text and public rate-limit
+  header values without ingest redaction or failure-body truncation. Identity columns
+  remain hashed. Rejected records and error egress retain sanitization.
+- Sanitized surfaces pass the shared redactor
   (`src/lib/redact.ts`). It removes known API/OAuth key prefixes, JWTs, PEM private keys and emails;
   bearer tokens of at least 8 characters (including letters-only tokens); URL userinfo with a password;
   and values named by sensitive fields, regardless of the value's prefix. Field matching covers camelCase,

@@ -1,5 +1,4 @@
 import { labelHash } from "../lib/hash";
-import { redactDeep, redactText } from "../lib/redact";
 import { parseTimestampMs, toClickHouseTime } from "../lib/time";
 
 /**
@@ -104,10 +103,9 @@ export type ProxyUsageRow = {
   ratelimit: Record<string, string>;
 };
 
-const FAIL_BODY_MAX = 2048;
 const RATELIMIT_HEADER = /^(anthropic-ratelimit-|x-ratelimit-|x-codex-|retry-after$)/;
 
-const str = (v: unknown, fallback = ""): string => (typeof v === "string" ? v.trim() : fallback) || fallback;
+const str = (v: unknown, fallback = ""): string => (typeof v === "string" ? v : fallback) || fallback;
 const uint = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.trunc(v) : 0);
 
 function ratelimitHeaders(headers: UsageQueueRecord["response_headers"]): Record<string, string> {
@@ -123,7 +121,7 @@ function ratelimitHeaders(headers: UsageQueueRecord["response_headers"]): Record
 
 /**
  * Map one queue item to a proxy_usage row. Throws on items that cannot be stored faithfully.
- * Free text (failure body/code, user agent, …) passes the shared redactor: upstream auth errors echo keys and emails.
+ * Preserve telemetry text at ingest; sanitize only when exporting it. Identity columns remain hashed.
  */
 export function mapUsageRecord(input: unknown, opts: { hub: string }): ProxyUsageRow {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
@@ -171,7 +169,7 @@ export function mapUsageRecord(input: unknown, opts: { hub: string }): ProxyUsag
     status_code: uint(r.fail?.status_code),
     failed,
     fail_code: str(r.fail?.code),
-    fail_body: failed ? redactText(str(r.fail?.body)).slice(0, FAIL_BODY_MAX) : "",
+    fail_body: failed ? (r.fail?.body ?? "") : "",
     stream: r.stream === true,
     reasoning_effort: str(r.reasoning_effort),
     service_tier: str(r.service_tier),
@@ -180,6 +178,5 @@ export function mapUsageRecord(input: unknown, opts: { hub: string }): ProxyUsag
     user_agent: str(r.user_agent),
     ratelimit: ratelimitHeaders(r.response_headers),
   };
-  // Restore only the locally derived label; arbitrary credential fields remain sensitive.
-  return { ...(redactDeep(row) as ProxyUsageRow), credential: row.credential };
+  return row;
 }

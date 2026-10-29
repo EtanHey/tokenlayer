@@ -59,7 +59,8 @@ test('CLI exits nonzero on regression and ceiling breach, zero when unchanged', 
       expect(p.status).toBe(status);
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
-});
+// Eight CLI comparisons each install and spawn subprocesses in isolated baseline trees.
+}, 30_000);
 
 const throughput = { direction: 'min', ceiling: 5, maxRegression: 0.25 };
 test('relative throughput: more than 25% slower fails', () => expect(evaluate(throughput, 14, 20)).toBe(false));
