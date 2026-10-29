@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { verifySessionSchema } from "../../src/lib/session-schema";
 import { applySchema } from "../../src/lib/schema";
 import { shipOnce, type ShipOptions } from "../../src/ship/ship";
-import { clickhouseBinary, startLocalClickHouse, type LocalClickHouse } from "../support/local-clickhouse";
+import { clickhouseBinary, startLocalClickHouse, type LocalClickHouse } from "../../src/lib/local-clickhouse";
 
 describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse", () => {
   let ch: LocalClickHouse;

@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { classify, repoMap, manifest, dryRun, sha256, parseEvidenceLine, type Inventory, type Evidence, type ExistingCount } from "./pipeline";
 import { localSources } from "./sources";
-import { startLocalClickHouse } from "../../tests/support/local-clickhouse";
+import { startLocalClickHouse } from "../lib/local-clickhouse";
 import { applySchema } from "../lib/schema";
 
 export function readTSV(path: string): Record<string, string>[] {

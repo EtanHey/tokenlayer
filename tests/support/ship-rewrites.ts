@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { applySchema } from "../../src/lib/schema";
 import { shipOnce, type ShipOptions } from "../../src/ship/ship";
 import { loadState } from "../../src/ship/state";
-import { clickhouseBinary, startLocalClickHouse, type LocalClickHouse } from "./local-clickhouse";
+import { clickhouseBinary, startLocalClickHouse, type LocalClickHouse } from "../../src/lib/local-clickhouse";
 
 export function propertyCount(env: Record<string, string | undefined> = process.env): number {
   const value = env.TOKENLAYER_PROPERTY_N ?? "40";
