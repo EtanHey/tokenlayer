@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -66,6 +67,15 @@ const claudeFile = () => join(root, "claude", "-Users-u-Gits-golems", "s-1.jsonl
 const codexFile = () => join(root, "codex", "2026", "10", "28", "rollout-a.jsonl");
 
 describe("shipOnce", () => {
+  test("content hashes cover exact source bytes including LF, before decoding or redaction", async () => {
+    const sources = [Buffer.from('{"email":"one@example.invalid"}\r\n'),
+      Buffer.from('{"email":"two@example.invalid"}\r\n'), Buffer.from([0xff, 0x0a]), Buffer.from([0xfe, 0x0a])];
+    writeFileSync(claudeFile(), Buffer.concat(sources));
+    await shipOnce(opts);
+    expect(db.rows.map((r) => r.content_hash)).toEqual(sources.map((b) => createHash("sha256").update(b).digest("hex")));
+    for (const i of [0, 2]) expect(db.rows[i].raw).toBe(db.rows[i + 1].raw);
+  });
+
   test("ships complete lines from both roots with machine, harness, path and byte offset", async () => {
     writeFileSync(claudeFile(), `${claudeLine(1)}\n${claudeLine(2)}\n{"partial":`);
     writeFileSync(join(root, "claude", "-Users-u-Gits-golems", "s-1", "subagents", "agent-x.jsonl"), `${claudeLine(3, "sdk-ts")}\n`);

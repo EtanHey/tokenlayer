@@ -1,5 +1,6 @@
 -- One row per JSONL line of a Claude Code / Codex / T3 session, shipped by tokenlayer-ship on each Mac.
--- Idempotent: a line is identified by (machine, path, generation, byte_offset), the whole sort key.
+-- Idempotent: (machine, path, generation, byte_offset, content_hash) is the whole replacement key.
+-- SHA-256 of the exact source line (including LF), before decoding/redaction, prevents content replacement.
 -- generation derives from device, inode and birthtime, extended by revision hashes on rewrites.
 -- harness stays out of the key so a late harness decision replaces rows.
 -- Reads that count rows need FINAL (or a GROUP BY on the key): a replay with new chunk boundaries inserts
@@ -11,6 +12,7 @@ CREATE TABLE IF NOT EXISTS tokenlayer.session_events
     path                  String                 CODEC(ZSTD(3)),
     generation            String                 CODEC(ZSTD(3)),
     byte_offset           UInt64                 CODEC(Delta, ZSTD(3)),
+    content_hash          String                 CODEC(ZSTD(3)),
     line_bytes            UInt32                 CODEC(T64, ZSTD(3)),
     ts                    DateTime64(3, 'UTC')   CODEC(Delta, ZSTD(3)),
     session_id            String                 CODEC(ZSTD(3)),
@@ -33,5 +35,5 @@ CREATE TABLE IF NOT EXISTS tokenlayer.session_events
 )
 ENGINE = ReplacingMergeTree(ingested_at)
 PARTITION BY toYYYYMM(ts)
-ORDER BY (machine, path, generation, byte_offset)
+ORDER BY (machine, path, generation, byte_offset, content_hash)
 SETTINGS non_replicated_deduplication_window = 10000;

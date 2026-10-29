@@ -7,7 +7,7 @@ Apply the schema with `bun run schema:apply` (reads `CLICKHOUSE_*` from the envi
 |---|---|---|---|
 | `proxy_usage` | `tokenlayer-drain` ← `GET /v8/management/observability/usage/queue` | `(credential, toDate(ts), ts, execution_id)` | ReplacingMergeTree, monthly partitions |
 | `credentials_snap` | `tokenlayer-steer` (P3) | `(credential, ts)` | MergeTree, monthly partitions |
-| `session_events` | `tokenlayer-ship` on each Mac | `(machine, path, generation, byte_offset)` | ReplacingMergeTree, monthly partitions |
+| `session_events` | `tokenlayer-ship` on each Mac | `(machine, path, generation, byte_offset, content_hash)` | ReplacingMergeTree, monthly partitions |
 
 Identity values never land in ClickHouse in the clear: `credential` = `labelHash(auth_index)`,
 `account_hash` = `labelHash(source)` (email / project / upstream key), `client_key_hash` = `labelHash(api_key)`.
@@ -37,15 +37,15 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
 - `harness`: Claude files whose lines carry `entrypoint: "sdk-ts"` → `t3` (T3 drives Claude Code via the Agent SDK),
   otherwise `claude`. Codex files whose `session_meta.payload.originator` is `"T3 Code"` → `t3`, otherwise `codex`.
   A file whose head has no deciding line yet ships with the default and is reshipped once it is decided.
-- A line is `(machine, path, generation, byte_offset)`. Generation starts as a SHA-256 identity of
-  device, inode and birthtime. Rotation preserves the previous generation even with identical content.
-  An in-place rewrite adds a revision hash to preserve archived rows.
+- A line is `(machine, path, generation, byte_offset, content_hash)`: the full SHA-256 covers exact source
+  bytes including LF (and CR if present), before decoding/redaction. Different content cannot replace an archive
+  even if generation/offset recur. Generation tracks device/inode/birthtime and rewrite lineage, not archive safety.
 - A write-ahead `<statePath>.generations` sidecar reserves each generation and its source fingerprint before
   insertion. Recovery retains the longest verified prefix while replaying earlier chunks, even through repeated
   crashes; progress checkpoints can lag without shortening archive protection. Keep it when resetting progress:
   checkpoint loss replays the current generation, and late harness
-  classification preserves that generation. Losing both files loses the information needed to recover revisions;
-  restore the sidecar from backup before replaying an archive with in-place rewrites.
+  classification preserves that generation. Losing both files loses revision lineage and can add replay rows;
+  content hashes still protect different archived content. Restore the sidecar to retain lineage.
 - Version 3 checkpoints hash the entire acknowledged prefix using streaming 64 KiB buffers. Changed files
   verify that prefix before resuming; batch hashes extend incrementally, avoiding a full rehash per chunk.
   The verified prefix hash is reused to extend batches from their exact source buffers before insertion;
@@ -56,10 +56,12 @@ Identity values never land in ClickHouse in the clear: `credential` = `labelHash
   A durable replay list keeps previously tracked files eligible even under the daemon's 24-hour cutoff and
   across startup or insert failures. Old content-based generations remain archived; counts and token sums
   across that upgrade can include both histories even with `FINAL`, and do not represent unique source lines.
-- Stop all shippers before `bun run schema:apply`. Legacy session tables migrate through a copy and atomic
-  exchange, retaining `session_events_legacy`. Missing generation values become `legacy`; missing message IDs
-  become empty strings. Reapplying is safe; interrupted copies can leave physical duplicates collapsed by FINAL.
-  The shipper checks the live schema before starting and refuses incompatible tables.
+- Stop all shippers before `bun run schema:apply`: copy/atomic exchange retains `session_events_pre_content_hash`
+  and any earlier `session_events_legacy`. Missing generation/message IDs become `legacy`/empty. Historical bytes
+  are unavailable: missing hashes use `legacy:` plus SHA-256 of the stored column tuple except `ingested_at`.
+  This separate namespace preserves stored variants; replays can add rows. Already replaced history is unrecoverable.
+  Reapplying is safe; interrupted copies dedup under FINAL. After an interrupted exchange keep `session_events_hash_next`.
+  Startup checks the full key and column types and refuses incompatible tables.
 - A file failure is isolated until the end of the pass; acknowledged progress for other files is saved before
   the pass reports failure. All progress after intermediate saves is included in the final checkpoint.
 - Each chunk is inserted with an `insert_deduplication_token` derived from its range and its row content, and the
@@ -106,8 +108,8 @@ ORDER BY cache_write DESC
 LIMIT 50
 ```
 
-Activity per machine / harness / project (provenance histories; legacy upgrade replays can double counts and
-token sums even with `FINAL`):
+Activity per machine / harness / project: `FINAL` dedups by the full key including `content_hash`, not message IDs.
+Rewound/abandoned branches with different content remain distinct. Legacy migration or lineage loss can increase sums:
 
 ```sql
 SELECT machine, harness, project, toDate(ts) AS day,

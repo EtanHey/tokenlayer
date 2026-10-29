@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { verifySessionSchema } from "../../src/lib/session-schema";
@@ -202,6 +202,63 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse: rewrites, 
     }
   }, 600_000);
 
+  test("300 random operation sequences keep every acknowledged row unchanged in FINAL", async () => {
+    let seed = 0x1a55afee, kills = 0, comparisons = 0;
+    const random = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return seed >>> 0; };
+    const boundaries = ["journal-before", "before", "after", "checkpoint"];
+    for (let trial = 0; trial < 300; trial++) {
+      const { file, o } = setup(`it-immutable-${trial}`, 128 + random() % 2048);
+      o.saveEveryMs = -1;
+      const source = (revision = 0) => Array.from({ length: 3 + random() % 4 }, (_, i) => line(`r${revision}-${i}-${"x".repeat(random() % 30)}`,
+        { entrypoint: "cli", timestamp: "2026-10-28T08:00:00Z" })).join("\n") + "\n";
+      writeFileSync(file, source());
+      writeFileSync(`${file}.parked`, source());
+      const acknowledged = new Set<string>();
+      const check = async () => {
+        const rows = await ch.client.queryJSON<Record<string, unknown>>(
+          `SELECT * EXCEPT ingested_at FROM tokenlayer.session_events FINAL WHERE machine = '${o.machine}'`);
+        const current = new Set(rows.map((row) => JSON.stringify(row)));
+        for (const row of acknowledged) { expect(current.has(row)).toBe(true); comparisons++; }
+        for (const row of current) acknowledged.add(row);
+      };
+      const ship = async () => { await shipOnce(o); await check(); };
+      await ship();
+      const operations = ["rotate", "reuse", "reuse", "head", "middle", "tail", "lose", ...boundaries];
+      for (let i = operations.length - 1; i > 0; i--) {
+        const j = random() % (i + 1);
+        [operations[i], operations[j]] = [operations[j], operations[i]];
+      }
+      for (const [revision, op] of operations.entries()) {
+        if (op === "rotate") {
+          renameSync(file, `${file}.old-${revision}`);
+          writeFileSync(file, source(revision));
+        } else if (op === "reuse") {
+          const inode = statSync(`${file}.parked`).ino;
+          renameSync(file, `${file}.swap`);
+          renameSync(`${file}.parked`, file);
+          renameSync(`${file}.swap`, `${file}.parked`);
+          expect(statSync(file).ino).toBe(inode);
+        } else if (op === "lose") {
+          rmSync(o.statePath, { force: true });
+          if (random() % 2) rmSync(`${o.statePath}.generations`, { force: true });
+        } else if (boundaries.includes(op)) {
+          appendFileSync(file, line(`crash-${revision}`, { entrypoint: "cli", timestamp: "2026-10-28T08:00:00Z" }) + "\n");
+          await killAt(o, op, 1);
+          kills++;
+          await check();
+        } else {
+          const lines = readFileSync(file, "utf8").trimEnd().split("\n");
+          const index = op === "head" ? 0 : op === "tail" ? lines.length - 1 : Math.floor(lines.length / 2);
+          lines[index] = line(`rewrite-${revision}-${"y".repeat(random() % 40)}`, { entrypoint: "cli", timestamp: "2026-10-28T08:00:00Z" });
+          writeFileSync(file, lines.join("\n") + "\n");
+        }
+        await ship();
+      }
+      if (trial % 25 === 24) console.log(`immutable property: ${trial + 1}/300 sequences, ${kills} SIGKILLs, ${comparisons} row comparisons`);
+    }
+    expect(kills).toBe(1200);
+  }, 1_800_000);
+
   test("checkpoint loss after a rewrite preserves both archived generations", async () => {
     const { file, o } = setup("it-recovery");
     writeFileSync(file, `${line("old")}\n${line("old-tail")}\n`);
@@ -287,6 +344,29 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse: rewrites, 
     expect((await finalRows("it-rotate")).map((x) => x.content).sort()).toEqual(["new", "old"]);
   });
 
+  test("returning a previously rewritten inode cannot overwrite its original archive", async () => {
+    const { file, o } = setup("it-returning-inode");
+    const source = (head: string) => [head, "tail"].map((s) => line(s, { timestamp: "2026-10-28T08:00:00Z" })).join("\n") + "\n";
+    writeFileSync(file, source("old"));
+    const inode = statSync(file).ino;
+    await shipOnce(o);
+    const archived = await finalRows(o.machine);
+    writeFileSync(file, source("new"));
+    await shipOnce(o);
+    renameSync(file, `${file}.parked`);
+    writeFileSync(file, source("other"));
+    await shipOnce(o);
+    renameSync(file, `${file}.replacement`);
+    renameSync(`${file}.parked`, file);
+    expect(statSync(file).ino).toBe(inode);
+    await shipOnce(o);
+    const rows = await finalRows(o.machine);
+    for (const row of archived) expect(rows).toContainEqual(row);
+    // Hashes protect both contents under the deliberately reused generation/offset.
+    expect(rows.filter((r) => r.generation === archived[0].generation && Number(r.byte_offset) === 0)
+      .map((r) => r.content).sort()).toEqual(["new", "old"]);
+  });
+
   test("the documented activity query counts a replay with shifted chunk boundaries once", async () => {
     const { file, o } = setup("it-activity");
     const assistant = (i: number) =>
@@ -323,18 +403,27 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse: rewrites, 
 });
 
 describe.skipIf(!clickhouseBinary())("legacy schema migration", () => {
-  test("changes the replacement key, preserves rows, and is restartable", async () => {
+  test.each(["legacy", "generation"])("migrates %s key, preserves rows and is restartable", async (version) => {
     const ch = await startLocalClickHouse();
     try {
       await ch.client.exec("CREATE DATABASE tokenlayer");
-      await ch.client.exec("CREATE TABLE tokenlayer.session_events (machine String, path String, byte_offset UInt64, ts DateTime64(3), raw String) ENGINE=ReplacingMergeTree ORDER BY (machine,path,byte_offset)");
-      await ch.client.exec("INSERT INTO tokenlayer.session_events VALUES ('test','synthetic',0,now(),'{}')");
+      const old = version === "legacy"
+        ? "CREATE TABLE tokenlayer.session_events (machine String, path String, byte_offset UInt64, ts DateTime64(3), raw String) ENGINE=ReplacingMergeTree ORDER BY (machine,path,byte_offset)"
+        : readFileSync(join(import.meta.dir, "../../schema/004_session_events.sql"), "utf8")
+          .replace(/^    content_hash.*\n/m, "").replace("ORDER BY (machine, path, generation, byte_offset, content_hash)", "ORDER BY (machine, path, generation, byte_offset)").replace(/;\s*$/, "");
+      await ch.client.exec(old);
+      await ch.client.exec("CREATE TABLE tokenlayer.session_events_legacy (raw String) ENGINE=MergeTree ORDER BY tuple()");
+      await ch.client.exec("INSERT INTO tokenlayer.session_events (machine,path,byte_offset,ts,raw) VALUES ('test','synthetic',0,now(),'{}')");
       await expect(verifySessionSchema(ch.client)).rejects.toThrow("schema mismatch");
       await applySchema(ch.client);
       await verifySessionSchema(ch.client);
       const [{ sorting_key }] = await ch.client.queryJSON<{ sorting_key: string }>("SELECT sorting_key FROM system.tables WHERE database='tokenlayer' AND name='session_events'");
-      expect(sorting_key).toBe("machine, path, generation, byte_offset");
-      expect((await ch.client.queryJSON("SELECT generation,message_id FROM tokenlayer.session_events FINAL"))).toEqual([{ generation: "legacy", message_id: "" }]);
+      expect(sorting_key).toBe("machine, path, generation, byte_offset, content_hash");
+      expect((await ch.client.queryJSON("SELECT generation,message_id,raw FROM tokenlayer.session_events FINAL")))
+        .toEqual([{ generation: version === "legacy" ? "legacy" : "", message_id: "", raw: "{}" }]);
+      const [receipt] = await ch.client.queryJSON<{ content_hash: string }>("SELECT content_hash FROM tokenlayer.session_events FINAL");
+      expect(receipt.content_hash).toMatch(/^legacy:[a-f0-9]{64}$/);
+      expect(await ch.client.queryJSON("SELECT raw FROM tokenlayer.session_events_pre_content_hash")).toEqual([{ raw: "{}" }]);
       await applySchema(ch.client);
     } finally { await ch.stop(); }
   }, 40000);

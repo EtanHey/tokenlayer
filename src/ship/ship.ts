@@ -98,7 +98,7 @@ function freshCheckpoint(path: string, kind: SourceKind, st: Stats): FileCheckpo
 /** Ship each file independently, save acknowledged progress, then report aggregate failures. */
 export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
   const state: ShipState = loadState(opts.statePath);
-  // Separate write-ahead generation record: deleting the progress checkpoint must not reuse archive keys.
+  // Separate write-ahead generation record retains revision lineage across progress checkpoint loss.
   const generationPath = `${opts.statePath}.generations`;
   const generations = loadState(generationPath);
   const rate = opts.rateBytesPerSec ?? 5 * 1024 * 1024;
@@ -193,6 +193,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
               path,
               generation: cp!.generation,
               byte_offset: l.offset,
+              content_hash: createHash("sha256").update(raw.subarray(l.offset - cp!.offset, l.offset - cp!.offset + l.bytes)).digest("hex"),
               line_bytes: l.bytes,
               ...parseLine(l.text, parser),
             }));
