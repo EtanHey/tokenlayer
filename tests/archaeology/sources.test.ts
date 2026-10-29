@@ -39,3 +39,15 @@ test("S-4 native dataless metadata blocks both hashing and reading a loose zst",
     expect(entries[0].container_hash).toBe("");expect(sources.errors).toEqual([]);
   } finally {rmSync(dir,{recursive:true});}
 });
+
+test("S-10 a non-hex expected tar member hash is a metadata error, not truncation", async () => {
+  const dir=mkdtempSync(join(tmpdir(),"member-hash-")),tar=join(dir,"archive.tar");
+  try {
+    writeFileSync(tar,"the body must not be parsed");
+    const row: Inventory={machine:"m4",source_kind:"tarball_member",container:tar,member_path:"session.jsonl",session_id:"source-test",harness:"claude",bytes:"1",lines:"1",first_ts:"2026-01-01",last_ts:"2026-01-01",cwd:"/Users/etanheyman/Gits/example",sha256:"md5:unknown",mtime:""};
+    const entries=manifest([row],[]),sources=localSources(entries),result=await dryRun(entries,sources);
+    expect(result.import_rows).toBe(0);expect(entries[0].status).toBe("invalid_member_hash");
+    expect(sources.errors[0].reason).toContain("expected member hash must be SHA-256 hex");
+    expect(entries[0].container_hash).toBe("");
+  } finally {rmSync(dir,{recursive:true});}
+});

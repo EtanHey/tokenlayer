@@ -51,9 +51,15 @@ export function localSources(entries: Entry[], probe: (paths: readonly string[])
     }
     for (const [container, group] of archives) {
       if (!readable(container)) { for (const e of group) yield e; continue; }
+      const valid: Entry[] = [];
+      for (const e of group) {
+        if (/^[a-f0-9]{64}$/.test(e.sha256)) valid.push(e);
+        else { e.status="invalid_member_hash"; errors.push({container,reason:`expected member hash must be SHA-256 hex: ${e.member_path}`}); yield e; }
+      }
+      if (!valid.length) continue;
       const hash = await fileHash(container), remaining = new Map<string, Entry[]>();
-      for (const e of group) { const versions = remaining.get(e.member_path) ?? []; versions.push(e); remaining.set(e.member_path, versions); }
-      if (!hash) { for (const e of group) yield e; continue; }
+      for (const e of valid) { const versions = remaining.get(e.member_path) ?? []; versions.push(e); remaining.set(e.member_path, versions); }
+      if (!hash) { for (const e of valid) yield e; continue; }
       const proc = Bun.spawn(["python3", "-c", tarReader, container], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
       proc.stdin.write(JSON.stringify([...remaining.keys()]) + "\n"); proc.stdin.end();
       const reader = proc.stdout.getReader(); let carry = Buffer.alloc(0);
