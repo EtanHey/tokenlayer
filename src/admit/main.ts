@@ -1,3 +1,5 @@
+import { writeOut, writeErr, installErrorHandlers } from '../lib/egress';
+installErrorHandlers();
 import { parseArgs } from 'node:util';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -14,8 +16,9 @@ try {
   const now = values.now === undefined ? Date.now() : timestamp(values.now);
   if (!Number.isFinite(now)) throw Error();
   result = evaluate(JSON.parse(readFileSync(values.file ?? join(homedir(),'.config/tokenlayer/usage.json'),'utf8')), {kind, activeLeads:Number(count), essential:values.essential === true, now});
-} catch {
+} catch (error) {
+  writeErr(error);
   result = deny('invalid arguments or unavailable healthy telemetry');
 }
-process.stdout.write(JSON.stringify(result)+'\n');
+writeOut(JSON.stringify(result));
 process.exitCode = result.admit ? 0 : 1;
