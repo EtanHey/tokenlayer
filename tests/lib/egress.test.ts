@@ -73,3 +73,33 @@ for (const trigger of [`setTimeout(() => { throw new Error('${secret}'); }, 0)`,
   safe({ err: await new Response(proc.stderr).text() });
   expect(await proc.exited).toBe(1);
 });
+
+for (const main of ['drain', 'steer', 'ship', 'usage']) test(`${main} strips opaque configured values without nearby sensitive words`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'egress-exact-'));
+  const values = ['quiet orchard /+?=', 'amber meadow /+?=', 'silver hillside /+?=', 'violet river /+?=', 'copper valley /+?=', 'gentle forest /+?=', 'bright harbor /+?=', 'winter garden /+?='];
+  const names = ['CLIPROXY_MGMT_KEY', 'CLIPROXY_ACCESS_KEY', 'CLICKHOUSE_PASSWORD', 'CUSTOM_SECRET', 'CUSTOM_TOKEN', 'CUSTOM_KEY', 'CUSTOM_AUTH', 'CUSTOM_PASSWORD'];
+  const variants = values.flatMap(v => [v, encodeURIComponent(v), Buffer.from(v).toString('base64')]);
+  try {
+    const config = join(dir, 'synthetic.env');
+    writeFileSync(config, names.map((n, i) => `${n}="${values[i]}"`).join('\n'));
+    const preload = join(dir, 'inject.ts');
+    // Delay until startup env loaders have run; block all network access.
+    writeFileSync(preload, `globalThis.fetch = () => new Promise(() => {}); ${main === 'usage' ? 'Bun.spawn = () => ({ stdout: new Response(\"\").body, exited: new Promise(() => {}), kill() {} });' : ''}\nsetTimeout(() => { throw new Error(${JSON.stringify('ordinary failure ' + 'distance '.repeat(30) + variants.join(' | '))}); }, 100);`);
+    const result = await run(main, { TOKENLAYER_ENV: config, TOKENLAYER_ENV_FILES: config, TOKENLAYER_MACHINE: 'synthetic', TOKENLAYER_STATE_DIR: join(dir, 'state'), TOKENLAYER_SHIP_STATE: join(dir, 'ship.json'), ...(main === 'usage' ? Object.fromEntries(names.map((n, i) => [n, values[i]])) : {}) }, preload, main === 'steer' ? ['--once'] : []);
+    expect(result.code).not.toBe(0);
+    expect(result.err).toContain('[redacted]');
+    for (const v of variants) expect(result.err).not.toContain(v);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('exact stripping precedes patterns, handles overlap and preserves case', async () => {
+  const proc = Bun.spawn([process.execPath, '-e', `
+    import { registerSecrets, sanitizeOutput, writeOut } from './src/lib/egress';
+    registerSecrets({ A_KEY: 'quiet meadow', B_AUTH: 'quiet meadow extended', EMPTY_SECRET: '' });
+    const input = 'quiet meadow extended | QUIET MEADOW | public count 123';
+    if (sanitizeOutput(input) !== '[redacted] | QUIET MEADOW | public count 123') process.exit(3);
+    writeOut(input);
+  `], { cwd: root, env: { PATH: process.env.PATH }, stdout: 'pipe', stderr: 'pipe' });
+  expect(await new Response(proc.stdout).text()).toBe('[redacted] | QUIET MEADOW | public count 123\n');
+  expect(await proc.exited).toBe(0);
+});
