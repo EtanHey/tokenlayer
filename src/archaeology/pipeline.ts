@@ -66,10 +66,25 @@ export function subagentFileId(path: string): string | null {
   return /(?:^|\/)subagents\/([^/]+)\.jsonl(?:\.zst)?$/.exec(path)?.[1]
     ?? /(?:^|\/)(agent-[^/]+)\.jsonl(?:\.zst)?$/.exec(path)?.[1] ?? null;
 }
+function filenameSessionId(path: string): string | null {
+  return /([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\.jsonl(?:\.zst)?$/i.exec(path)?.[1] ?? null;
+}
 export function streamId(session: string, path: string): string {
-  if (path === `${session}::main` || path.startsWith(`${session}::subagent/`)) return path;
+  if (/^[^/:]+::(?:main|subagent\/[^/]+)$/.test(path)) return path;
   const agent = subagentFileId(path);
-  return `${session}::${agent ? `subagent/${agent}` : "main"}`;
+  return `${agent ? session : filenameSessionId(path) ?? session}::${agent ? `subagent/${agent}` : "main"}`;
+}
+/** F-1: match the installed shipper's alias-first column; dedupe uses native identity separately. */
+export function codexSessionId(native: string, alias: string): string { return alias || native; }
+function codexIdentity(raw: string, declared: string, path: string): {native:string;session:string} | null {
+  try {
+    const o: unknown=JSON.parse(raw);
+    if (!o || typeof o!=="object" || !("type"in o) || o.type!=="session_meta" || !("payload"in o) || !o.payload || typeof o.payload!=="object" || !("id"in o.payload) || typeof o.payload.id!=="string" || !o.payload.id) return null;
+    const native=o.payload.id;
+    if(native!==declared && native!==filenameSessionId(path)) return null;
+    const alias="session_id"in o.payload && typeof o.payload.session_id==="string" ? o.payload.session_id : "";
+    return {native,session:codexSessionId(native,alias)};
+  } catch {return null;}
 }
 function identityMatches(raw: string, session: string, kind: "claude" | "codex"): boolean {
   try {
@@ -132,7 +147,7 @@ export async function dryRun(entries: Entry[], options: {
   try {
     for (const [session, path, hash, count] of options.existing ?? []) {
       if (!hashOK(hash) || !Number.isSafeInteger(count) || count < 1) throw new Error("invalid existing occurrence count/hash");
-      insert.run(session, streamId(session, path), hash, count, 0);
+      const stream=streamId(session,path); insert.run(stream.split("::")[0], stream, hash, count, 0);
     }
     for await (const e of options.order ?? ordered) {
       try {
@@ -162,6 +177,7 @@ export async function dryRun(entries: Entry[], options: {
       const st = newFileState(e.harness === "codex" || /rollout-/.test(e.member_path) ? "codex" : "claude", e.harness === "t3" ? "t3" : e.harness === "codex" ? "codex" : "claude", Date.parse(e.first_ts) || 0);
       st.cwd = e.cwd;
       const subagent = !!subagentFileId(e.member_path) && (`/${e.member_path}`).includes(`/${e.session_id}/subagents/`);
+      let stream=e.stream, eventSession=e.session_id;
       let identitySeen = st.kind === "claude" && subagent, identityConflict = false, firstLine = true, codexHeader = false;
       let offset = 0, carry = Buffer.alloc(0), rows = 0, bytes = 0, skipLive = 0, skipCopy = 0, liveRows = 0;
       const counts = new Map<string, number>();
@@ -176,20 +192,23 @@ export async function dryRun(entries: Entry[], options: {
             const raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(line);
             const text = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
             st.harness = detectHarness(st.kind, [text]) ?? st.harness; e.harness = st.harness;
-            if (firstLine && st.kind === "codex") codexHeader = identityMatches(text, e.session_id, "codex"); firstLine = false;
+            if (firstLine && st.kind === "codex") {
+              const identity=codexIdentity(text,e.session_id,e.member_path);codexHeader=!!identity;
+              if(identity){stream=`${identity.native}::main`;eventSession=identity.session;}
+            } firstLine = false;
             const parsed = parseLine(text, st);
             if (st.kind === "claude") identitySeen ||= st.sessionId === e.session_id && identityMatches(text, e.session_id, "claude");
             identityConflict ||= st.kind === "claude" && !!st.sessionId && st.sessionId !== e.session_id;
-            const existing = find.get(e.session_id, e.stream, hash);
+            const existing = find.get(stream.split("::")[0], stream, hash);
             const occurrence = (counts.get(hash) ?? 0) + 1; counts.set(hash, occurrence);
             if (e.source_kind === "live") {
-              if (occurrence > (existing?.live_count ?? 0)) insert.run(e.session_id, e.stream, hash, occurrence, 0);
+              if (occurrence > (existing?.live_count ?? 0)) insert.run(stream.split("::")[0], stream, hash, occurrence, 0);
               liveRows++;
             } else if (occurrence <= (existing?.live_count ?? 0)) skipLive++;
             else if (occurrence <= (existing?.prior_count ?? 0)) skipCopy++;
             else {
-              insert.run(e.session_id, e.stream, hash, 0, occurrence); rows++; bytes += line.length;
-              if (sample.length < (options.sampleSize ?? 100)) sample.push({ ...parsed, session_id: e.session_id, raw, project: e.repo || parsed.project, machine: e.origin, harness: st.harness, path: `archive://${e.container_hash || fullHash}/${e.member_path}`, generation: `archive:${fullHash}`, byte_offset: offset, content_hash: hash, line_bytes: line.length });
+              insert.run(stream.split("::")[0], stream, hash, 0, occurrence); rows++; bytes += line.length;
+              if (sample.length < (options.sampleSize ?? 100)) sample.push({ ...parsed, session_id: eventSession, raw, project: e.repo || parsed.project, machine: e.origin, harness: st.harness, path: `archive://${e.container_hash || fullHash}/${e.member_path}`, generation: `archive:${fullHash}`, byte_offset: offset, content_hash: hash, line_bytes: line.length });
             }
             offset += line.length; start = nl + 1;
           }
@@ -203,6 +222,7 @@ export async function dryRun(entries: Entry[], options: {
         }
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
+      e.stream=stream;e.session_id=eventSession;
       checkpoints.set(size, fullHash);
       const known = prefixes.get(e.stream);
       if (known?.get(size) === fullHash) e.relation = "prefix";

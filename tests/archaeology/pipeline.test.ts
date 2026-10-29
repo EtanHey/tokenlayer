@@ -147,6 +147,23 @@ test("MF-3 Codex native header id is authoritative over parser session_id aliase
   const entries=manifest([row({harness:"codex",member_path:"rollout-session.jsonl",bytes:String(bytes.length),sha256:sha256(bytes)})],[]);
   const result=await dryRun(entries,{read:async()=>(async function*(){yield bytes;})()});
   expect(result.import_rows).toBe(2);expect(result.not_transcript).toBe(0);
-  expect(result.sample.every(e=>e.session_id==="session")).toBe(true);
+  expect(result.sample.every(e=>e.session_id==="older-parent")).toBe(true);
   expect(Buffer.concat(result.sample.map(e=>Buffer.from(e.raw))).equals(bytes)).toBe(true);
+});
+
+test("NF-1 native child rollout stream is accepted and isolated from its parent alias", async () => {
+  const parent="11111111-1111-4111-8111-111111111111",child="22222222-2222-4222-8222-222222222222";
+  const common='{"type":"event_msg","payload":{"type":"fixture"}}\n';
+  const parentBytes=Buffer.from(JSON.stringify({type:"session_meta",payload:{id:parent}})+'\n'+common);
+  const childBytes=Buffer.from(JSON.stringify({type:"session_meta",payload:{id:child,session_id:parent}})+'\n'+common);
+  const path=`/Users/etanheyman/.codex/sessions/rollout-2026-01-01T00-00-00-${child}.jsonl.zst`;
+  const data=new Map([[`rollout-${parent}.jsonl`,parentBytes],[path,childBytes],[`copy/rollout-${child}.jsonl.zst`,childBytes]]);
+  const rows=[...data].map(([member_path,bytes],i)=>row({harness:"codex",session_id:i===2?child:parent,member_path,bytes:String(bytes.length),sha256:sha256(bytes)}));
+  const entries=manifest(rows,[]),read=async(e:{member_path:string})=>(async function*(){yield data.get(e.member_path)!;})();
+  const result=await dryRun(entries,{read});
+  expect(result.import_rows).toBe(4);expect(result.skip_copy).toBe(2);expect(result.not_transcript).toBe(0);
+  expect(entries.filter(e=>e.member_path.includes(child)).every(e=>e.stream===`${child}::main`)).toBe(true);
+  expect(result.sample.every(e=>e.session_id===parent)).toBe(true);
+  const seeded=await dryRun(manifest([rows[1]],[]),{read,existing:[[parent,path,sha256(childBytes.subarray(0,childBytes.indexOf(10)+1)),1],[parent,path,sha256(Buffer.from(common)),1]]});
+  expect(seeded.import_rows).toBe(0);expect(seeded.skip_live).toBe(2);
 });
