@@ -69,7 +69,7 @@ do {
     }
   } catch (err) {
     writeErr(`${new Date().toISOString()} tokenlayer-ship: ${(err as Error).message}`);
-    if (err instanceof AggregateError) for (const cause of err.errors) writeErr(cause);
+    if (err instanceof AggregateError) for (const cause of err.errors) writeErr(cause instanceof Error ? cause.message : cause);
     if (backfill) process.exit(1);
   }
   if (backfill) break;

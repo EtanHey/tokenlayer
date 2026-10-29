@@ -26,13 +26,41 @@ test('stack review: key families and JWTs after JSON escapes at every echo depth
   }
 });
 
-test('sensitive names match complete segments, never identifier substrings', () => {
-  const controls = { tokenlayer: 'm1', TOKENLAYER_HOST: '5', monkey: 'e', keyboard: 'public' };
+test('literal tokenlayer identifiers remain public', () => {
+  const controls = { tokenlayer: 'm1', TOKENLAYER_HOST: '5' };
   expect(redactDeep(controls)).toEqual(controls);
   expect(redactText(JSON.stringify(controls))).toBe(JSON.stringify(controls));
   for (const key of ['token', 'access_token', 'X-Auth-Token', 'accessToken', 'APIKey']) {
     expect(redactDeep({ [key]: 'opaque' })).toEqual({ [key]: REDACTED });
   }
+});
+
+const opaque = 'Q7mX2vB9pL4sN8cR3wF6hJ0zD5kA1uE9';
+test.each(['apikey', 'APIKEY', 'accesstoken', 'refreshtoken', 'authtoken', 'idtoken',
+  'sessiontoken', 'bearertoken', 'secretkey', 'privatekey', 'clientsecret', 'dbpassword',
+  'GITHUBTOKEN', 'mgmtkey', 'authkey', 'OPENAI_APIKEY', 'credentials', 'tokens', 'secrets',
+  'passwords', 'cookies', 'NPM_TOKENS', 'api-keys', 'oauth', 'claudeAiOauth'])('FINAL review: %s stays sensitive in every egress form', name => {
+  const json = JSON.stringify({ [name]: opaque });
+  for (const input of [json, `${name}=${opaque}`, `https://example.invalid/?${name}=${opaque}`, `${name}: ${opaque}`, `${name} expired: ${opaque}`]) {
+    const out = redactText(input);
+    expect(out).not.toContain(opaque);
+    expect(out).toContain(REDACTED);
+  }
+  expect(JSON.parse(redactText(json))).toEqual({ [name]: REDACTED });
+  expect(redactDeep({ [name]: opaque })).toEqual({ [name]: REDACTED });
+  expect(redactDeep({ [name]: { nested: opaque } })).toEqual({ [name]: REDACTED });
+  expect(redactText(JSON.stringify({ error: `invalid ${name} ${opaque}` }))).not.toContain(opaque);
+});
+
+test('FINAL review: only integer credentials counters remain public', () => {
+  for (const count of ['0', '3', '100']) {
+    const line = `tokenlayer-steer: credentials=${count} changed=0`;
+    expect(redactText(line)).toBe(line);
+  }
+  for (const value of [opaque, '3abc', '3.14', '"3"']) {
+    expect(redactText(`credentials=${value}`)).not.toContain(value);
+  }
+  expect(redactText(`credentials=3${opaque}`)).not.toContain(opaque);
 });
 
 const authFile = {
