@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ClickHouse } from "../../src/lib/clickhouse";
+import { ClickHouse } from "./clickhouse";
 
 /** Path to a local clickhouse binary, or null (integration tests then skip). Never the M1. */
 export function clickhouseBinary(): string | null {

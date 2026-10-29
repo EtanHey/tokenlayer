@@ -6,7 +6,7 @@ import { shipOnce } from "../../src/ship/ship";
 import { drainOnce } from "../../src/drain/drain";
 import { Spool } from "../../src/drain/spool";
 import { redactText } from "../../src/lib/redact";
-import { clickhouseBinary, startLocalClickHouse } from "../support/local-clickhouse";
+import { clickhouseBinary, startLocalClickHouse } from "../../src/lib/local-clickhouse";
 
 const root = join(import.meta.dir, "../../.local");
 const stamp = { timestamp: "2026-10-28T08:00:00Z" };
