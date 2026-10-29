@@ -39,7 +39,7 @@ test('CLI exits nonzero on regression and ceiling breach, zero when unchanged', 
     for (const [value, status] of [['12', 0], ['11', 1], ['9', 1], ['missing', 1]] as const) {
       writeFileSync(join(dir, 'value'), value);
       const p = spawnSync('node', [table, 'ratchet/rows.json'], {
-        cwd: dir, env: { ...process.env, RATCHET_BASE_REF: 'HEAD', GITHUB_STEP_SUMMARY: '' },
+        cwd: dir, env: { ...process.env, RATCHET_BASE_REF: 'HEAD', RATCHET_MEASURE_REF: 'HEAD', GITHUB_STEP_SUMMARY: '' },
       });
       expect(p.status).toBe(status);
     }
@@ -54,7 +54,7 @@ test('CLI exits nonzero on regression and ceiling breach, zero when unchanged', 
     for (const [value, status] of [['14', 1], ['18', 0], ['4', 1], ['15', 0]] as const) {
       writeFileSync(join(dir, 'value'), value);
       const p = spawnSync('node', [table, 'ratchet/rows.json'], {
-        cwd: dir, env: { ...process.env, RATCHET_BASE_REF: 'HEAD', GITHUB_STEP_SUMMARY: '' },
+        cwd: dir, env: { ...process.env, RATCHET_BASE_REF: 'HEAD', RATCHET_MEASURE_REF: 'HEAD', GITHUB_STEP_SUMMARY: '' },
       });
       expect(p.status).toBe(status);
     }
@@ -79,7 +79,7 @@ test('base judge rejects the reviewer row-deletion plus judge-edit probe', () =>
     writeFileSync(join(dir, 'ratchet/rows.json'), JSON.stringify(base));
     for (const args of [['init', '-q'], ['add', '.'], ['-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@example.invalid', 'commit', '-qm', 'base']]) expect(spawnSync('git', args, { cwd: dir }).status).toBe(0);
     writeFileSync(join(dir, 'ratchet/rows.json'), JSON.stringify(candidate));
-    const judge = spawnSync('node', [resolve('ratchet/table.mjs'), 'ratchet/rows.json'], { cwd: dir, encoding: 'utf8', env: { ...process.env, RATCHET_BASE_REF: 'HEAD', GITHUB_EVENT_PATH: '' } });
+    const judge = spawnSync('node', [resolve('ratchet/table.mjs'), 'ratchet/rows.json'], { cwd: dir, encoding: 'utf8', env: { ...process.env, RATCHET_BASE_REF: 'HEAD', RATCHET_MEASURE_REF: 'HEAD', GITHUB_EVENT_PATH: '' } });
     expect(judge.status).toBe(1);
     expect(judge.stderr).toContain('row removed or loosened: admit-null-window');
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -97,4 +97,12 @@ test('row policy requires label AND exact per-row disclosure; raising never lowe
   expect(raisedFloor(15, 25)).toBe(20);
   expect(raisedFloor(20, 15)).toBe(20);
   expect(() => raisedFloor(15, NaN)).toThrow();
+});
+
+test('max growth cannot silently loosen existing policy', () => {
+  const old = { id: 'payload', direction: 'max', ceiling: 1000 };
+  for (const patch of [{ allowance: 64 }, { growth: 0.25 }]) {
+    expect(() => checkRows([old], [{ ...old, ...patch }])).toThrow('row removed or loosened');
+    expect(() => checkRows([{ ...old, ...patch }], [old])).toThrow('row removed or loosened');
+  }
 });
