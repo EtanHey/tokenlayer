@@ -1,3 +1,4 @@
+import { writeOut, writeErr, installErrorHandlers } from "../lib/egress";
 import { mkdirSync, writeFileSync, readFileSync, lstatSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -19,6 +20,7 @@ export function inventory(path: string): Inventory[] {
 const ddl = `-- PROPOSAL: tokenlayer owns final DDL. Intervals follow dated evidence; null bounds are open.\nCREATE TABLE tokenlayer.repo_map (machine LowCardinality(String), cwd String, repo_canonical String, valid_from Nullable(DateTime64(3,'UTC')), valid_to Nullable(DateTime64(3,'UTC')), evidence Array(String), confidence LowCardinality(String)) ENGINE=MergeTree ORDER BY (machine,cwd);\n`;
 
 if (import.meta.main) {
+  installErrorHandlers();
   const { values } = parseArgs({ options: { inventory: { type: "string", multiple: true }, manifest: { type: "string" }, existing: { type: "string" }, evidence: { type: "string" }, roots: {type:"string"}, out: { type: "string" }, validate: { type: "boolean", default: false } } });
   if (!values.out || (!values.manifest && !values.inventory?.length)) throw new Error("usage: --inventory TSV [--inventory TSV] --evidence NDJSON --out DIR [--validate]");
   const inputPaths = values.manifest ? [values.manifest] : values.inventory ?? [];
@@ -40,7 +42,7 @@ if (import.meta.main) {
   const maps = repoMap(rows.filter(r => classify(r).session), evidence), entries = manifest(rows, maps, roots);
   let processed = 0;
   const sources = localSources(entries);
-  const options = {...sources,existing,database:join(out,"dedupe.sqlite"),onEntry:()=>{if(++processed%1000===0)process.stderr.write(`verified progress ${processed}/${entries.length}\n`);}};
+  const options = {...sources,existing,database:join(out,"dedupe.sqlite"),onEntry:()=>{if(++processed%1000===0)writeErr(`verified progress ${processed}/${entries.length}`);}};
   const {report,validated,baseline} = values.validate ? await validatedDryRun(entries,options) : {report:await dryRun(entries,options),validated:0,baseline:null};
   const output = (name: string, value: string) => writeFileSync(join(out, name), value);
   output("shipper-roots.json",JSON.stringify(roots,null,2)+"\n");
@@ -52,5 +54,5 @@ if (import.meta.main) {
   output("dry-run.json", JSON.stringify({ at: new Date().toISOString(), ...counts, validated, validation_baseline:baseline, source_errors: sources.errors }, null, 2) + "\n");
   const rejected = new Set(entries.filter(e => e.status === "not_transcript").map(e => JSON.stringify([e.machine,e.container,e.member_path])));
   output("classification.tsv", "session\treason\tmachine\tcontainer\tmember_path\n" + rows.map(r => { const c = rejected.has(JSON.stringify([r.machine,r.container,r.member_path])) ? {session:false,reason:"verified content lacks matching transcript identity"} : classify(r); return [c.session, c.reason, r.machine, r.container, r.member_path].join("\t"); }).join("\n") + "\n");
-  process.stdout.write(JSON.stringify({ sessions: new Set(entries.map(e => e.session_id)).size, copies: entries.length, import_rows: report.import_rows, validated }) + "\n");
+  writeOut(JSON.stringify({ sessions: new Set(entries.map(e => e.session_id)).size, copies: entries.length, import_rows: report.import_rows, validated }));
 }

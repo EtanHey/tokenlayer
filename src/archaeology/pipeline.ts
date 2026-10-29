@@ -208,7 +208,7 @@ export async function dryRun(entries: Entry[], options: {
               if(identity){stream=`${identity.native}::main`;eventSession=identity.session;}
             } firstLine = false;
             const parsed = parseLine(text, st);
-            if (st.kind === "claude") identitySeen ||= st.sessionId === e.session_id && identityMatches(text, e.session_id, "claude");
+            if (st.kind === "claude") identitySeen ||= identityMatches(text, e.session_id, "claude");
             const existing = find.get(stream.split("::")[0], stream, hash);
             const occurrence = (counts.get(hash) ?? 0) + 1; counts.set(hash, occurrence);
             if (e.source_kind === "live") {

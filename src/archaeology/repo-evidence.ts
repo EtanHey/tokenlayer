@@ -1,3 +1,4 @@
+import { writeOut, writeErr, installErrorHandlers } from "../lib/egress";
 import { basename } from "node:path";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -42,6 +43,7 @@ export function deriveRepoEvidence(targets: Target[], observations: GitObservati
 }
 
 if (import.meta.main) {
+  installErrorHandlers();
   const { values } = parseArgs({ options: { inventory: { type:"string" }, "repo-raw": { type:"string",multiple:true }, lookups: { type:"string" }, out: { type:"string" } } });
   if (!values.inventory || !values.lookups || !values.out) throw Error("requires --inventory --repo-raw --lookups --out");
   if (process.env.USER === "happycampr") throw Error("Phase 4 evidence collection is M4-only");
@@ -60,5 +62,5 @@ if (import.meta.main) {
   const evidence=deriveRepoEvidence(targets,observations,lookup);
   writeFileSync(values.out,evidence.map(e=>JSON.stringify(e)).join("\n")+"\n");
   writeFileSync(values.out+".observations.ndjson",observations.map(o=>JSON.stringify(o)).join("\n")+"\n");
-  process.stdout.write(JSON.stringify({targets:targets.length,evidence:evidence.length,lookups:lookup.size})+"\n");
+  writeOut(JSON.stringify({targets:targets.length,evidence:evidence.length,lookups:lookup.size}));
 }
