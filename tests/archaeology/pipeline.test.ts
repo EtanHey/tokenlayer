@@ -109,3 +109,16 @@ test("MF-2 missing repeated occurrences survive per stream and retain reconstruc
   const seeded=await dryRun(manifest([row({bytes:String(full.length),sha256:sha256(full),member_path:"full.jsonl"})],[]),{existing:[["session","full.jsonl",sha256(header),1],["session","full.jsonl",sha256(repeated),1]],read:async()=>(async function*(){yield full;})()});
   expect(seeded.import_rows).toBe(2);expect(seeded.skip_live).toBe(2);
 });
+
+test("MF-3 findings and Cursor fixtures fail path and verified-content gates", async () => {
+  const finding=Buffer.from('{"id":"finding","title":"fixture","type":"anti-pattern"}\n');
+  const cursor=Buffer.from('{"role":"user","message":{"content":"fixture"}}\n');
+  const badCodex=Buffer.from('{"type":"session_meta","payload":{"id":"other"}}\n');
+  expect(classify(row({member_path:"/weave/findings/session.jsonl"})).session).toBe(false);
+  expect(classify(row({member_path:"source-4/Users-etanheyman-Gits-p/agent-transcripts/id/id.jsonl"})).session).toBe(false);
+  const data=new Map([["finding-copy.jsonl",finding],["cursor-copy.jsonl",cursor],["rollout-other.jsonl",badCodex]]);
+  const entries=manifest([...data].map(([path,bytes])=>row({member_path:path,harness:path.startsWith("rollout-")?"codex":"claude",bytes:String(bytes.length),sha256:sha256(bytes)})),[]);
+  const result=await dryRun(entries,{read:async e=>(async function*(){yield data.get(e.member_path)!;})()});
+  expect(result.import_rows).toBe(0);expect(result.not_transcript).toBe(3);
+  expect(entries.every(e=>e.status==="not_transcript"&&!e.selected)).toBe(true);
+});

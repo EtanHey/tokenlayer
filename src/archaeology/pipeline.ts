@@ -15,6 +15,7 @@ const synthetic = /(?:^|\/)(?:tests?|fixtures?(?:-raw)?|testdata|__fixtures__|be
 export function classify(r: Inventory): { session: boolean; reason: string } {
   const path = `${r.container}/${r.member_path}`.replace(/(^|\/)-Users-[^/]+(?=\/|$)/g, "$1project");
   if (/\/(?:\.cursor|\.gemini|\.antigravity)\//.test(path)) return { session: false, reason: "outside Claude/Codex/T3 scope" };
+  if (/\/agent-transcripts\//.test(path) || /weave[^\n]*\/findings\//.test(path)) return { session: false, reason: "Cursor transcript or weave findings layout" };
   if (synthetic.test(path)) return { session: false, reason: "fixture/eval/benchmark/registry/telemetry path" };
   if (Number(r.bytes) === 40 && /\.tgz$/.test(r.member_path)) return { session: false, reason: "40-byte placeholder" };
   if (r.source_kind === "t3_sqlite" && r.harness === "t3") return { session: true, reason: "T3 metadata; transcript export required" };
@@ -50,6 +51,13 @@ export function streamId(session: string, path: string): string {
   if (path === `${session}::main` || path.startsWith(`${session}::subagent/`)) return path;
   const agent = subagentFileId(path);
   return `${session}::${agent ? `subagent/${agent}` : "main"}`;
+}
+function codexHeaderMatches(raw: string, session: string): boolean {
+  try {
+    const o: unknown = JSON.parse(raw);
+    return !!o && typeof o === "object" && "type" in o && o.type === "session_meta" && "payload" in o
+      && !!o.payload && typeof o.payload === "object" && "id" in o.payload && o.payload.id === session;
+  } catch { return false; }
 }
 export type ExistingCount = [session: string, streamOrPath: string, hash: string, count: number];
 
@@ -89,7 +97,7 @@ export async function dryRun(entries: Entry[], options: {
   db.exec("DROP TABLE IF EXISTS seen; CREATE TABLE IF NOT EXISTS occurrences(session TEXT, stream TEXT, hash TEXT, live_count INTEGER, prior_count INTEGER, PRIMARY KEY(session,stream,hash)) WITHOUT ROWID; DELETE FROM occurrences");
   const insert = db.query("INSERT INTO occurrences VALUES(?,?,?,?,?) ON CONFLICT(session,stream,hash) DO UPDATE SET live_count=max(live_count,excluded.live_count),prior_count=max(prior_count,excluded.prior_count)");
   const find = db.query<{ live_count: number; prior_count: number }, [string, string, string]>("SELECT live_count,prior_count FROM occurrences WHERE session=? AND stream=? AND hash=?");
-  const report = { import_rows: 0, import_bytes: 0, import_sessions: 0, skip_live: 0, skip_copy: 0, live_rows: 0, needs_fetch: 0, source_changed: 0, read_errors: 0, divergent_sessions: 0, divergent_streams: 0, unterminated_bytes: 0, sample: [] as Event[], groups: {} as Record<string, { rows: number; bytes: number; skip_live: number; skip_copy: number }> };
+  const report = { import_rows: 0, import_bytes: 0, import_sessions: 0, skip_live: 0, skip_copy: 0, live_rows: 0, needs_fetch: 0, source_changed: 0, read_errors: 0, not_transcript: 0, divergent_sessions: 0, divergent_streams: 0, unterminated_bytes: 0, sample: [] as Event[], groups: {} as Record<string, { rows: number; bytes: number; skip_live: number; skip_copy: number }> };
   const sessions = new Set<string>(), divergent = new Map<string, string>();
   const prefixes = new Map<string, Map<number, string>>();
   const verified = new Map<string, Entry[]>();
@@ -128,7 +136,8 @@ export async function dryRun(entries: Entry[], options: {
       const again = await options.read(e);
       if (!again) throw new Error("source disappeared between verification and reading");
       const st = newFileState(e.harness === "codex" || /rollout-/.test(e.member_path) ? "codex" : "claude", e.harness === "t3" ? "t3" : e.harness === "codex" ? "codex" : "claude", Date.parse(e.first_ts) || 0);
-      st.sessionId = e.session_id; st.cwd = e.cwd;
+      st.cwd = e.cwd;
+      let identitySeen = false, identityConflict = false, firstLine = true, codexHeader = false;
       let offset = 0, carry = Buffer.alloc(0), rows = 0, bytes = 0, skipLive = 0, skipCopy = 0, liveRows = 0;
       const counts = new Map<string, number>();
       const sample: Event[] = [], secondHash = createHash("sha256");
@@ -140,8 +149,13 @@ export async function dryRun(entries: Entry[], options: {
           while ((nl = carry.indexOf(10, start)) >= 0) {
             const line = carry.subarray(start, nl + 1), hash = sha256(line);
             const raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(line);
-            st.harness = detectHarness(st.kind, [raw]) ?? st.harness; e.harness = st.harness;
-            const parsed = parseLine(raw, st), existing = find.get(e.session_id, e.stream, hash);
+            const text = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
+            st.harness = detectHarness(st.kind, [text]) ?? st.harness; e.harness = st.harness;
+            if (firstLine) codexHeader = codexHeaderMatches(text, e.session_id); firstLine = false;
+            const parsed = parseLine(text, st);
+            identitySeen ||= st.sessionId === e.session_id;
+            identityConflict ||= !!st.sessionId && st.sessionId !== e.session_id;
+            const existing = find.get(e.session_id, e.stream, hash);
             const occurrence = (counts.get(hash) ?? 0) + 1; counts.set(hash, occurrence);
             if (e.source_kind === "live") {
               if (occurrence > (existing?.live_count ?? 0)) insert.run(e.session_id, e.stream, hash, occurrence, 0);
@@ -157,6 +171,12 @@ export async function dryRun(entries: Entry[], options: {
           carry = Buffer.from(carry.subarray(start));
         }
         if (secondHash.digest("hex") !== fullHash) throw new Error("source changed during second read");
+        // Untagged state markers inherit a proven Claude identity. Subagents may prove it by their parent directory.
+        const subagent = !!subagentFileId(e.member_path) && (`/${e.member_path}`).includes(`/${e.session_id}/subagents/`);
+        if (identityConflict || !(st.kind === "codex" ? codexHeader : identitySeen || subagent)) {
+          db.exec("ROLLBACK"); e.status = "not_transcript"; e.relation = "not_transcript"; e.selected = false;
+          report.not_transcript++; options.onEntry?.(e); continue;
+        }
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
       checkpoints.set(size, fullHash);
@@ -178,6 +198,9 @@ export async function dryRun(entries: Entry[], options: {
       options.onEntry?.(e);
       } catch { e.status = "read_error"; report.read_errors++; options.onEntry?.(e); }
     }
+    const best = new Map<string, Entry>();
+    for (const e of entries) if (e.status !== "not_transcript" && (!best.has(e.stream) || Number(e.bytes) > Number(best.get(e.stream)?.bytes))) best.set(e.stream, e);
+    for (const e of entries) e.selected = best.get(e.stream) === e || (e.status === "verified" && e.relation === "divergent");
     report.import_sessions = sessions.size; report.divergent_sessions = new Set(divergent.values()).size; report.divergent_streams = divergent.size;
     return report;
   } finally { db.close(); }

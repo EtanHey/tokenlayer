@@ -62,6 +62,7 @@ if (import.meta.main) {
   output("manifest.tsv", [keys.join("\t"), ...entries.map(e => keys.map(k => String(Reflect.get(e, k)).replace(/[\t\r\n]/g, " ")).join("\t"))].join("\n") + "\n");
   const { sample, ...counts } = report;
   output("dry-run.json", JSON.stringify({ at: new Date().toISOString(), ...counts, validated, source_errors: sources.errors }, null, 2) + "\n");
-  output("classification.tsv", "session\treason\tmachine\tcontainer\tmember_path\n" + rows.map(r => { const c = classify(r); return [c.session, c.reason, r.machine, r.container, r.member_path].join("\t"); }).join("\n") + "\n");
+  const rejected = new Set(entries.filter(e => e.status === "not_transcript").map(e => JSON.stringify([e.machine,e.container,e.member_path])));
+  output("classification.tsv", "session\treason\tmachine\tcontainer\tmember_path\n" + rows.map(r => { const c = rejected.has(JSON.stringify([r.machine,r.container,r.member_path])) ? {session:false,reason:"verified content lacks matching transcript identity"} : classify(r); return [c.session, c.reason, r.machine, r.container, r.member_path].join("\t"); }).join("\n") + "\n");
   process.stdout.write(JSON.stringify({ sessions: new Set(entries.map(e => e.session_id)).size, copies: entries.length, import_rows: report.import_rows, validated }) + "\n");
 }
