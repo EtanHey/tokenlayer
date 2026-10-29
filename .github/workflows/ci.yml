@@ -1,6 +1,7 @@
 name: CI
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
   push:
     branches: [main]
 permissions:
@@ -8,7 +9,8 @@ permissions:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    outputs: { median: '${{ steps.ratchet.outputs.median }}' }
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -39,6 +41,8 @@ jobs:
           tar -xzf "$pkg" --strip-components=3 clickhouse-common-static-26.10.3.7/usr/bin/clickhouse
           rm -- "$pkg" "$pkg.sha512"
           curl -fsSL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o tla2tools.jar
+      - name: Verify TLC (including cache hits)
+        run: echo 'fc6878c603f0fdc18b9fe3e5bf51860cb90ab5b1154e3c371660c036d6bdd63e  '"$HOME/.cache/tokenlayer-ci/tla2tools.jar" | sha256sum -c -
       - name: Configure tools
         run: |
           echo "$HOME/.cache/tokenlayer-ci" >> "$GITHUB_PATH"
@@ -51,11 +55,54 @@ jobs:
         run: bun run test:property
       - name: Independent admission safety mutation
         run: python3 scripts/check-admit-blind-mutation.py
-      - name: Ratchet (main versus this PR)
-        if: always() && steps.tools.outcome == 'success'
+      - name: Bootstrap judge content guard regression
+        run: python3 scripts/test-ratchet-bootstrap.py
+      - name: Ratchet (trusted base versus this PR)
+        id: ratchet
         env:
-          RATCHET_BASE_REF: ${{ github.event_name == 'pull_request' && 'origin/main' || github.event.before }}
-        run: node ratchet/table.mjs ratchet/rows.json
+          RATCHET_MEASURE_REF: origin/main
+          RATCHET_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p .local
+          export TMPDIR="$PWD/.local"
+          trusted=$(mktemp -d "$PWD/.local/trusted-XXXXXX")
+          git archive "$RATCHET_BASE_REF" ratchet scripts/bench-redact.ts tests/support/local-clickhouse.ts tests/fixtures src/lib/clickhouse.ts src/lib/redact.ts | tar -x -C "$trusted"
+          if test -f "$trusted/ratchet/guard.mjs"; then
+            node "$trusted/ratchet/table.mjs" ratchet/rows.json
+          else
+            # Permit changed rows, but require the complete reviewed judge import closure.
+            python3 scripts/check-ratchet-bootstrap.py "$RATCHET_BASE_REF"
+            TRUSTED="$trusted" node --input-type=module <<'JS'
+          const root = process.env.TRUSTED;
+          const [{ runRows }, { evaluate }] = await Promise.all([import(`${root}/ratchet/run-rows.mjs`), import(`${root}/ratchet/table.mjs`)]);
+          const { readFileSync } = await import('node:fs');
+          const rows = JSON.parse(readFileSync(`${root}/ratchet/rows.json`)).rows.map(r => ({ ...r, command: r.command.replace('node ratchet/measure.mjs', `node ${root}/ratchet/measure.mjs`) }));
+          process.env.REDACT_MODULE = `${process.cwd()}/src/lib/redact.ts`;
+          const values = runRows(rows, process.cwd());
+          if (rows.some(r => r.runner === 'ci' && !evaluate(r, values[r.id]))) process.exit(1);
+          JS
+            node ratchet/table.mjs ratchet/rows.json
+          fi
+  raise-floor:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Raise only after green main; refuse concurrent updates
+        env:
+          MEDIAN: ${{ needs.ci.outputs.median }}
+        run: |
+          node ratchet/raise.mjs "$MEDIAN"
+          if ! git diff --quiet -- ratchet/rows.json; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add ratchet/rows.json
+            git commit -m 'ci: ratchet throughput floor to 80% of green main median'
+            git push origin HEAD:main
+          fi
 
   canon-drift:
     runs-on: ubuntu-latest

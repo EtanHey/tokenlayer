@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, statSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, statSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { applySchema } from "../../src/lib/schema";
 import { shipOnce } from "../../src/ship/ship";
@@ -12,7 +12,39 @@ const root = join(import.meta.dir, "../../.local");
 const stamp = { timestamp: "2026-10-28T08:00:00Z" };
 const tokenCount = { ...stamp, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { output_tokens: 230 }, last_token_usage: { output_tokens: 230 } } } };
 
-for (const kind of ["codex", "claude"] as const) test.skipIf(!clickhouseBinary())(`review: returning ${kind} inode preserves every parsed column`, async () => {
+for (const recovery of ['state loss', 'returning inode']) test.skipIf(!clickhouseBinary())(`FINAL review: late T3 ${recovery} retains two rows`, async () => {
+  const ch = await startLocalClickHouse();
+  const dir = mkdtempSync(join(root, 'late-t3-'));
+  try {
+    await applySchema(ch.client);
+    const file = join(dir, 'session.jsonl');
+    const opts = { machine: 'synthetic', roots: [{ kind: 'claude' as const, dir }], statePath: join(dir, 'state'), clickhouse: ch.client, rateBytesPerSec: 0 };
+    const snapshot = () => ch.client.queryJSON('SELECT * EXCEPT ingested_at FROM tokenlayer.session_events FINAL WHERE machine=\'synthetic\' ORDER BY byte_offset');
+    writeFileSync(file, JSON.stringify({ type: 'queue-operation' }) + '\n');
+    const inode = statSync(file).ino;
+    await shipOnce(opts);
+    appendFileSync(file, JSON.stringify({ ...stamp, type: 'assistant', entrypoint: 'sdk-ts', message: { usage: { output_tokens: 7 } } }) + '\n');
+    await shipOnce(opts);
+    const archived = await snapshot();
+    expect(archived).toHaveLength(2);
+    expect(archived.map(row => row.harness)).toEqual(['t3', 't3']);
+    if (recovery === 'state loss') {
+      rmSync(opts.statePath);
+      rmSync(`${opts.statePath}.generations`);
+    } else {
+      renameSync(file, `${file}.parked`);
+      writeFileSync(file, '{"type":"queue-operation"}\n');
+      await shipOnce({ ...opts, machine: 'replacement' });
+      renameSync(file, `${file}.replacement`);
+      renameSync(`${file}.parked`, file);
+      expect(statSync(file).ino).toBe(inode);
+    }
+    await shipOnce(opts);
+    expect(await snapshot()).toEqual(archived);
+  } finally { await ch.stop(); rmSync(dir, { recursive: true, force: true }); }
+}, 40_000);
+
+for (const kind of ["codex", "claude"] as const) test.skipIf(!clickhouseBinary())(`review: returning ${kind} inode preserves archive columns except file-level harness`, async () => {
   const ch = await startLocalClickHouse();
   mkdirSync(root, { recursive: true });
   const dir = mkdtempSync(join(root, "pure-lines-"));
@@ -51,7 +83,10 @@ for (const kind of ["codex", "claude"] as const) test.skipIf(!clickhouseBinary()
       expect(statSync(file).ino).toBe(inode);
       await shipOnce(opts);
       const current = await snapshot();
-      for (const row of archived) expect(current).toContainEqual(row);
+      for (const row of archived) {
+        const replay = current.find(r => r.generation === row.generation && r.byte_offset === row.byte_offset && r.content_hash === row.content_hash);
+        expect(replay).toEqual({ ...row, harness: kind === 'claude' && row.message_id === 'msg_b' ? 'claude' : row.harness });
+      }
   } finally { await ch.stop(); rmSync(dir, { recursive: true, force: true }); }
 }, 40_000);
 
@@ -141,5 +176,7 @@ for (const escaped of [false, true]) test.skipIf(!clickhouseBinary())(`review: r
     expect(await proc.exited).toBe(1);
     expect(stderr).toContain('clickhouse insert into session_events failed');
     expect(stderr).not.toContain(secret);
+    expect(stderr).toContain('exception 469');
+    expect(stderr.trim().split('\n')).toHaveLength(2);
   } finally { await ch.stop(); rmSync(dir, { recursive: true, force: true }); }
 }, 40_000);

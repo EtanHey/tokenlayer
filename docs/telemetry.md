@@ -48,6 +48,9 @@ Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
 - `harness`: Claude files whose lines carry `entrypoint: "sdk-ts"` → `t3` (T3 drives Claude Code via the Agent SDK),
   otherwise `claude`. Codex files whose `session_meta.payload.originator` is `"T3 Code"` → `t3`, otherwise `codex`.
   A file whose head has no deciding line yet ships with the default and is reshipped once it is decided.
+  Harness is a file-level column, excluded from generation identity so late classification and state loss
+  do not duplicate lines. On a returning inode whose head was rewritten in place, `harness` may change
+  for unchanged archived lines when they are replayed.
 - A line is `(machine, path, generation, byte_offset, content_hash)`: the full SHA-256 covers exact source
   bytes including LF (and CR if present), before decoding. Different content cannot replace an archive
   even if generation/offset recur. Generation tracks device/inode/birthtime and rewrite lineage, not archive safety.

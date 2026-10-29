@@ -9,10 +9,9 @@ export const REDACTED = "[redacted]";
 // Match key families regardless of case/separators. Usage counters are metadata, not credentials.
 const KEY_NAME = "[a-z_][a-z0-9_.-]*";
 const ASSIGNMENT = new RegExp(String.raw`(?:\\+[nr]|(?<![\w.-]))(?:--(${KEY_NAME})(?:[ \t]+|=[ \t]*)|(${KEY_NAME})(?:\\*["'])?[ \t]*[=:][ \t]*)`, "gi");
-const SENSITIVE_NAME = /(?:^|[^a-z0-9])(?:password|passwd|secret|token|key|auth|authorization|cookie|credential|session|bearer)(?=$|[^a-z0-9])/i;
+const SENSITIVE_NAME = /password|passwd|secret|token|key|auth|cookie|credential|session|bearer/i;
 const normalizeKey = (k: string) => k.toLowerCase().replace(/[^a-z0-9]/g, "");
-const nameSegments = (key: string) => key.replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
-const sensitiveKey = (key: string) => SENSITIVE_NAME.test(nameSegments(key)) && !/^(?:(?:input|output|total|cached|cachereadinput|cachecreationinput)tokens(?:details)?|tokencount|totaltokenusage|lasttokenusage|sessionid|parentsessionid|clientkeyhash|authtype)$/.test(normalizeKey(key));
+const sensitiveKey = (key: string) => SENSITIVE_NAME.test(normalizeKey(key).replace(/tokenlayer/g, '')) && !/^(?:(?:input|output|total|cached|cachereadinput|cachecreationinput)tokens(?:details)?|tokencount|totaltokenusage|lasttokenusage|sessionid|parentsessionid|clientkeyhash|authtype)$/.test(normalizeKey(key));
 
 /** Shell arguments can join quoted/unquoted segments and escape otherwise separating bytes. */
 function shellArgumentEnd(text: string, start: number): number {
@@ -82,6 +81,8 @@ function redactAssignments(text: string, nesting = 0): string {
   for (let match = assignment.exec(text); match; match = assignment.exec(text)) {
     const rawKey = match[1] ?? match[2];
     if (!sensitiveKey(rawKey)) continue;
+    // Steer's credentials=<integer> is a counter; opaque, quoted and fractional values stay secret.
+    if (/^credentials=$/i.test(match[0]) && /^\d+(?=\s|$)/.test(text.slice(assignment.lastIndex))) continue;
     while (string === undefined || (string && string.index + string[0].length <= match.index)) string = strings.exec(text);
     if (string && string.index < match.index && assignment.lastIndex < string.index + string[0].length) {
       try {
@@ -128,7 +129,7 @@ function redactTails(text: string): string {
   return text.replace(/[A-Za-z0-9_+/-]{24,}={0,2}/g, (run, at: number) => {
     const before = text.slice(Math.max(0, at - 64), at);
     const after = text.slice(at + run.length, at + run.length + 64);
-    const nearby = nameSegments(`${before} ${after}`).replace(/\b(?:[a-z][_.-]){2,}[a-z]\b/gi, normalizeKey);
+    const nearby = normalizeKey(`${before} ${after}`).replace(/tokenlayer/g, '');
     if (!SENSITIVE_NAME.test(nearby)) return run;
     // Keep identifiable paths, git hashes, UUIDs and numbers even near sensitive prose.
     if (/^[0-9]+$/.test(run) || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(run)
