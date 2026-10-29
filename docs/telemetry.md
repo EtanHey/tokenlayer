@@ -69,9 +69,16 @@ Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
   across that upgrade can include both histories even with `FINAL`, and do not represent unique source lines.
 - Stop all shippers before `bun run schema:apply`: copy/atomic exchange retains `session_events_pre_content_hash`
   and any earlier `session_events_legacy`. Missing generation/message IDs become `legacy`/empty. Historical bytes
-  are unavailable: missing hashes use `legacy:` plus SHA-256 of the stored column tuple except `ingested_at`.
+  are unavailable: missing hashes use `legacy:` plus SHA-256 of the stored column tuple except `ingested_at` and `harness`.
+  The copy retains physical stored-content variants and applies the old FINAL harness winner to each old key.
   This separate namespace preserves stored variants; replays can add rows. Already replaced history is unrecoverable.
-  Reapplying is safe; interrupted copies dedup under FINAL. After an interrupted exchange keep `session_events_hash_next`.
+  Before copying, schema apply queries active session-table bytes and free ClickHouse disk space, refusing
+  free space below twice the active bytes. Budget roughly 2–3x storage plus merge headroom.
+  Reapplying after success is safe. An existing scratch/archive table blocks a new migration; after a crash,
+  keep `session_events_hash_next` and inspect whether EXCHANGE completed before any manual recovery.
+  Retain both archives until counts, stored-content variants and late harness winners are verified and an
+  external backup is confirmed. Then an operator may run `DROP TABLE tokenlayer.session_events_pre_content_hash`
+  and, if present, `DROP TABLE tokenlayer.session_events_legacy`. They have no TTL; schema apply never drops them.
   Startup checks the full key and column types and refuses incompatible tables.
 - A file failure is isolated until the end of the pass; acknowledged progress for other files is saved before
   the pass reports failure. All progress after intermediate saves is included in the final checkpoint.
@@ -79,13 +86,21 @@ Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
   checkpoint advances only after ClickHouse confirms the insert. An identical retry is a server-side no-op; changed rows
   for the same range are a new insert.
 - Replays with different chunk boundaries (for example after a lost checkpoint) insert duplicate rows that only a
-  background merge collapses. Read `session_events` with `FINAL` (as the queries below do) for counts and sums.
+  background merge collapses. Read `session_events` with `FINAL` for archive counts; use the context view for attributed, credited sums.
 - `raw` is the exact source line, including LF and any CR, without reserialization or ingest redaction.
   Blank lines are skipped; an unterminated trailing line waits for LF.
-  Parsed columns come from the unredacted line. The archive is byte-exact per line, including invalid UTF-8 bytes;
+  Every parsed column is a pure function of that line: absent text is empty, absent/invalid time is Unix epoch,
+  and token columns retain each line's reported usage. File history, birthtime and earlier message IDs cannot
+  change an unchanged line's archived columns. The archive is byte-exact per line, including invalid UTF-8 bytes;
   parsed columns use UTF-8 decoding while raw bytes bypass decoding during insertion.
   This supersedes the previous line-exact and redacted contract. Historical redacted rows cannot recover text.
-- Token columns are credited once per API response: Claude repeats `message.usage` on every content-block line of a
+- `v_session_events_context` derives inherited session/cwd/project/model/time and usage credit at query time,
+  exposing `(session_id, ordinal)` (ordinal is unique within the session across archive identities).
+  Attribution windows stay within `(machine, path, generation)` and order by byte offset/content hash.
+  Multiple content variants at one offset sort by hash; the view does not reconstruct an original revision's
+  sequence. Derived values/ordinals can change as archive variants arrive. Historical migrated parsed values
+  remain historical receipts; they are not reparsed or claimed to have the new line-local semantics.
+  This view credits tokens once per API response: Claude repeats `message.usage` on every content-block line of a
   message (credited on the first line per `message.id`); Codex `token_count.last_token_usage` is credited unless the
   running total is unchanged, and `token_usage_record` lines (same numbers) are not credited.
   `input_tokens` means uncached input for both harnesses (Codex `input_tokens - cached_input_tokens`).
@@ -93,7 +108,7 @@ Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
   at `--rate-mb` (default 5 MB/s).
 - Not shipped yet: T3 Code's own thread store (SQLite, see the PR-b body) and the stray Codex rollout at `~/.t3/*.jsonl`.
 
-Agents default to `v_session_events_meta` (all columns except `raw`) and `v_requests`
+Agents default to `v_session_events_meta` (an explicit metadata allowlist) and `v_requests`
 (request metadata without failure bodies/codes, headers, endpoint, IP or user agent). These views
 are query conveniences, not access controls. Raw text needs an explicit query on the base table.
 
@@ -125,14 +140,14 @@ ORDER BY cache_write DESC
 LIMIT 50
 ```
 
-Activity per machine / harness / project: `FINAL` dedups by the full key including `content_hash`, not message IDs.
+Activity per machine / harness / project: the context view reads the archive with `FINAL` and derives attribution/usage credit.
 Rewound/abandoned branches with different content remain distinct. Legacy migration or lineage loss can increase sums:
 
 ```sql
 SELECT machine, harness, project, toDate(ts) AS day,
        uniqExact(session_id) AS sessions, count() AS events,
        sum(output_tokens) AS output_tokens
-FROM tokenlayer.session_events FINAL
+FROM tokenlayer.v_session_events_context
 WHERE ts >= now() - INTERVAL 30 DAY
 GROUP BY machine, harness, project, day
 ORDER BY day DESC, events DESC

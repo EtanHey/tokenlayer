@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
-import { redactText } from "../lib/redact";
+import { writeOut, writeErr, installErrorHandlers } from '../lib/egress';
+installErrorHandlers();
 // tokenlayer-ship: tail Claude Code / Codex / T3 session JSONL into ClickHouse session_events.
 // Usage:
 //   bun src/ship/main.ts                         # daemon: every TOKENLAYER_SHIP_INTERVAL_MS (default 10s)
@@ -26,7 +27,7 @@ const env = loadEnvFiles(
 );
 const machine = env.TOKENLAYER_MACHINE;
 if (!machine) {
-  console.error("tokenlayer-ship: TOKENLAYER_MACHINE is not set (m4 | m1)");
+  writeErr("tokenlayer-ship: TOKENLAYER_MACHINE is not set (m4 | m1)");
   process.exit(2);
 }
 
@@ -34,7 +35,7 @@ const backfill = args.includes("--backfill");
 const since = flag("--since");
 const sinceMs = since ? Date.parse(since) : backfill ? undefined : Date.now() - 24 * 3600 * 1000;
 if (since && Number.isNaN(sinceMs)) {
-  console.error(`tokenlayer-ship: bad --since ${redactText(String(since))}`);
+  writeErr(`tokenlayer-ship: bad --since ${String(since)}`);
   process.exit(2);
 }
 const rateMb = Number(flag("--rate-mb") ?? env.TOKENLAYER_SHIP_RATE_MB ?? 5);
@@ -49,7 +50,7 @@ const opts: ShipOptions = {
   statePath: expandHome(env.TOKENLAYER_SHIP_STATE ?? "~/.config/tokenlayer/ship-state.json"),
   sinceMs,
   rateBytesPerSec: Math.round(rateMb * 1024 * 1024),
-  log: (m) => console.log(`${new Date().toISOString()} ${m}`),
+  log: (m) => writeOut(`${new Date().toISOString()} ${m}`),
 };
 const intervalMs = Number(env.TOKENLAYER_SHIP_INTERVAL_MS ?? 10_000);
 
@@ -64,10 +65,11 @@ do {
   try {
     const r = await shipOnce(opts);
     if (r.lines || r.resets) {
-      console.log(`${new Date().toISOString()} files=${r.files} lines=${r.lines} bytes=${r.bytes} resets=${r.resets}`);
+      writeOut(`${new Date().toISOString()} files=${r.files} lines=${r.lines} bytes=${r.bytes} resets=${r.resets}`);
     }
   } catch (err) {
-    console.error(`${new Date().toISOString()} tokenlayer-ship: ${redactText((err as Error).message)}`);
+    writeErr(`${new Date().toISOString()} tokenlayer-ship: ${(err as Error).message}`);
+    if (err instanceof AggregateError) for (const cause of err.errors) writeErr(cause);
     if (backfill) process.exit(1);
   }
   if (backfill) break;

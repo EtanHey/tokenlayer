@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
-import { redactText } from "../lib/redact";
+import { writeOut, writeErr, installErrorHandlers } from '../lib/egress';
+installErrorHandlers();
 // tokenlayer-drain: poll the CLIProxyAPI usage queue every 15s and insert into ClickHouse proxy_usage.
 // Usage: bun src/drain/main.ts [--once]
 // Env (or files listed in TOKENLAYER_ENV_FILES, default ~/.config/tokenlayer/{hub,clickhouse}.env):
@@ -17,7 +18,7 @@ const env = loadEnvFiles(
 );
 const mgmtKey = env.CLIPROXY_MGMT_KEY;
 if (!mgmtKey) {
-  console.error("tokenlayer-drain: CLIPROXY_MGMT_KEY is not set");
+  writeErr("tokenlayer-drain: CLIPROXY_MGMT_KEY is not set");
   process.exit(2);
 }
 
@@ -27,7 +28,7 @@ const opts = {
   hub: env.TOKENLAYER_HUB ?? "m1",
   clickhouse: ClickHouse.fromEnv(env),
   spool: new Spool(expandHome(env.TOKENLAYER_STATE_DIR ?? join("~/.local/state/tokenlayer", "drain"))),
-  onInsertError: (err: unknown) => console.error(`tokenlayer-drain: insert failed, spooled: ${redactText((err as Error).message)}`),
+  onInsertError: (err: unknown) => writeErr(`tokenlayer-drain: insert failed, spooled: ${(err as Error).message}`),
 };
 const intervalMs = Number(env.TOKENLAYER_DRAIN_INTERVAL_MS ?? 15_000);
 const once = process.argv.includes("--once");
@@ -40,10 +41,10 @@ do {
   try {
     const r = await drainOnce(opts);
     if (r.drained || r.inserted || r.spooled || r.rejected) {
-      console.log(`${new Date().toISOString()} drained=${r.drained} inserted=${r.inserted} spooled=${r.spooled} rejected=${r.rejected}`);
+      writeOut(`${new Date().toISOString()} drained=${r.drained} inserted=${r.inserted} spooled=${r.spooled} rejected=${r.rejected}`);
     }
   } catch (err) {
-    console.error(`${new Date().toISOString()} tokenlayer-drain: ${redactText((err as Error).message)}`);
+    writeErr(`${new Date().toISOString()} tokenlayer-drain: ${(err as Error).message}`);
   }
   if (once) break;
   const wait = Math.max(0, intervalMs - (Date.now() - started));

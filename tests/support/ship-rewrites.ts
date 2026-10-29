@@ -340,7 +340,7 @@ export function registerRewriteTests(mode: "normal" | "property"): void {
           expect(Number(physical)).toBe(3);
 
           const doc = await Bun.file(join(import.meta.dir, "..", "..", "docs", "telemetry.md")).text();
-          const activity = [...doc.matchAll(/```sql\n([\s\S]*?)```/g)].map((m) => m[1]).find((q) => q.includes("tokenlayer.session_events"));
+          const activity = [...doc.matchAll(/```sql\n([\s\S]*?)```/g)].map((m) => m[1]).find((q) => q.includes("tokenlayer.v_session_events_context"));
           expect(activity).toBeDefined();
           const [agg] = await ch.client.queryJSON<{ events: string; output: string }>(
             `SELECT sum(events) AS events, sum(output_tokens) AS output FROM (${activity}) WHERE machine = 'it-activity'`,

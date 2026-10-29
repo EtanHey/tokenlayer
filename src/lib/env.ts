@@ -1,3 +1,4 @@
+import { registerSecrets } from './egress';
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 
@@ -27,8 +28,13 @@ export const expandHome = (p: string) => (p.startsWith("~/") ? `${homedir()}${p.
 export function loadEnvFiles(paths: string[], processEnv: Record<string, string | undefined> = process.env): Record<string, string | undefined> {
   const merged: Record<string, string | undefined> = {};
   for (const p of paths.map(expandHome)) {
-    if (existsSync(p)) Object.assign(merged, parseEnv(readFileSync(p, "utf8")));
+    if (existsSync(p)) {
+      const fileEnv = parseEnv(readFileSync(p, "utf8"));
+      registerSecrets(fileEnv);
+      Object.assign(merged, fileEnv);
+    }
   }
   for (const [k, v] of Object.entries(processEnv)) if (v !== undefined) merged[k] = v;
+  registerSecrets(merged);
   return merged;
 }

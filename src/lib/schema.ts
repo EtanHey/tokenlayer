@@ -1,3 +1,4 @@
+import { writeOut, installErrorHandlers } from './egress';
 import { migrateSessionSchema } from "./session-schema";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,6 +12,8 @@ export async function applySchema(ch: ClickHouse, dir = SCHEMA_DIR): Promise<str
     .filter((f) => f.endsWith(".sql"))
     .sort();
   for (const f of files) {
+    // Views must bind to the migrated column list, including on legacy upgrades.
+    if (f === "005_views.sql") await migrateSessionSchema(ch);
     const sql = readFileSync(join(dir, f), "utf8")
       .split("\n")
       .filter((l) => !l.trim().startsWith("--"))
@@ -24,7 +27,8 @@ export async function applySchema(ch: ClickHouse, dir = SCHEMA_DIR): Promise<str
 }
 
 if (import.meta.main) {
+  installErrorHandlers();
   const { ClickHouse } = await import("./clickhouse");
   const applied = await applySchema(ClickHouse.fromEnv());
-  console.log(`applied ${applied.length} schema files: ${applied.join(", ")}`);
+  writeOut(`applied ${applied.length} schema files: ${applied.join(", ")}`);
 }

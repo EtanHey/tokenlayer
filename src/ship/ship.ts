@@ -89,9 +89,10 @@ function freshCheckpoint(path: string, kind: SourceKind, st: Stats): FileCheckpo
     ctimeMs: st.ctimeMs,
     offset: 0,
     fingerprint: "",
-    generation: identity(st),
+    // Returning inodes with a rewritten harness must not replace the original harness's rows.
+    generation: sha256Hex(`${identity(st)}:${decided ?? defaultHarness(kind)}`).slice(0, 16),
     harnessDecided: decided !== null,
-    // birthtime is stable across re-runs, so a line before the first timestamp lands in the same partition.
+    // Retain checkpoint compatibility; archive parsing no longer reads carry-forward context.
     parser: newFileState(kind, decided ?? defaultHarness(kind), Math.trunc(st.birthtimeMs || st.mtimeMs)),
   };
 }
@@ -151,7 +152,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             opts.log?.(redactText(`reset ${path}: rotated or truncated`));
             const revision = identity(st) === cp.identity
               ? sha256Hex(`${cp.generation}:${prefixHash(path, st.size).digest("hex")}`).slice(0, 16)
-              : identity(st);
+              : freshCheckpoint(path, root.kind, st).generation;
             cp = freshCheckpoint(path, root.kind, st);
             cp.generation = revision;
             hash = createHash("sha256");
@@ -197,7 +198,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
               content_hash: createHash("sha256").update(raw.subarray(l.offset - cp!.offset, l.offset - cp!.offset + l.bytes)).digest("hex"),
               line_bytes: l.bytes,
               [RAW_BYTES]: raw.subarray(l.offset - cp!.offset, l.offset - cp!.offset + l.bytes),
-              ...parseLine(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes), parser),
+              ...parseLine(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes)),
             }));
             // Deterministic token over the rows themselves: an identical retry is deduplicated server-side,
             // while changed rows for the same range (rewrite, late harness decision) are a new insert.

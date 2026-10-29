@@ -51,12 +51,13 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse", () => {
 
   const counts = async () =>
     ch.client.queryJSON<{ machine: string; harness: string; n: string; output: string }>(
-      "SELECT machine, harness, count() AS n, sum(output_tokens) AS output FROM tokenlayer.session_events FINAL GROUP BY machine, harness ORDER BY harness",
+      "SELECT machine, harness, count() AS n, sum(output_tokens) AS output FROM tokenlayer.v_session_events_context GROUP BY machine, harness ORDER BY harness",
     );
 
   test("ships both harnesses; usage is credited once per message", async () => {
     const r = await shipOnce(opts);
     expect(r.lines).toBe(5);
+    expect(Number((await ch.client.queryJSON<{ output: string }>("SELECT sum(output_tokens) AS output FROM tokenlayer.session_events FINAL"))[0].output)).toBe(40);
     expect((await counts()).map((c) => [c.machine, c.harness, Number(c.n), Number(c.output)])).toEqual([
       ["m4", "codex", 1, 0],
       ["m4", "t3", 4, 20],
@@ -88,7 +89,7 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse", () => {
     await shipOnce(opts);
     const [row] = await ch.client.queryJSON<{ raw: string }>("SELECT raw FROM tokenlayer.session_events FINAL WHERE endsWith(path, '/exact.jsonl')");
     expect(Buffer.from(row.raw)).toEqual(Buffer.from(line));
-    const binary = Buffer.from([0xff, 0xfe, 0x0a]);
+    const binary = Buffer.from([...Array.from({ length: 32 }, (_, i) => i).filter(i => i !== 10), 0x7f, 0xff, 0xfe, 34, 92, 10]);
     writeFileSync(join(dir, "claude", "binary.jsonl"), binary);
     await shipOnce(opts);
     const [stored] = await ch.client.queryJSON<{ bytes: string }>("SELECT hex(raw) AS bytes FROM tokenlayer.session_events FINAL WHERE endsWith(path, '/binary.jsonl')");

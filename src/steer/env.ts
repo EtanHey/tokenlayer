@@ -1,3 +1,4 @@
+import { registerSecrets } from '../lib/egress';
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 
@@ -16,6 +17,8 @@ export function loadEnv(path: string, processEnv: Record<string, string | undefi
       out[m[1]] = value;
     }
   }
+  registerSecrets(out);
   for (const [k, v] of Object.entries(processEnv)) if (v !== undefined) out[k] = v;
+  registerSecrets(out);
   return out;
 }
