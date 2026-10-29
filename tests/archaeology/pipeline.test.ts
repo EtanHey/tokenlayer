@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, statSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classify, origin, repoMap, manifest, dryRun, sha256, type Inventory } from "../../src/archaeology/pipeline";
+import { classify, origin, repoMap, manifest, dryRun, sha256, shipperCovers, type Inventory } from "../../src/archaeology/pipeline";
 
 const row = (overrides: Partial<Inventory> = {}): Inventory => ({ machine: "M4", source_kind: "archive_dir", container: "", member_path: "/Users/etanheyman/.claude-archive/projects/old/s.jsonl", session_id: "session", harness: "claude", bytes: "1", lines: "1", first_ts: "2026-01-01T00:00:00Z", last_ts: "2026-01-01T00:00:00Z", cwd: "/Users/etanheyman/Desktop/Gits/old/.worktrees/lane", sha256: "", mtime: "", ...overrides });
 test("canonical longest copy, prefix skips, renamed repo and unchanged sources", async () => {
@@ -42,7 +42,7 @@ test("exclude synthetic corpora and telemetry; retain subagents, zst and metadat
 test("divergent copies retain unique lines; live pairs skip; unfetched and changed files stay explicit", async () => {
   const a = Buffer.from('{"sessionId":"session","type":"user"}\n');
   const b = Buffer.from('{"sessionId":"session","type":"assistant"}\n');
-  const copies = [row({ source_kind: "live", member_path: "live.jsonl", sha256: sha256(a), bytes: String(a.length) }), row({ member_path: "archive.jsonl", sha256: sha256(b), bytes: String(b.length) }), row({ member_path: "duplicate.jsonl", sha256: sha256(a), bytes: String(a.length) }), row({ member_path: "remote.jsonl", session_id: "remote", source_kind: "drive_file" })];
+  const copies = [row({ source_kind: "live", member_path: "/Users/etanheyman/.claude/projects/project/live.jsonl", sha256: sha256(a), bytes: String(a.length) }), row({ member_path: "archive.jsonl", sha256: sha256(b), bytes: String(b.length) }), row({ member_path: "duplicate.jsonl", sha256: sha256(a), bytes: String(a.length) }), row({ member_path: "remote.jsonl", session_id: "remote", source_kind: "drive_file" })];
   const entries = manifest(copies, []);
   const result = await dryRun(entries, { read: async r => r.member_path === "remote.jsonl" ? null : (async function* () { yield r.member_path === "archive.jsonl" ? b : a; })() });
   expect(result.import_rows).toBe(1);
@@ -68,4 +68,18 @@ test("raw preserves a UTF-8 BOM while the hash covers its exact bytes", async ()
   const result = await dryRun(manifest([row({ bytes: String(bytes.length), sha256: sha256(bytes) })], []), { read: async () => (async function* () { yield bytes; })() });
   expect(Buffer.from(result.sample[0].raw).equals(bytes)).toBe(true);
   expect(sha256(Buffer.from(result.sample[0].raw))).toBe(result.sample[0].content_hash);
+});
+
+
+test("MF-1 compressed live rollouts are historical unless the shipper covers them", async () => {
+  const path = "/Users/etanheyman/.codex/sessions/2026/01/01/rollout-session.jsonl.zst";
+  const bytes = Buffer.from('{"type":"session_meta","payload":{"id":"session"}}\n');
+  const compressedHash = sha256(Buffer.from("compressed-container-fixture"));
+  const entries = manifest([row({ source_kind: "live", harness: "codex", member_path: path, bytes: String(bytes.length), sha256: sha256(bytes) })], []);
+  entries[0].container_hash = compressedHash;
+  const result = await dryRun(entries, { read: async () => (async function* () { yield bytes; })() });
+  expect(shipperCovers(path)).toBe(false);
+  expect(shipperCovers(path.replace(/\.zst$/, ""))).toBe(true);
+  expect(result.live_rows).toBe(0); expect(result.import_rows).toBe(1);
+  expect(result.sample[0].path).toBe(`archive://${compressedHash}/${path}`);
 });

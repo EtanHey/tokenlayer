@@ -42,12 +42,21 @@ export function repoMap(rows: Inventory[], evidence: Evidence[]): RepoMap[] {
   });
 }
 
+/** Mirrors ship.ts listJsonl: plain JSONL in configured/default Claude or Codex trees. */
+export function shipperCovers(path: string, roots?: readonly string[]): boolean {
+  if (!path.endsWith(".jsonl")) return false;
+  const under = (root: string) => path.startsWith(root.replace(/\/$/, "") + "/");
+  if (roots) return roots.some(under);
+  return (process.env.TOKENLAYER_CLAUDE_DIR ? under(process.env.TOKENLAYER_CLAUDE_DIR) : /\/\.claude\/projects\//.test(path))
+    || (process.env.TOKENLAYER_CODEX_DIR ? under(process.env.TOKENLAYER_CODEX_DIR) : /\/\.codex\/sessions\//.test(path));
+}
+
 export function manifest(rows: Inventory[], maps: RepoMap[]): Entry[] {
   const repos = new Map(maps.map(m => [`${m.machine}\0${m.cwd}`, m.repo_canonical]));
   const copies = new Map<string, Entry>();
   for (const r of rows.filter(r => classify(r).session)) {
     const key = JSON.stringify([r.machine, r.source_kind, r.container, r.member_path, r.sha256]);
-    copies.set(key, { ...r, source_kind: r.source_kind === "live" && /\/\.codex\/archived_sessions\//.test(r.member_path) ? "archive_dir" : r.source_kind, origin: origin(r), repo: repos.get(`${origin(r)}\0${r.cwd}`) ?? "", selected: false, relation: "unverified", status: "pending", container_hash: "" });
+    copies.set(key, { ...r, source_kind: r.source_kind === "live" && !shipperCovers(r.member_path) ? "archive_dir" : r.source_kind, origin: origin(r), repo: repos.get(`${origin(r)}\0${r.cwd}`) ?? "", selected: false, relation: "unverified", status: "pending", container_hash: "" });
   }
   const entries = [...copies.values()].sort((a, b) => Number(b.bytes) - Number(a.bytes) || a.member_path.localeCompare(b.member_path));
   const largest = new Map<string, Entry>();
