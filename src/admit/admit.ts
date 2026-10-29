@@ -65,7 +65,7 @@ export function evaluate(input: unknown, options: Options) {
     const elapsed_min = 300 - remaining, score = used * 300 / elapsed_min;
     const warn = score > 80;
     const level: Level = used >= 80 ? 'brake80' : used >= 60 || (warn && options.kind !== 'lead') ? 'brake60' : 'green';
-    return { label: redactText(a.label.length === 15 && /^claude-[0-9a-f]{8}$/.test(a.label) ? a.label : REDACTED), level, pacing: { used, elapsed_min, score, warn } };
+    return { label: redactText(a.label.length === 16 && /^[0-9a-f]{16}$/.test(a.label) ? a.label : REDACTED), level, pacing: { used, elapsed_min, score, warn } };
   }).filter(a => a !== null);
   if (!accounts.length) return deny('no accounts with headroom');
   const rank = { green:0, brake60:1, brake80:2, 'no-headroom':3 };

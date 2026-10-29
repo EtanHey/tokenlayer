@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { serialize, snapshot, staleSnapshot } from './snapshot';
 
-const remote = '. ~/.config/tokenlayer/hub.env; curl -fsS -m 10 -H "Authorization: Bearer $CLIPROXY_MGMT_KEY" http://127.0.0.1:8317/v8/management/credentials';
+const remote = '. ~/.config/tokenlayer/hub.env; printf \'Authorization: Bearer %s\\n\' "$CLIPROXY_MGMT_KEY" | curl -fsS -m 10 -H @- http://127.0.0.1:8317/v8/management/credentials';
 const dir = join(homedir(), '.config/tokenlayer');
 const target = join(dir, 'usage.json');
 await mkdir(dir, { recursive: true });

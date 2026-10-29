@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import five from '../fixtures/admit/producer-five.json';
 import weekly from '../fixtures/admit/producer-weekly.json';
 const now = '2026-03-02T12:00:00.000Z';
-const account = () => ({ label:'claude-a1b2c3d4', disabled:false, status:'allowed', five_hour:{used_pct:20,resets_at:now}, weekly:{used_pct:20} });
+const account = () => ({ label:'a1b2c3d4a1b2c3d4', disabled:false, status:'allowed', five_hour:{used_pct:20,resets_at:now}, weekly:{used_pct:20} });
 const snapshot = () => ({ generated_at:now, stale:false, accounts:[account()] });
 function cli(data: unknown, time = now, kind = 'claude.judgment') {
   const dir = mkdtempSync(join(tmpdir(),'admit-r2-'));
@@ -20,7 +20,7 @@ function cli(data: unknown, time = now, kind = 'claude.judgment') {
 for (const [missing,data] of [['five',five],['weekly',weekly]] as const)
 for (const kind of ['lead','claude.judgment','claude.subagent.cheap','claude.subagent.mechanical'])
 test(`producer null ${missing}: ${kind}`, () => {
-  expect(cli(data,data.generated_at,kind)).toMatchObject({exit:0,result:{admit:true,level:'green',accounts:[{label:'claude-bb03e678'}]}});
+  expect(cli(data,data.generated_at,kind)).toMatchObject({exit:0,result:{admit:true,level:'green',accounts:[{label:'bb03e678bb03e678'}]}});
   expect(cli({...data,accounts:[data.accounts[1]]},data.generated_at,kind)).toMatchObject({exit:1,result:{admit:false,level:'no-headroom',accounts:[]}});
 });
 for (const field of ['generated_at','reset','now']) for (const invalid of ['2026-02-30T12:00:00.000Z','2026-03-02T12:00:00+24:00','March 2, 2026 12:00 UTC','2026-03-02T12:00:00+00:60','2026-03-02T24:00:00Z'])
@@ -30,7 +30,7 @@ test(`invalid ${field}: ${invalid}`, () => {
   if (field === 'reset') data.accounts[0]!.five_hour.resets_at = invalid;
   expect(cli(data,field === 'now' ? invalid : now)).toMatchObject({exit:1,result:{admit:false,level:'no-headroom',accounts:[]}});
 });
-for (const label of ['Bearer REVIEW_FAKE_ONLY_SECRET_019a18505','synthetic','claude-ABCDEF12','claude-deadbeef\n'])
+for (const label of ['Bearer REVIEW_FAKE_ONLY_SECRET_019a18505','synthetic','claude-ABCDEF12','deadbeefdeadbeef\n'])
 test('replace non-producer label safely', () => {
   const data = snapshot(); data.accounts[0]!.label = label;
   const output = cli(data);

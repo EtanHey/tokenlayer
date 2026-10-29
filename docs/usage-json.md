@@ -3,10 +3,17 @@
 The launch agent runs `src/usage/main.ts` every 60 seconds. BatchMode SSH to `m1`
 sources the management key on M1 and performs a read-only credentials GET. The key
 never enters the M4 environment or filesystem. Remote stderr and exception text
-are discarded. The only published error is `hub unavailable`.
+are discarded. The remote shell builtin printf pipes the Authorization header to
+curl with `-H @-`; the key never appears in curl argv and no header file is created. The only published error is `hub unavailable`.
 
 `~/.config/tokenlayer/usage.json` contains Claude OAuth accounts only. Labels are
-`claude-` plus eight SHA-256 hex characters of the credential ID. Raw identifiers,
+`labelHash(auth_index || id)` from `src/lib/hash.ts`: 16 hex characters using the
+shared `tokenlayer:v1:` domain prefix. The hub credential auth_index is preferred over
+the filename (which may contain an email). Labels equal steer credentials_snap and
+proxy_usage credential values, allowing direct joins. The prefix is public, not a
+secret salt; this is pseudonymization, not protection against guessing known IDs.
+Old eight-character labels are rejected on stale reload and replaced on the next
+successful refresh. Raw identifiers,
 emails and headers are excluded. All persisted strings pass through `redactDeep`.
 Fractions become percentages; absent/expired window values are null. Status is
 rejected when steer blocks the account, allowed with utilization, otherwise unknown.

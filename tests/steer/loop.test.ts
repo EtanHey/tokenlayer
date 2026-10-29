@@ -17,10 +17,11 @@ for (const method of ["GET", "PATCH"]) test(`backs off repeated ${method} 503s, 
     await runLoop({
       intervalMs: 1000, now: () => now, random: () => 0,
       stopping: () => starts.length >= 5, sleep: async ms => { waits.push(ms); now += ms; },
-      execute: async () => { starts.push(now); return tick(client, { log: () => {} }); },
+      execute: async () => { starts.push(now); return tick(client, { now, log: () => {} }); },
       log: () => {},
     });
-    expect(starts.slice(0, 4)).toEqual([0, 10000, 20000, 30000]);
+    expect(starts.slice(0, 4)).toEqual(method === "GET" ? [0, 10000, 20000, 30000] : [0, 1000, 2000, 3000]);
+    if (method === "PATCH") expect(count).toBe(1);
     expect(waits.at(-1)).toBe(1000);
   } finally { server.stop(true); }
 });

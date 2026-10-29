@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const now = '2026-10-29T12:00:00Z';
-const account = (used = 20, elapsed = 300) => ({ label: 'claude-a1b2c3d4', disabled: false, status: 'allowed', five_hour: { used_pct: used, resets_at: new Date(Date.parse(now) + (300-elapsed)*60000).toISOString() }, weekly: { used_pct: 20 } });
+const account = (used = 20, elapsed = 300) => ({ label: 'a1b2c3d4a1b2c3d4', disabled: false, status: 'allowed', five_hour: { used_pct: used, resets_at: new Date(Date.parse(now) + (300-elapsed)*60000).toISOString() }, weekly: { used_pct: 20 } });
 const snapshot = (accounts: unknown[] = [account()]) => ({ generated_at: now, stale: false, accounts });
 const cases = [
   { name: '59', data: snapshot([account(59)]), args: [], admit: true, level: 'green' },
@@ -46,7 +46,7 @@ for (const c of cases) test(c.name, () => {
     expect(result).toMatchObject({ admit:c.admit, level:c.level });
     expect(typeof result.reason).toBe('string'); expect(Array.isArray(result.accounts)).toBe(true);
     expect(result.pacing).toHaveProperty('warn');
-    for (const assessment of result.accounts) expect(assessment.label).toBe('claude-a1b2c3d4');
+    for (const assessment of result.accounts) expect(assessment.label).toBe('a1b2c3d4a1b2c3d4');
     if(c.name === 'pacing edge') expect(result.pacing).toEqual({used:40,elapsed_min:150,score:80,warn:false});
     if(c.name === 'pacing warning') expect(result.pacing.warn).toBe(true);
     expect(p.stderr.toString()).toBe('');

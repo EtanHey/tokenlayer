@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { labelHash } from '../lib/hash';
 import { redactDeep } from '../lib/redact';
 import { assess } from '../steer/rank';
 import type { Credential } from '../steer/types';
@@ -8,7 +8,7 @@ function credentials(input: unknown): Credential[] {
   return input.files.map((c: unknown) => {
     if (!c || typeof c !== 'object' || !('id' in c) || typeof c.id !== 'string' || !('provider' in c) || typeof c.provider !== 'string') throw new Error('invalid credential');
     // Validate the complete structure used by assess before trusting the API boundary.
-    for (const key of ['account_type', 'status', 'next_retry_after'] as const) {
+    for (const key of ['account_type', 'status', 'next_retry_after', 'auth_index'] as const) {
       if (key in c && (c as Record<string, unknown>)[key] !== null && typeof (c as Record<string, unknown>)[key] !== 'string') throw new Error('invalid credential');
     }
     for (const key of ['disabled', 'unavailable'] as const) if (key in c && typeof (c as Record<string, unknown>)[key] !== 'boolean') throw new Error('invalid credential');
@@ -30,7 +30,7 @@ export function snapshot(input: unknown, now = Date.now()) {
   return {
     generated_at: new Date(now).toISOString(), source: 'cliproxy-hub', stale: false,
     accounts: rows.map(r => ({
-      label: `claude-${createHash('sha256').update(r.c.id).digest('hex').slice(0, 8)}`,
+      label: labelHash(r.c.auth_index || r.c.id),
       active: r === winner,
       five_hour: { used_pct: r.a.util5h === null ? null : r.a.util5h * 100, resets_at: iso(r.a.reset5hMs) },
       weekly: { used_pct: r.a.util7d === null ? null : r.a.util7d * 100, resets_at: iso(r.a.reset7dMs) },
@@ -62,7 +62,7 @@ export function staleSnapshot(input: unknown) {
   if (generated_at === null && (!previous.stale || previous.accounts.length !== 0)) throw new Error('invalid empty snapshot');
   const accounts = previous.accounts.map(value => {
     const a = record(value);
-    if (typeof a.label !== 'string' || !/^claude-[a-f0-9]{8}$/.test(a.label)
+    if (typeof a.label !== 'string' || !/^[a-f0-9]{16}$/.test(a.label)
       || typeof a.active !== 'boolean' || typeof a.disabled !== 'boolean'
       || typeof a.priority !== 'number' || !Number.isFinite(a.priority)
       || !['allowed', 'rejected', 'unknown'].includes(a.status as string)) throw new Error('invalid snapshot account');

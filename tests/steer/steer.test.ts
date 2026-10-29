@@ -76,7 +76,8 @@ describe("tick", () => {
     const lines: string[] = [];
     const r = await tick(hub, { now: NOW, log: (l) => lines.push(l) });
     expect(patches).toEqual([{ id: "claude-max-b.json", priority: 50 }]);
-    expect(r.errors).toBe(1);
+    expect(r.patchErrors).toBe(1);
+    expect(r.errors).toBe(0);
     expect(lines.some((l) => l.includes("error") && l.includes("500"))).toBe(true);
   });
 
@@ -149,4 +150,21 @@ describe("onSnapshot rows match P4's credentials_snap columns", () => {
     expect(r.errors).toBe(1);
     expect(lines.some((l) => l.includes("snapshot") && l.includes("clickhouse down"))).toBe(true);
   });
+});
+
+test('refused PATCH backs off independently while siblings keep moving', async () => {
+ const {hub,state,patches}=fakeHub(live.files);
+ const original=hub.setPriority;
+ let attempts=0;
+ hub.setPriority=async(id,priority)=>{
+ if(id===live.files[0]!.id && ++attempts<3) throw new Error('refused');
+ await original(id,priority);
+ };
+ for(const minute of [0,1,2,3,4,5,6,7]) {
+ state[1]!.priority=0;
+ const result=await tick(hub,{now:NOW+minute*60000,log:()=>{}});
+ expect(result.errors).toBe(0);
+ }
+ expect(attempts).toBe(3);
+ expect(patches.filter(p=>p.id===live.files[1]!.id)).toHaveLength(8);
 });

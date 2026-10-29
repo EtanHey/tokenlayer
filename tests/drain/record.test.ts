@@ -63,7 +63,7 @@ describe("mapUsageRecord", () => {
     });
   });
 
-  test("maps failures with status, code and a truncated body", () => {
+  test("maps failures with status, code and the complete body", () => {
     const row = mapUsageRecord(rateLimited, { hub: "m1" });
     expect(row.ts).toBe("2026-10-28 07:32:00.000");
     expect(row.failed).toBe(true);
@@ -74,15 +74,15 @@ describe("mapUsageRecord", () => {
     expect(row.session_id).toBe("");
 
     const huge = { ...rateLimited, fail: { status_code: 500, body: "x".repeat(10_000) } };
-    expect(mapUsageRecord(huge, { hub: "m1" }).fail_body.length).toBe(2048);
+    expect(mapUsageRecord(huge, { hub: "m1" }).fail_body.length).toBe(10000);
   });
 
-  test("failure text, codes and user agent are redacted before persistence", () => {
+  test("failure text, codes and user agent are preserved at ingest", () => {
     const key = "sk-ant-api03-FAKEfakeFAKEfake0123456789";
     const email = "carol.fake@example.invalid";
     const leaky = {
       ...rateLimited,
-      user_agent: `curl/8 (${email})`,
+      user_agent: `  curl/8 (${email})  `,
       fail: {
         status_code: 401,
         code: `invalid_key:${key}`,
@@ -91,7 +91,10 @@ describe("mapUsageRecord", () => {
     };
     const row = mapUsageRecord(leaky, { hub: "m1" });
     const serialized = JSON.stringify(row);
-    for (const secret of [key, email, "1//0gFAKEfakeFAKE0123456789"]) expect(serialized).not.toContain(secret);
+    for (const secret of [key, email, "1//0gFAKEfakeFAKE0123456789"]) expect(serialized).toContain(secret);
+    expect(row.user_agent).toBe(leaky.user_agent);
+    expect(row.fail_code).toBe(leaky.fail.code);
+    expect(row.fail_body).toBe(leaky.fail.body);
     expect(row.status_code).toBe(401);
     expect(row.fail_body).toContain("invalid x-api-key");
   });
@@ -109,3 +112,13 @@ describe("mapUsageRecord", () => {
     expect(() => mapUsageRecord({ timestamp: "garbage" }, { hub: "m1" })).toThrow();
   });
 });
+
+ test('all public rate-limit buckets round-trip exactly', () => {
+ const headers = Object.fromEntries([
+ ...['requests','tokens','input-tokens','output-tokens'].flatMap(b => ['limit','remaining','reset'].map(f => `anthropic-ratelimit-${b}-${f}`)),
+ ...['requests','tokens'].flatMap(b => ['limit','remaining','reset'].map(f => `x-ratelimit-${f}-${b}`)),
+ ...['5h','7d'].flatMap(w => ['reset','status','utilization'].map(f => `anthropic-ratelimit-unified-${w}-${f}`)),
+ 'retry-after','x-codex-primary-reset-after-seconds'
+ ].map((h,i) => [h, `${i}.125`]));
+ expect(mapUsageRecord({...ok,response_headers:headers},{hub:'m1'}).ratelimit).toEqual(headers);
+ });

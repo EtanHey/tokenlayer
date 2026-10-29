@@ -56,6 +56,7 @@ export class HubClient implements SteerHub {
         .replace(/\bbearer\s+[^\s"',;]+/gi, REDACTED);
       throw new HubError(`${method} ${path} -> ${res.status}: ${safe.slice(0, 200)}`, retryAfter(res.headers.get("retry-after")));
     }
-    return text ? JSON.parse(text) : {};
+    try { return text ? JSON.parse(text) : {}; }
+    catch { throw new HubError(`${method} ${path} -> invalid JSON`, 0); }
   }
 }
