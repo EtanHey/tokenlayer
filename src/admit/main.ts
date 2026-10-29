@@ -9,6 +9,7 @@ try {
   const kind = values.kind;
   if (kind !== 'lead' && kind !== 'claude.judgment' && kind !== 'claude.subagent.cheap' && kind !== 'claude.subagent.mechanical') throw Error();
   if (kind === 'lead' && values['active-leads'] === undefined) throw Error();
+  if (values.now !== undefined && values.file === undefined) throw Error();
   const count = values['active-leads'] ?? '0';
   if (!/^\d+$/.test(count) || !Number.isSafeInteger(Number(count))) throw Error();
   const now = values.now === undefined ? Date.now() : timestamp(values.now);
