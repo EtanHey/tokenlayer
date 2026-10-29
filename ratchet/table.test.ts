@@ -45,3 +45,9 @@ test('CLI exits nonzero on regression and ceiling breach, zero when unchanged', 
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+const throughput = { direction: 'min', ceiling: 5, maxRegression: 0.25 };
+test('relative throughput: more than 25% slower fails', () => expect(evaluate(throughput, 14, 20)).toBe(false));
+test('relative throughput: 10% slower passes', () => expect(evaluate(throughput, 18, 20)).toBe(true));
+test('relative throughput: sanity floor fails', () => expect(evaluate(throughput, 4, 5)).toBe(false));
+test('relative throughput: exactly 25% slower passes', () => expect(evaluate(throughput, 15, 20)).toBe(true));
