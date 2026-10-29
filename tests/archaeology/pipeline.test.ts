@@ -83,3 +83,13 @@ test("MF-1 compressed live rollouts are historical unless the shipper covers the
   expect(result.live_rows).toBe(0); expect(result.import_rows).toBe(1);
   expect(result.sample[0].path).toBe(`archive://${compressedHash}/${path}`);
 });
+
+test("S-8 a failed second read cannot relabel an earlier verified prefix", async () => {
+  const a = Buffer.from('{"sessionId":"session","type":"user"}\n');
+  const b = Buffer.concat([a, Buffer.from('{"sessionId":"session","type":"assistant"}\n')]);
+  const entries = manifest([row({ member_path:"prefix.jsonl",bytes:String(a.length),sha256:sha256(a) }),row({member_path:"full.jsonl",bytes:String(b.length),sha256:sha256(b)})],[]);
+  const prefix=entries.find(e=>e.member_path==="prefix.jsonl")!;const full=entries.find(e=>e.member_path==="full.jsonl")!;let reads=0;
+  const result=await dryRun(entries,{order:(async function*(){yield prefix;yield full;})(),read:async e=>(async function*(){yield e===prefix?a:++reads===1?b:a;})()});
+  expect(result.read_errors).toBe(1);expect(result.import_rows).toBe(1);
+  expect(prefix.relation).toBe("canonical_verified");expect(full.relation).toBe("unverified");
+});

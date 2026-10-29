@@ -81,6 +81,7 @@ export async function dryRun(entries: Entry[], options: {
   const report = { import_rows: 0, import_bytes: 0, import_sessions: 0, skip_live: 0, skip_copy: 0, live_rows: 0, needs_fetch: 0, source_changed: 0, read_errors: 0, divergent_sessions: 0, unterminated_bytes: 0, sample: [] as Event[], groups: {} as Record<string, { rows: number; bytes: number; skip_live: number; skip_copy: number }> };
   const sessions = new Set<string>(), divergent = new Set<string>();
   const prefixes = new Map<string, Map<number, string>>();
+  const verified = new Map<string, Entry[]>();
   const lengths = new Map<string, number[]>();
   for (const e of entries) lengths.set(e.session_id, [...new Set([...(lengths.get(e.session_id) ?? []), Number(e.bytes)])].sort((a, b) => a - b));
   const ordered = [...entries].sort((a, b) => Number(b.source_kind === "live") - Number(a.source_kind === "live") || Number(b.bytes) - Number(a.bytes));
@@ -108,15 +109,6 @@ export async function dryRun(entries: Entry[], options: {
         e.status = "source_changed"; report.source_changed++; options.onEntry?.(e); continue;
       }
       e.sha256 = fullHash; e.bytes = String(size);
-      const known = prefixes.get(e.session_id);
-      if (known?.get(size) === fullHash) e.relation = "prefix";
-      else if (known && checkpoints.get(Math.max(...known.keys())) === known.get(Math.max(...known.keys()))) {
-        e.relation = "canonical_verified";
-        for (const prior of entries.filter(p => p.session_id === e.session_id && p.status === "verified")) if (checkpoints.get(Number(prior.bytes)) === prior.sha256) { prior.relation = "prefix"; prior.selected = false; }
-      }
-      else if (known) { e.relation = "divergent"; divergent.add(e.session_id); e.selected = true; }
-      else { e.relation = "canonical_verified"; }
-      if (!known || size > Math.max(...known.keys())) prefixes.set(e.session_id, checkpoints);
       const again = await options.read(e);
       if (!again) throw new Error("source disappeared between verification and reading");
       const st = newFileState(e.harness === "codex" || /rollout-/.test(e.member_path) ? "codex" : "claude", e.harness === "t3" ? "t3" : e.harness === "codex" ? "codex" : "claude", Date.parse(e.first_ts) || 0);
@@ -146,6 +138,17 @@ export async function dryRun(entries: Entry[], options: {
         if (secondHash.digest("hex") !== fullHash) throw new Error("source changed during second read");
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
+      checkpoints.set(size, fullHash);
+      const known = prefixes.get(e.session_id);
+      if (known?.get(size) === fullHash) e.relation = "prefix";
+      else if (known && checkpoints.get(Math.max(...known.keys())) === known.get(Math.max(...known.keys()))) {
+        e.relation = "canonical_verified";
+        for (const prior of verified.get(e.session_id) ?? []) if (checkpoints.get(Number(prior.bytes)) === prior.sha256) { prior.relation = "prefix"; prior.selected = false; }
+      }
+      else if (known) { e.relation = "divergent"; divergent.add(e.session_id); e.selected = true; }
+      else { e.relation = "canonical_verified"; }
+      if (!known || size > Math.max(...known.keys())) prefixes.set(e.session_id, checkpoints);
+      const priorCopies = verified.get(e.session_id) ?? []; priorCopies.push(e); verified.set(e.session_id, priorCopies);
       e.status = "verified"; report.import_rows += rows; report.import_bytes += bytes; report.skip_live += skipLive; report.skip_copy += skipCopy; report.live_rows += liveRows; report.unterminated_bytes += carry.length;
       if (rows) sessions.add(e.session_id);
       report.sample.push(...sample.slice(0, Math.max(0, (options.sampleSize ?? 100) - report.sample.length)));
