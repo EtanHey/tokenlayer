@@ -33,13 +33,14 @@
     },
     {
       "id": "redactor-throughput-mbps",
-      "metric": "Synthetic redactor minimum MB/s",
+      "metric": "Synthetic redactor median of 5 MB/s",
       "kind": "unit",
       "runner": "ci",
       "direction": "min",
-      "ceiling": 20,
+      "ceiling": 5,
       "command": "node ratchet/measure.mjs redactor",
-      "timeout_s": 240
+      "timeout_s": 240,
+      "maxRegression": 0.25
     },
     {
       "id": "admit-tla-states",
@@ -62,6 +63,16 @@
       "timeout_s": 240,
       "bug_sha": "8bd4c56",
       "fix_sha": "7f5131a"
+    },
+    {
+      "id": "redactor-throughput-mbps-m1",
+      "metric": "Synthetic redactor median of 5 MB/s",
+      "kind": "unit",
+      "runner": "m1",
+      "direction": "min",
+      "ceiling": 20,
+      "command": "node ratchet/measure.mjs redactor",
+      "timeout_s": 240
     }
   ]
 }
