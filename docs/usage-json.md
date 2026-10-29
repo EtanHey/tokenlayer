@@ -8,8 +8,14 @@ are discarded. The only published error is `hub unavailable`.
 `~/.config/tokenlayer/usage.json` contains Claude OAuth accounts only. Labels are
 `claude-` plus eight SHA-256 hex characters of the credential ID. Raw identifiers,
 emails and headers are excluded. All persisted strings pass through `redactDeep`.
-Fractions become percentages; absent/expired window values are null. Status is
-rejected when steer blocks the account, allowed with utilization, otherwise unknown.
+Fractions become percentages; absent windows remain null. A known reset at or
+before the collection time becomes `{used_pct:0,resets_at:null,rolled_over:true}`
+for either window, unless the account or quota status is rejected. No new reset
+time is fabricated. Status is rejected when steer blocks the account or a quota
+status rejects it, allowed with utilization or rollover, otherwise unknown.
+Stale projection preserves the rollover marker but remains unusable for admission.
+Snapshot freshness describes collection time; unexpired utilization still comes
+from passive last-response headers, not a new upstream usage probe.
 Active means highest priority among healthy accounts, then earliest weekly reset,
 five-hour reset and credential ID, matching steer's tie order.
 
