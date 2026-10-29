@@ -8,6 +8,21 @@ import { shipOnce, type ShipOptions } from "../../src/ship/ship";
 import { loadState } from "../../src/ship/state";
 import { clickhouseBinary, startLocalClickHouse, type LocalClickHouse } from "../support/local-clickhouse";
 
+/** Independent synthetic trials get reproducible PRNG streams and bounded server/process load. */
+async function trials(count: number, seed: number, run: (index: number, random: () => number) => Promise<void>) {
+  let next = 0;
+  const results = await Promise.allSettled(Array.from({ length: 4 }, async () => {
+    while (next < count) {
+      const index = next++;
+      let state = seed ^ Math.imul(index + 1, 0x9e3779b1);
+      const random = () => { state ^= state << 13; state ^= state >>> 17; state ^= state << 5; return state >>> 0; };
+      await run(index, random);
+    }
+  }));
+  // Drain every lane before test cleanup stops the shared synthetic server.
+  for (const result of results) if (result.status === "rejected") throw result.reason;
+}
+
 describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse", () => {
   let ch: LocalClickHouse;
   let dir: string;
@@ -211,19 +226,16 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse: rewrites, 
   }
 
   test("200 seeded random kill/rewrite trials preserve every archived generation through repeated crashes", async () => {
-    let seed = 0x56914481;
-    const random = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return seed >>> 0; };
-    for (let i = 0; i < 200; i++) {
+    await trials(200, 0x56914481, async (i, random) => {
       const phases = Array.from({ length: 2 + random() % 2 }, () => random() % 2 ? "before" : "after");
       await crashTrial(`it-property-${i}`, Boolean(random() % 2), phases, 1 + random() % 2, 8 + random() % 200, 1 + random() % 2);
-    }
+    });
   }, 600_000);
 
   test("300 random operation sequences keep every acknowledged row unchanged in FINAL", async () => {
-    let seed = 0x1a55afee, kills = 0, comparisons = 0;
-    const random = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return seed >>> 0; };
+    let kills = 0, comparisons = 0, completed = 0;
     const boundaries = ["journal-before", "before", "after", "checkpoint"];
-    for (let trial = 0; trial < 300; trial++) {
+    await trials(300, 0x1a55afee, async (trial, random) => {
       const { file, o } = setup(`it-immutable-${trial}`, 128 + random() % 2048);
       o.saveEveryMs = -1;
       const source = (revision = 0) => Array.from({ length: 3 + random() % 4 }, (_, i) => line(`r${revision}-${i}-${"x".repeat(random() % 30)}`,
@@ -271,8 +283,9 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse: rewrites, 
         }
         await ship();
       }
-      if (trial % 25 === 24) console.log(`immutable property: ${trial + 1}/300 sequences, ${kills} SIGKILLs, ${comparisons} row comparisons`);
-    }
+      if (++completed % 25 === 0) console.log(`immutable property: ${completed}/300 sequences, ${kills} SIGKILLs, ${comparisons} row comparisons`);
+    });
+    expect(completed).toBe(300);
     expect(kills).toBe(1200);
   }, 1_800_000);
 
