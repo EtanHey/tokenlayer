@@ -185,5 +185,6 @@ export function mapUsageRecord(input: unknown, opts: { hub: string }): ProxyUsag
     user_agent: str(r.user_agent),
     ratelimit: ratelimitHeaders(r.response_headers),
   };
-  return redactDeep(row) as ProxyUsageRow;
+  // Restore only the locally derived label; arbitrary credential fields remain sensitive.
+  return { ...(redactDeep(row) as ProxyUsageRow), credential: row.credential };
 }
