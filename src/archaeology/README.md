@@ -15,3 +15,7 @@ Only LF-terminated lines count. Trailing incomplete bytes are reported. Invalid 
 The SQLite scratch index contains session/stream ids, hashes and occurrence maxima. A stream is a session plus its subagent file id (main transcripts use `::main`). Reports never contain raw lines. `--validate` pre-seeds a throwaway local ClickHouse baseline, measures unchanged counts across dryRun, and checks at most 100 rows in a separate schema-identical sample table before teardown; no shared endpoint is accepted. There is no apply mode.
 
 Focused verification: `bun test tests/archaeology`. Full verification: `bun run typecheck && bun test`.
+
+Drive fetch command (stream only): `python3 src/archaeology/drive-stream.py --file-id ID --sha256 CONTAINER_SHA --member MEMBER --member-sha256 MEMBER_SHA`. It uses the existing BrainLayer OAuth reader with migration/persistence disabled; dependencies are Python google-auth/requests plus BRAINLAYER_SRC (default ~/Gits/brainlayer/src). Pipe stdout into an in-memory consumer and require exit zero before accepting bytes; never use Drive downloadFile or redirect archive/member data to disk.
+Origin labels are inferred from usernames (etanheyman→m4, happycampr→m1), not hardware IDs. An older Mac with the same username needs additional provenance before treating the alias as physical-machine proof.
+The invariant imports one session and two JSONL line rows; row counts always mean lines, not sessions.
