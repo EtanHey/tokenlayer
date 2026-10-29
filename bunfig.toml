@@ -1,3 +1,4 @@
 [test]
 root = "./tests"
-pathIgnorePatterns = ["**/*.property.test.ts"]
+# Review archives and the separately required property suite are excluded here.
+pathIgnorePatterns = ["docs.local/**", "**/*.property.test.ts"]
