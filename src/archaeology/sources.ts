@@ -16,18 +16,36 @@ with tarfile.open(sys.argv[1], 'r|*') as archive:
   sys.stdout.buffer.flush()
 `;
 
+/** One native metadata-only snapshot: Python exposes st_flags, unlike Bun's Stats. */
+export function datalessPaths(paths: readonly string[]): Set<string> {
+  const program = `import os,json,sys
+blocked=[]
+for path in json.load(sys.stdin):
+ try:
+  if getattr(os.lstat(path),'st_flags',0) & 0x40000000: blocked.append(path)
+ except OSError: pass
+print(json.dumps(blocked))`;
+  const proc=Bun.spawnSync(["python3","-c",program],{stdin:Buffer.from(JSON.stringify(paths)),stdout:"pipe",stderr:"ignore"});
+  if(proc.exitCode!==0) throw Error("native dataless metadata probe failed; no source reads allowed");
+  const value: unknown=JSON.parse(proc.stdout.toString());
+  if(!Array.isArray(value)||!value.every((p):p is string=>typeof p==="string")) throw Error("invalid dataless metadata response");
+  return new Set(value);
+}
+
 /** Sequential tar streaming, no extraction. Only the current member is held in memory. */
-export function localSources(entries: Entry[]) {
+export function localSources(entries: Entry[], probe: (paths: readonly string[]) => ReadonlySet<string> = datalessPaths) {
+  const supported = (e:Entry) => !["drive_file","drive_tarball_member","tarball_member","t3_sqlite","icloud"].includes(e.source_kind) && !/note=dataless/.test(e.sha256);
+  const blocked = probe([...new Set(entries.flatMap(e=>supported(e)?[e.member_path]:["tarball_member","drive_tarball_member"].includes(e.source_kind)?[e.container]:[]))]);
   let current: { entry: Entry; bytes: Buffer } | null = null;
   const errors: { container: string; reason: string }[] = [];
   const readable = (path: string) => {
-    try { const st = lstatSync(path); return st.isFile() && !st.isSymbolicLink() && !("flags" in st && typeof st.flags === "number" && (st.flags & 0x40000000)); } catch { return false; }
+    try { const st = lstatSync(path); return st.isFile() && !st.isSymbolicLink() && !blocked.has(path); } catch { return false; }
   };
   async function fileHash(path: string) { try { const digest = createHash("sha256"); for await (const chunk of createReadStream(path)) digest.update(chunk); return digest.digest("hex"); } catch { errors.push({ container: path, reason: "container hash read failed" }); return ""; } }
   async function* order() {
     const archives = new Map<string, Entry[]>();
     const loose = entries.filter(e => !["tarball_member", "drive_tarball_member"].includes(e.source_kind));
-    for (const e of loose.sort((a, b) => Number(b.source_kind === "live") - Number(a.source_kind === "live") || Number(b.bytes) - Number(a.bytes))) { if (e.member_path.endsWith(".zst") && readable(e.member_path)) e.container_hash = await fileHash(e.member_path); yield e; }
+    for (const e of loose.sort((a, b) => Number(b.source_kind === "live") - Number(a.source_kind === "live") || Number(b.bytes) - Number(a.bytes))) { if (supported(e) && e.member_path.endsWith(".zst") && readable(e.member_path)) e.container_hash = await fileHash(e.member_path); yield e; }
     for (const e of entries.filter(e => ["tarball_member", "drive_tarball_member"].includes(e.source_kind))) {
       const group = archives.get(e.container) ?? []; group.push(e); archives.set(e.container, group);
     }

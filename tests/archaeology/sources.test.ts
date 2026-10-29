@@ -25,3 +25,17 @@ test("local source adapter streams repeated tar members without extracting and d
     expect(await Bun.file(join(dir, "session.jsonl")).exists()).toBe(false);
   } finally { rmSync(dir, { recursive: true }); }
 });
+
+test("S-4 native dataless metadata blocks both hashing and reading a loose zst", async () => {
+  const { datalessPaths } = await import("../../src/archaeology/sources");
+  const dir=mkdtempSync(join(tmpdir(),"dataless-")),path=join(dir,"rollout-session.jsonl.zst");
+  try {
+    writeFileSync(path,"must not be decoded");
+    expect(datalessPaths([path]).has(path)).toBe(false);
+    const row: Inventory={machine:"m4",source_kind:"archive_dir",container:"",member_path:path,session_id:"source-test",harness:"codex",bytes:"19",lines:"1",first_ts:"2026-01-01",last_ts:"2026-01-01",cwd:"/Users/etanheyman/Gits/example",sha256:"",mtime:""};
+    const entries=manifest([row],[]),sources=localSources(entries,()=>new Set([path]));
+    const result=await dryRun(entries,sources);
+    expect(result.needs_fetch).toBe(1);expect(result.read_errors).toBe(0);
+    expect(entries[0].container_hash).toBe("");expect(sources.errors).toEqual([]);
+  } finally {rmSync(dir,{recursive:true});}
+});
