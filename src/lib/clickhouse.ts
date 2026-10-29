@@ -49,7 +49,7 @@ export class ClickHouse {
    */
   async insert(table: string, rows: readonly unknown[], dedupToken?: string): Promise<void> {
     if (rows.length === 0) return;
-    const params = new URLSearchParams({ query: `INSERT INTO ${this.config.database}.${table} FORMAT JSONEachRow` });
+    const params = new URLSearchParams({ query: `INSERT INTO ${this.config.database}.${table} FORMAT JSONEachRow`, async_insert: "0" });
     if (dedupToken) params.set("insert_deduplication_token", dedupToken);
     const body = rows.map((r) => JSON.stringify(r)).join("\n") + "\n";
     await this.post(`insert into ${table}`, params, body, false);
