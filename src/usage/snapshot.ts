@@ -24,19 +24,37 @@ function credentials(input: unknown): Credential[] {
 const later = (a: number | null, b: number | null) => (a ?? Infinity) - (b ?? Infinity);
 const iso = (ms: number | null) => ms === null ? null : new Date(ms).toISOString();
 
+function signals(c: Credential) {
+  return Object.fromEntries(Object.entries(c.quota?.signals ?? {}).map(([k,v]) => [k.toLowerCase(),v.trim().toLowerCase()]));
+}
+function reading(c: Credential, name: string, used: number | null, reset: number | null, now: number, rejected: boolean) {
+  const raw = signals(c)[`anthropic-ratelimit-unified-${name}-reset`];
+  const previous = raw ? Number(raw) * 1000 : NaN;
+  if (!rejected && Number.isFinite(previous) && previous <= now)
+    return { used_pct: 0, resets_at: null, rolled_over: true };
+  return { used_pct: used === null ? null : used * 100, resets_at: iso(reset) };
+}
+
 export function snapshot(input: unknown, now = Date.now()) {
-  const rows = credentials(input).filter(c => c.provider?.toLowerCase() === 'claude' && c.account_type === 'oauth').map(c => ({ c, a: assess(c, now) }));
-  const winner = rows.filter(r => r.a.healthy).sort((x, y) => (y.c.priority ?? 0) - (x.c.priority ?? 0) || later(x.a.reset7dMs, y.a.reset7dMs) || later(x.a.reset5hMs, y.a.reset5hMs) || x.c.id.localeCompare(y.c.id))[0];
+  const rows = credentials(input).filter(c => c.provider?.toLowerCase() === 'claude' && c.account_type === 'oauth').map(c => {
+    const a = assess(c, now);
+    const rejected = !a.healthy || c.status === 'rejected' || ['', '5h-', '7d-'].some(w => signals(c)[`anthropic-ratelimit-unified-${w}status`] === 'rejected');
+    return { c, a, rejected };
+  });
+  const winner = rows.filter(r => !r.rejected).sort((x, y) => (y.c.priority ?? 0) - (x.c.priority ?? 0) || later(x.a.reset7dMs, y.a.reset7dMs) || later(x.a.reset5hMs, y.a.reset5hMs) || x.c.id.localeCompare(y.c.id))[0];
   return {
     generated_at: new Date(now).toISOString(), source: 'cliproxy-hub', stale: false,
-    accounts: rows.map(r => ({
-      label: `claude-${createHash('sha256').update(r.c.id).digest('hex').slice(0, 8)}`,
-      active: r === winner,
-      five_hour: { used_pct: r.a.util5h === null ? null : r.a.util5h * 100, resets_at: iso(r.a.reset5hMs) },
-      weekly: { used_pct: r.a.util7d === null ? null : r.a.util7d * 100, resets_at: iso(r.a.reset7dMs) },
-      status: !r.a.healthy ? 'rejected' : r.a.util5h !== null || r.a.util7d !== null ? 'allowed' : 'unknown',
-      priority: r.c.priority ?? 0, disabled: r.c.disabled === true || r.c.status === 'disabled',
-    })),
+    accounts: rows.map(r => {
+      const five = reading(r.c, '5h', r.a.util5h, r.a.reset5hMs, now, r.rejected);
+      const weekly = reading(r.c, '7d', r.a.util7d, r.a.reset7dMs, now, r.rejected);
+      return {
+        label: `claude-${createHash('sha256').update(r.c.id).digest('hex').slice(0, 8)}`,
+        active: r === winner,
+        five_hour: five, weekly,
+        status: r.rejected ? 'rejected' : [five, weekly].some(w => w.used_pct !== null) ? 'allowed' : 'unknown',
+        priority: r.c.priority ?? 0, disabled: r.c.disabled === true || r.c.status === 'disabled',
+      };
+    }),
   };
 }
 // Previous files are untrusted input too: validate values and rebuild every level.
@@ -52,7 +70,8 @@ function date(value: unknown): string | null {
 function window(value: unknown) {
   const v = record(value);
   if (v.used_pct !== null && (typeof v.used_pct !== 'number' || !Number.isFinite(v.used_pct) || v.used_pct < 0 || v.used_pct > 100)) throw new Error('invalid snapshot percentage');
-  return { used_pct: v.used_pct, resets_at: date(v.resets_at) };
+  if (v.rolled_over !== undefined && (v.rolled_over !== true || v.used_pct !== 0 || v.resets_at !== null)) throw new Error('invalid rollover');
+  return { used_pct: v.used_pct, resets_at: date(v.resets_at), ...(v.rolled_over === true ? {rolled_over:true} : {}) };
 }
 export function staleSnapshot(input: unknown) {
   const previous = record(input);
