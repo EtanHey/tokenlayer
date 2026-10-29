@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "rows": [
+    {
+      "id": "unit-tests-pass",
+      "metric": "Bun suite passes",
+      "kind": "unit",
+      "runner": "ci",
+      "direction": "pass",
+      "ceiling": true,
+      "command": "bun test",
+      "timeout_s": 240
+    },
+    {
+      "id": "typecheck-pass",
+      "metric": "TypeScript passes",
+      "kind": "unit",
+      "runner": "ci",
+      "direction": "pass",
+      "ceiling": true,
+      "command": "bun run typecheck",
+      "timeout_s": 240
+    },
+    {
+      "id": "integration-tests-ran",
+      "metric": "ClickHouse integration tests executed",
+      "kind": "unit",
+      "runner": "ci",
+      "direction": "min",
+      "ceiling": 11,
+      "command": "node ratchet/measure.mjs integration",
+      "timeout_s": 240
+    },
+    {
+      "id": "redactor-throughput-mbps",
+      "metric": "Synthetic redactor median of 5 MB/s",
+      "kind": "unit",
+      "runner": "ci",
+      "direction": "min",
+      "ceiling": 5,
+      "command": "node ratchet/measure.mjs redactor",
+      "timeout_s": 240,
+      "maxRegression": 0.25
+    },
+    {
+      "id": "admit-tla-states",
+      "metric": "TLC distinct states",
+      "kind": "unit",
+      "runner": "ci",
+      "direction": "min",
+      "ceiling": 4224,
+      "command": "node ratchet/measure.mjs tla",
+      "timeout_s": 240
+    },
+    {
+      "id": "admit-null-window",
+      "metric": "Null-window regression fixtures",
+      "kind": "real",
+      "runner": "ci",
+      "direction": "pass",
+      "ceiling": true,
+      "command": "bun test tests/admit/r2.test.ts",
+      "timeout_s": 240,
+      "bug_sha": "8bd4c56",
+      "fix_sha": "7f5131a"
+    },
+    {
+      "id": "redactor-throughput-mbps-m1",
+      "metric": "Synthetic redactor median of 5 MB/s",
+      "kind": "unit",
+      "runner": "m1",
+      "direction": "min",
+      "ceiling": 20,
+      "command": "node ratchet/measure.mjs redactor",
+      "timeout_s": 240
+    }
+  ]
+}
