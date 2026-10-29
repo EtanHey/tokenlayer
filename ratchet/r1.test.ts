@@ -5,6 +5,7 @@ const rows = parseRows(JSON.parse(readFileSync('ratchet/rows.json', 'utf8')));
 for (const [id, main, regression, limit] of [
   ['payload-usage-bytes', 1000, 1100, 1064],
   ['bundle-usage-bytes', 400000, 403072, 402048],
+  ['ship-ingest-rows-s', 10000, 7400, 7500],
   ['sessions-between-read_rows', 10000, 30000, 10200],
   ['sessions-between-memory_usage', 10000, 10600, 10500],
   ['session-active-parts', 2, 3, 2],
@@ -80,7 +81,10 @@ test('deterministic query policy is tight; CI timing is report-only and M1 twins
     expect(m1?.reportOnly).not.toBe(true);
     expect(evaluate(m1, 20, 10)).toBe(false);
   }
-  expect(rows.find(r => r.id === 'ship-ingest-rows-s')?.reportOnly).toBe(true);
+  const ingest = rows.find(r => r.id === 'ship-ingest-rows-s');
+  expect(ingest?.reportOnly).toBe(false);
+  expect(ingest?.maxRegression).toBe(0.25);
+  expect(evaluate(ingest, 8000, 10000)).toBe(true); // a 20% drop alone does not trip the 25% band
 });
 
 import { clickhouseBinary, startLocalClickHouse } from '../tests/support/local-clickhouse';
