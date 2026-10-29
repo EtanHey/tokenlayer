@@ -121,7 +121,7 @@ export async function dryRun(entries: Entry[], options: {
           let start = 0, nl: number;
           while ((nl = carry.indexOf(10, start)) >= 0) {
             const line = carry.subarray(start, nl + 1), hash = sha256(line);
-            const raw = new TextDecoder("utf-8", { fatal: true }).decode(line);
+            const raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(line);
             st.harness = detectHarness(st.kind, [raw]) ?? st.harness; e.harness = st.harness;
             const parsed = parseLine(raw, st), existing = find.get(e.session_id, hash);
             if (e.source_kind === "live") { insert.run(e.session_id, hash, 1); liveRows++; }

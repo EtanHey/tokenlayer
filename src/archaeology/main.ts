@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync, readFileSync, lstatSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { classify, repoMap, manifest, dryRun, type Inventory, type Evidence } from "./pipeline";
+import { classify, repoMap, manifest, dryRun, sha256, type Inventory, type Evidence } from "./pipeline";
 import { localSources } from "./sources";
 import { startLocalClickHouse } from "../../tests/support/local-clickhouse";
 import { applySchema } from "../lib/schema";
@@ -48,7 +48,7 @@ if (import.meta.main) {
       await applySchema(local.client);
       await local.client.insert("session_events", report.sample);
       const stored = await local.client.queryJSON<{ raw: string; content_hash: string }>("SELECT raw,content_hash FROM tokenlayer.session_events FINAL");
-      if (stored.length !== report.sample.length || stored.some(r => !report.sample.some(s => s.raw === r.raw && s.content_hash === r.content_hash))) throw new Error("ClickHouse sample mismatch");
+      if (stored.length !== report.sample.length || stored.some(r => sha256(Buffer.from(r.raw)) !== r.content_hash || !report.sample.some(s => s.raw === r.raw && s.content_hash === r.content_hash))) throw new Error("ClickHouse sample mismatch");
       validated = stored.length;
     } finally { await local.stop(); }
   }

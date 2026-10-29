@@ -62,3 +62,10 @@ test("existing shipper pair export prevents cross-path inserts; invalid UTF-8 fa
   const rejected = await dryRun(manifest([row({ bytes: "2", sha256: sha256(invalid) })], []), { read: async () => (async function* () { yield invalid; })() });
   expect(rejected.read_errors).toBe(1); expect(rejected.import_rows).toBe(0);
 });
+
+test("raw preserves a UTF-8 BOM while the hash covers its exact bytes", async () => {
+  const bytes = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{"sessionId":"session","type":"user"}\n')]);
+  const result = await dryRun(manifest([row({ bytes: String(bytes.length), sha256: sha256(bytes) })], []), { read: async () => (async function* () { yield bytes; })() });
+  expect(Buffer.from(result.sample[0].raw).equals(bytes)).toBe(true);
+  expect(sha256(Buffer.from(result.sample[0].raw))).toBe(result.sample[0].content_hash);
+});
