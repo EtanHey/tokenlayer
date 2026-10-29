@@ -1,0 +1,52 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.4.3'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/cache@v4
+        id: tools
+        with:
+          path: ~/.cache/tokenlayer-ci
+          key: tokenlayer-linux-x64-ch-26.10.3.7-tla-1.8.0
+      - name: Install official ClickHouse and TLC
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.cache/tokenlayer-ci
+          cd ~/.cache/tokenlayer-ci
+          pkg=clickhouse-common-static-26.10.3.7-amd64.tgz
+          curl -fsSLO "https://packages.clickhouse.com/tgz/stable/$pkg"
+          curl -fsSLO "https://packages.clickhouse.com/tgz/stable/$pkg.sha512"
+          sha512sum -c "$pkg.sha512"
+          tar -xzf "$pkg" --strip-components=3 clickhouse-common-static-26.10.3.7/usr/bin/clickhouse
+          curl -fsSL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o tla2tools.jar
+      - name: Configure tools
+        run: |
+          echo "$HOME/.cache/tokenlayer-ci" >> "$GITHUB_PATH"
+          echo "TLA_JAR=$HOME/.cache/tokenlayer-ci/tla2tools.jar" >> "$GITHUB_ENV"
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - name: Ratchet (main versus this PR)
+        if: always() && steps.tools.outcome == 'success'
+        env:
+          RATCHET_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node ratchet/table.mjs ratchet/rows.json
