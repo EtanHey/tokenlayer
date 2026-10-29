@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync, readFileSync, lstatSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { classify, repoMap, manifest, dryRun, sha256, type Inventory, type Evidence } from "./pipeline";
+import { classify, repoMap, manifest, dryRun, sha256, type Inventory, type Evidence, type ExistingCount } from "./pipeline";
 import { localSources } from "./sources";
 import { startLocalClickHouse } from "../../tests/support/local-clickhouse";
 import { applySchema } from "../lib/schema";
@@ -37,7 +37,10 @@ if (import.meta.main) {
   mkdirSync(out, { recursive: true });
   if (inputPaths.some(p => ["manifest.tsv", "classification.tsv"].some(n => resolve(p) === join(out, n)))) throw new Error("output directory must not contain input inventories");
   if (values.manifest && !values.evidence) for (const r of readTSV(values.manifest)) if (/^[\w.-]+\/[\w.-]+$/.test(r.repo ?? "")) evidence.push({ cwd: r.cwd, repo: r.repo, evidence: "prior manifest mapping", confidence: "medium" });
-  const existing = values.existing ? readTSV(values.existing).map((r): [string, string] => [r.session_id, r.content_hash]) : [];
+  const existing = values.existing ? readTSV(values.existing).map((r): ExistingCount => {
+    if (!r.session_id || !(r.stream || r.path) || !/^\d+$/.test(r.count ?? "")) throw new Error("existing export requires session_id, stream or path, content_hash, count");
+    return [r.session_id, r.stream || r.path, r.content_hash, Number(r.count)];
+  }) : [];
   const maps = repoMap(rows.filter(r => classify(r).session), evidence), entries = manifest(rows, maps);
   let processed = 0;
   const sources = localSources(entries), report = await dryRun(entries, { ...sources, existing, database: join(out, "dedupe.sqlite"), onEntry: () => { if (++processed % 1000 === 0) process.stderr.write(`verified progress ${processed}/${entries.length}\n`); } });

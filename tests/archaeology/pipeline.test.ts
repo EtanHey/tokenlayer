@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, statSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classify, origin, repoMap, manifest, dryRun, sha256, shipperCovers, type Inventory } from "../../src/archaeology/pipeline";
+import { classify, origin, repoMap, manifest, dryRun, sha256, shipperCovers, streamId, type Inventory } from "../../src/archaeology/pipeline";
 
 const row = (overrides: Partial<Inventory> = {}): Inventory => ({ machine: "M4", source_kind: "archive_dir", container: "", member_path: "/Users/etanheyman/.claude-archive/projects/old/s.jsonl", session_id: "session", harness: "claude", bytes: "1", lines: "1", first_ts: "2026-01-01T00:00:00Z", last_ts: "2026-01-01T00:00:00Z", cwd: "/Users/etanheyman/Desktop/Gits/old/.worktrees/lane", sha256: "", mtime: "", ...overrides });
 test("canonical longest copy, prefix skips, renamed repo and unchanged sources", async () => {
@@ -56,7 +56,7 @@ test("divergent copies retain unique lines; live pairs skip; unfetched and chang
 test("existing shipper pair export prevents cross-path inserts; invalid UTF-8 fails closed", async () => {
   const bytes = Buffer.from('{"sessionId":"session","type":"user"}\r\n');
   const rows = manifest([row({ bytes: String(bytes.length), sha256: sha256(bytes) })], []);
-  const report = await dryRun(rows, { existing: [["session", sha256(bytes)]], read: async () => (async function* () { yield bytes.subarray(0, 7); yield bytes.subarray(7); })() });
+  const report = await dryRun(rows, { existing: [["session", "session::main", sha256(bytes), 1]], read: async () => (async function* () { yield bytes.subarray(0, 7); yield bytes.subarray(7); })() });
   expect(report.import_rows).toBe(0); expect(report.skip_live).toBe(1);
   const invalid = Buffer.from([0xff, 10]);
   const rejected = await dryRun(manifest([row({ bytes: "2", sha256: sha256(invalid) })], []), { read: async () => (async function* () { yield invalid; })() });
@@ -92,4 +92,20 @@ test("S-8 a failed second read cannot relabel an earlier verified prefix", async
   const result=await dryRun(entries,{order:(async function*(){yield prefix;yield full;})(),read:async e=>(async function*(){yield e===prefix?a:++reads===1?b:a;})()});
   expect(result.read_errors).toBe(1);expect(result.import_rows).toBe(1);
   expect(prefix.relation).toBe("canonical_verified");expect(full.relation).toBe("unverified");
+});
+
+
+test("MF-2 missing repeated occurrences survive per stream and retain reconstruction offsets", async () => {
+  const header=Buffer.from('{"sessionId":"session","type":"user"}\n');const repeated=Buffer.from('{"type":"mode","mode":"A"}\n');
+  const prefix=Buffer.concat([header,repeated]),full=Buffer.concat([header,repeated,repeated,repeated]);
+  const data=new Map([["/Users/etanheyman/.claude/projects/p/session.jsonl",prefix],["full.jsonl",full],["session/subagents/agent-a.jsonl",prefix],["copy/session/subagents/agent-a.jsonl",prefix]]);
+  const entries=manifest([...data].map(([path,bytes],i)=>row({member_path:path,source_kind:i===0?"live":"archive_dir",bytes:String(bytes.length),sha256:sha256(bytes)})),[]);
+  const result=await dryRun(entries,{read:async e=>(async function*(){yield data.get(e.member_path)!;})()});
+  const main=result.sample.filter(e=>streamId(e.session_id,e.path)===streamId("session","full.jsonl"));
+  expect(main.map(e=>e.byte_offset)).toEqual([prefix.length,prefix.length+repeated.length]);
+  expect(Buffer.concat([prefix,...main.sort((a,b)=>a.byte_offset-b.byte_offset).map(e=>Buffer.from(e.raw))]).equals(full)).toBe(true);
+  expect(result.import_rows).toBe(4);expect(result.skip_live).toBe(2);expect(result.skip_copy).toBe(2);
+  expect(result.divergent_sessions).toBe(0);
+  const seeded=await dryRun(manifest([row({bytes:String(full.length),sha256:sha256(full),member_path:"full.jsonl"})],[]),{existing:[["session","full.jsonl",sha256(header),1],["session","full.jsonl",sha256(repeated),1]],read:async()=>(async function*(){yield full;})()});
+  expect(seeded.import_rows).toBe(2);expect(seeded.skip_live).toBe(2);
 });

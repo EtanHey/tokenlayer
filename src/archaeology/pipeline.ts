@@ -5,7 +5,7 @@ import { newFileState, parseLine, detectHarness, type ParsedLine } from "../ship
 export type Inventory = Record<"machine" | "source_kind" | "container" | "member_path" | "session_id" | "harness" | "bytes" | "lines" | "first_ts" | "last_ts" | "cwd" | "sha256" | "mtime", string>;
 export type Evidence = { cwd: string; repo: string; evidence: string; confidence: "high" | "medium"; machine?: string; valid_from?: string; valid_to?: string };
 export type RepoMap = { machine: string; cwd: string; repo_canonical: string; valid_from: string; valid_to: string; evidence: string[]; confidence: string };
-export type Entry = Inventory & { origin: string; repo: string; selected: boolean; relation: string; status: string; container_hash: string };
+export type Entry = Inventory & { origin: string; repo: string; selected: boolean; relation: string; status: string; container_hash: string; stream: string };
 export type Event = ParsedLine & { machine: string; harness: string; path: string; generation: string; byte_offset: number; content_hash: string; line_bytes: number };
 type Chunks = AsyncIterable<Uint8Array>;
 export const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -42,6 +42,17 @@ export function repoMap(rows: Inventory[], evidence: Evidence[]): RepoMap[] {
   });
 }
 
+export function subagentFileId(path: string): string | null {
+  return /(?:^|\/)subagents\/([^/]+)\.jsonl(?:\.zst)?$/.exec(path)?.[1]
+    ?? /(?:^|\/)(agent-[^/]+)\.jsonl(?:\.zst)?$/.exec(path)?.[1] ?? null;
+}
+export function streamId(session: string, path: string): string {
+  if (path === `${session}::main` || path.startsWith(`${session}::subagent/`)) return path;
+  const agent = subagentFileId(path);
+  return `${session}::${agent ? `subagent/${agent}` : "main"}`;
+}
+export type ExistingCount = [session: string, streamOrPath: string, hash: string, count: number];
+
 /** Mirrors ship.ts listJsonl: plain JSONL in configured/default Claude or Codex trees. */
 export function shipperCovers(path: string, roots?: readonly string[]): boolean {
   if (!path.endsWith(".jsonl")) return false;
@@ -56,13 +67,13 @@ export function manifest(rows: Inventory[], maps: RepoMap[]): Entry[] {
   const copies = new Map<string, Entry>();
   for (const r of rows.filter(r => classify(r).session)) {
     const key = JSON.stringify([r.machine, r.source_kind, r.container, r.member_path, r.sha256]);
-    copies.set(key, { ...r, source_kind: r.source_kind === "live" && !shipperCovers(r.member_path) ? "archive_dir" : r.source_kind, origin: origin(r), repo: repos.get(`${origin(r)}\0${r.cwd}`) ?? "", selected: false, relation: "unverified", status: "pending", container_hash: "" });
+    copies.set(key, { ...r, source_kind: r.source_kind === "live" && !shipperCovers(r.member_path) ? "archive_dir" : r.source_kind, origin: origin(r), repo: repos.get(`${origin(r)}\0${r.cwd}`) ?? "", selected: false, relation: "unverified", status: "pending", container_hash: "", stream: streamId(r.session_id, r.member_path) });
   }
   const entries = [...copies.values()].sort((a, b) => Number(b.bytes) - Number(a.bytes) || a.member_path.localeCompare(b.member_path));
   const largest = new Map<string, Entry>();
   for (const e of entries) {
-    const canonical = largest.get(e.session_id);
-    if (!canonical) { largest.set(e.session_id, e); e.selected = true; }
+    const canonical = largest.get(e.stream);
+    if (!canonical) { largest.set(e.stream, e); e.selected = true; }
     if (canonical && hashOK(e.sha256) && canonical.sha256 === e.sha256) e.relation = "identical";
   }
   return entries;
@@ -71,28 +82,33 @@ export function manifest(rows: Inventory[], maps: RepoMap[]): Entry[] {
 /** No shared client accepted. Sources are replayable read-only streams; null means needs fetch/export. */
 export async function dryRun(entries: Entry[], options: {
   read: (entry: Entry) => Promise<Chunks | null>;
-  database?: string; sampleSize?: number; order?: AsyncIterable<Entry>; existing?: Iterable<[string, string]>;
+  database?: string; sampleSize?: number; order?: AsyncIterable<Entry>; existing?: Iterable<ExistingCount>;
   onEntry?: (entry: Entry) => void;
 }) {
   const db = new Database(options.database ?? ":memory:");
-  db.exec("CREATE TABLE IF NOT EXISTS seen(session TEXT, hash TEXT, live INTEGER, PRIMARY KEY(session,hash)) WITHOUT ROWID; DELETE FROM seen");
-  const insert = db.query("INSERT OR IGNORE INTO seen VALUES(?,?,?)");
-  const find = db.query<{ live: number }, [string, string]>("SELECT live FROM seen WHERE session=? AND hash=?");
-  const report = { import_rows: 0, import_bytes: 0, import_sessions: 0, skip_live: 0, skip_copy: 0, live_rows: 0, needs_fetch: 0, source_changed: 0, read_errors: 0, divergent_sessions: 0, unterminated_bytes: 0, sample: [] as Event[], groups: {} as Record<string, { rows: number; bytes: number; skip_live: number; skip_copy: number }> };
-  const sessions = new Set<string>(), divergent = new Set<string>();
+  db.exec("DROP TABLE IF EXISTS seen; CREATE TABLE IF NOT EXISTS occurrences(session TEXT, stream TEXT, hash TEXT, live_count INTEGER, prior_count INTEGER, PRIMARY KEY(session,stream,hash)) WITHOUT ROWID; DELETE FROM occurrences");
+  const insert = db.query("INSERT INTO occurrences VALUES(?,?,?,?,?) ON CONFLICT(session,stream,hash) DO UPDATE SET live_count=max(live_count,excluded.live_count),prior_count=max(prior_count,excluded.prior_count)");
+  const find = db.query<{ live_count: number; prior_count: number }, [string, string, string]>("SELECT live_count,prior_count FROM occurrences WHERE session=? AND stream=? AND hash=?");
+  const report = { import_rows: 0, import_bytes: 0, import_sessions: 0, skip_live: 0, skip_copy: 0, live_rows: 0, needs_fetch: 0, source_changed: 0, read_errors: 0, divergent_sessions: 0, divergent_streams: 0, unterminated_bytes: 0, sample: [] as Event[], groups: {} as Record<string, { rows: number; bytes: number; skip_live: number; skip_copy: number }> };
+  const sessions = new Set<string>(), divergent = new Map<string, string>();
   const prefixes = new Map<string, Map<number, string>>();
   const verified = new Map<string, Entry[]>();
   const lengths = new Map<string, number[]>();
-  for (const e of entries) lengths.set(e.session_id, [...new Set([...(lengths.get(e.session_id) ?? []), Number(e.bytes)])].sort((a, b) => a - b));
+  const sizeSets = new Map<string, Set<number>>();
+  for (const e of entries) { const sizes = sizeSets.get(e.stream) ?? new Set<number>(); sizes.add(Number(e.bytes)); sizeSets.set(e.stream, sizes); }
+  for (const [stream, sizes] of sizeSets) lengths.set(stream, [...sizes].sort((a,b)=>a-b));
   const ordered = [...entries].sort((a, b) => Number(b.source_kind === "live") - Number(a.source_kind === "live") || Number(b.bytes) - Number(a.bytes));
   try {
-    for (const [session, hash] of options.existing ?? []) { if (!hashOK(hash)) throw new Error("invalid existing content hash"); insert.run(session, hash, 1); }
+    for (const [session, path, hash, count] of options.existing ?? []) {
+      if (!hashOK(hash) || !Number.isSafeInteger(count) || count < 1) throw new Error("invalid existing occurrence count/hash");
+      insert.run(session, streamId(session, path), hash, count, 0);
+    }
     for await (const e of options.order ?? ordered) {
       try {
       const source = e.origin === "unknown" || e.source_kind === "t3_sqlite" ? null : await options.read(e);
       if (!source) { e.status = "needs_fetch_or_export"; report.needs_fetch++; options.onEntry?.(e); continue; }
       const digest = createHash("sha256"), checkpoints = new Map<number, string>();
-      let size = 0, checkpointIndex = 0; const boundaries = lengths.get(e.session_id) ?? [];
+      let size = 0, checkpointIndex = 0; const boundaries = lengths.get(e.stream) ?? [];
       for await (const chunk of source) {
         let start = 0;
         while (checkpointIndex < boundaries.length && boundaries[checkpointIndex] <= size + chunk.length) {
@@ -114,6 +130,7 @@ export async function dryRun(entries: Entry[], options: {
       const st = newFileState(e.harness === "codex" || /rollout-/.test(e.member_path) ? "codex" : "claude", e.harness === "t3" ? "t3" : e.harness === "codex" ? "codex" : "claude", Date.parse(e.first_ts) || 0);
       st.sessionId = e.session_id; st.cwd = e.cwd;
       let offset = 0, carry = Buffer.alloc(0), rows = 0, bytes = 0, skipLive = 0, skipCopy = 0, liveRows = 0;
+      const counts = new Map<string, number>();
       const sample: Event[] = [], secondHash = createHash("sha256");
       db.exec("BEGIN");
       try {
@@ -124,11 +141,15 @@ export async function dryRun(entries: Entry[], options: {
             const line = carry.subarray(start, nl + 1), hash = sha256(line);
             const raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(line);
             st.harness = detectHarness(st.kind, [raw]) ?? st.harness; e.harness = st.harness;
-            const parsed = parseLine(raw, st), existing = find.get(e.session_id, hash);
-            if (e.source_kind === "live") { insert.run(e.session_id, hash, 1); liveRows++; }
-            else if (existing) { if (existing.live) skipLive++; else skipCopy++; }
+            const parsed = parseLine(raw, st), existing = find.get(e.session_id, e.stream, hash);
+            const occurrence = (counts.get(hash) ?? 0) + 1; counts.set(hash, occurrence);
+            if (e.source_kind === "live") {
+              if (occurrence > (existing?.live_count ?? 0)) insert.run(e.session_id, e.stream, hash, occurrence, 0);
+              liveRows++;
+            } else if (occurrence <= (existing?.live_count ?? 0)) skipLive++;
+            else if (occurrence <= (existing?.prior_count ?? 0)) skipCopy++;
             else {
-              insert.run(e.session_id, hash, 0); rows++; bytes += line.length;
+              insert.run(e.session_id, e.stream, hash, 0, occurrence); rows++; bytes += line.length;
               if (sample.length < (options.sampleSize ?? 100)) sample.push({ ...parsed, session_id: e.session_id, raw, project: e.repo || parsed.project, machine: e.origin, harness: st.harness, path: `archive://${e.container_hash || fullHash}/${e.member_path}`, generation: `archive:${fullHash}`, byte_offset: offset, content_hash: hash, line_bytes: line.length });
             }
             offset += line.length; start = nl + 1;
@@ -139,16 +160,16 @@ export async function dryRun(entries: Entry[], options: {
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
       checkpoints.set(size, fullHash);
-      const known = prefixes.get(e.session_id);
+      const known = prefixes.get(e.stream);
       if (known?.get(size) === fullHash) e.relation = "prefix";
       else if (known && checkpoints.get(Math.max(...known.keys())) === known.get(Math.max(...known.keys()))) {
         e.relation = "canonical_verified";
-        for (const prior of verified.get(e.session_id) ?? []) if (checkpoints.get(Number(prior.bytes)) === prior.sha256) { prior.relation = "prefix"; prior.selected = false; }
+        for (const prior of verified.get(e.stream) ?? []) if (checkpoints.get(Number(prior.bytes)) === prior.sha256) { prior.relation = "prefix"; prior.selected = false; }
       }
-      else if (known) { e.relation = "divergent"; divergent.add(e.session_id); e.selected = true; }
+      else if (known) { e.relation = "divergent"; divergent.set(e.stream, e.session_id); e.selected = true; }
       else { e.relation = "canonical_verified"; }
-      if (!known || size > Math.max(...known.keys())) prefixes.set(e.session_id, checkpoints);
-      const priorCopies = verified.get(e.session_id) ?? []; priorCopies.push(e); verified.set(e.session_id, priorCopies);
+      if (!known || size > Math.max(...known.keys())) prefixes.set(e.stream, checkpoints);
+      const priorCopies = verified.get(e.stream) ?? []; priorCopies.push(e); verified.set(e.stream, priorCopies);
       e.status = "verified"; report.import_rows += rows; report.import_bytes += bytes; report.skip_live += skipLive; report.skip_copy += skipCopy; report.live_rows += liveRows; report.unterminated_bytes += carry.length;
       if (rows) sessions.add(e.session_id);
       report.sample.push(...sample.slice(0, Math.max(0, (options.sampleSize ?? 100) - report.sample.length)));
@@ -157,7 +178,7 @@ export async function dryRun(entries: Entry[], options: {
       options.onEntry?.(e);
       } catch { e.status = "read_error"; report.read_errors++; options.onEntry?.(e); }
     }
-    report.import_sessions = sessions.size; report.divergent_sessions = divergent.size;
+    report.import_sessions = sessions.size; report.divergent_sessions = new Set(divergent.values()).size; report.divergent_streams = divergent.size;
     return report;
   } finally { db.close(); }
 }
