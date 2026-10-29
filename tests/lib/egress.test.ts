@@ -47,6 +47,7 @@ for (const main of ['ship', 'usage', 'admit']) test(`${main} uncaught throw is r
     const preload = join(dir, 'inject.ts');
     // Run after imports but before entry-point initialization, without touching real services.
     writeFileSync(preload, `process.env.TOKENLAYER_ENV_FILES = '/dev/null'; process.env.TOKENLAYER_MACHINE = 'synthetic';\nObject.defineProperty(process, 'argv', { get() { throw new Error('${secret}'); } });\n`);
+    if (main === 'admit') writeFileSync(preload, `JSON.stringify = () => { throw new Error('${secret}'); };`);
     const home = join(dir, secret);
     if (main === 'usage') writeFileSync(home, 'file');
     const result = await run(main, main === 'usage' ? { HOME: home } : {}, main === 'usage' ? undefined : preload);
