@@ -46,6 +46,9 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
+      - name: Full shipper property suite (300 trials)
+        timeout-minutes: 10
+        run: bun run test:property
       - name: Ratchet (main versus this PR)
         if: always() && steps.tools.outcome == 'success'
         env:
