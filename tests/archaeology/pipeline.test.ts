@@ -177,3 +177,9 @@ test("NF-2 Claude positive native identity retains all carried-over foreign line
   expect(result.sample.every(e=>e.session_id==="A")).toBe(true);
   expect(Buffer.concat(result.sample.map(e=>Buffer.from(e.raw))).equals(bytes)).toBe(true);
 });
+
+test("F-5 generated Antigravity logs and workflow findings are excluded by layout", () => {
+  expect(classify(row({source_kind:"drive_tarball_member",member_path:"source-10/11111111-1111-4111-8111-111111111111/.system_generated/logs/transcript_full.jsonl"})).session).toBe(false);
+  expect(classify(row({member_path:"session/subagents/workflows/lane/findings/result.jsonl"})).session).toBe(false);
+  expect(classify(row({member_path:"session/subagents/workflows/lane/agent-a.jsonl"})).session).toBe(true);
+});

@@ -16,6 +16,7 @@ export function classify(r: Inventory): { session: boolean; reason: string } {
   const path = `${r.container}/${r.member_path}`.replace(/(^|\/)-Users-[^/]+(?=\/|$)/g, "$1project");
   if (/\/(?:\.cursor|\.gemini|\.antigravity)\//.test(path)) return { session: false, reason: "outside Claude/Codex/T3 scope" };
   if (/\/agent-transcripts\//.test(path) || /weave[^\n]*\/findings\//.test(path)) return { session: false, reason: "Cursor transcript or weave findings layout" };
+  if (/\/\.system_generated\/logs(?:\/|$)|\/subagents\/workflows\/[^/]+\/findings\//.test(path)) return {session:false,reason:"Antigravity generated logs or workflow findings"};
   if (synthetic.test(path)) return { session: false, reason: "fixture/eval/benchmark/registry/telemetry path" };
   if (Number(r.bytes) === 40 && /\.tgz$/.test(r.member_path)) return { session: false, reason: "40-byte placeholder" };
   if (r.source_kind === "t3_sqlite" && r.harness === "t3") return { session: true, reason: "T3 metadata; transcript export required" };
