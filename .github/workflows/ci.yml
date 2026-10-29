@@ -48,6 +48,10 @@ jobs:
           echo "$HOME/.cache/tokenlayer-ci" >> "$GITHUB_PATH"
           echo "TLA_JAR=$HOME/.cache/tokenlayer-ci/tla2tools.jar" >> "$GITHUB_ENV"
       - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - name: Independent admission safety mutation
+        run: python3 scripts/check-admit-blind-mutation.py
       - name: Ratchet (trusted base versus this PR)
         id: ratchet
         env:
@@ -94,3 +98,18 @@ jobs:
             git commit -m 'ci: ratchet throughput floor to 80% of green main median'
             git push origin HEAD:main
           fi
+
+  canon-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Compare vendored canon 5 against golems default branch
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 30 -H 'Accept: application/vnd.github.raw+json' \
+            https://api.github.com/repos/EtanHey/golems/contents/standards/fleet-canon.md > "$RUNNER_TEMP/fleet-canon.md"
+          sed -n '/^5\. /,/^6\. /p' "$RUNNER_TEMP/fleet-canon.md" | sed '$d' | sed '${/^$/d;}' > "$RUNNER_TEMP/canon-5.md"
+          diff -u tests/fixtures/admit/fleet-canon-5.md "$RUNNER_TEMP/canon-5.md"
