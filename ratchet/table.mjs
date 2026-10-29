@@ -4,6 +4,7 @@ import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runRows } from './run-rows.mjs';
 import { checkRows } from './guard.mjs';
+import { pairedSamples } from './paired.mjs';
 export function budget(row, baseline) {
   if (row.growth !== undefined || row.allowance !== undefined) {
     if (!Number.isFinite(baseline)) return NaN;
@@ -25,6 +26,7 @@ export function parseRows(doc) {
     if (!/^[\w.-]+$/.test(r.id) || seen.has(r.id) || !r.metric || !r.command
       || !['real', 'unit'].includes(r.kind) || !['ci', 'm1'].includes(r.runner)
       || !['pass', 'min', 'max'].includes(r.direction)
+      || (r.reportOnly !== undefined && typeof r.reportOnly !== 'boolean')
       || !(Number.isInteger(r.timeout_s) && r.timeout_s > 0)
       || (r.direction === 'pass' ? r.ceiling !== true : !Number.isFinite(r.ceiling))
       || (r.maxRegression !== undefined && (r.direction !== 'min' || !Number.isFinite(r.maxRegression) || r.maxRegression < 0 || r.maxRegression >= 1))
@@ -55,11 +57,13 @@ export function main(path) {
     const policy = git(['show', `${baseRef}:${path}`], { encoding: 'utf8' });
     const baseRows = parseRows(JSON.parse(policy));
     checkRows(baseRows, rows, process.env.GITHUB_EVENT_PATH ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')) : {});
+    const ingest = rows.find(r => r.id === 'ship-ingest-rows-s' && r.runner === 'ci' && r.command === 'bun ratchet/r1.ts ship-ingest-rows-s');
+    const regular = rows.filter(r => r !== ingest);
     let baseline = {};
     if (baseRows.some(r => r.runner === 'ci')) {
       const install = spawnSync('bun', ['install', '--frozen-lockfile'], { cwd: scratch, encoding: 'utf8' });
       if (install.status !== 0) throw Error('baseline install failed');
-      baseline = runRows(rows.filter(r => r.id !== 'redactor-throughput-mbps'), scratch);
+      baseline = runRows(regular.filter(r => r.id !== 'redactor-throughput-mbps'), scratch);
     }
     // Timing uses this harness for both source trees, including first adoption.
     // Avoid executing main's historical benchmark floor or sampling policy.
@@ -71,20 +75,28 @@ export function main(path) {
       });
       baseline[timing.id] = run.status === 0 ? Number(run.stdout.trim()) : null;
     }
-    const values = runRows(rows, process.cwd());
+    const values = runRows(regular, process.cwd());
+    if (ingest) {
+      const sample = { ...ingest, command: 'bun ratchet/r1.ts --ingest-sample' };
+      const paired = pairedSamples(side => runRows([sample], side === 'base' ? scratch : process.cwd())[sample.id]);
+      baseline[ingest.id] = paired.baseline;
+      values[ingest.id] = paired.value;
+      console.error(JSON.stringify({ ingest_interleaved: paired.samples }));
+    }
     let ok = true;
     const lines = ['| row | metric | main | this PR | budget | delta | status |', '|---|---|---|---|---|---|---|'];
     for (const row of rows.filter(r => r.runner === 'ci')) {
       const hasBase = baseRows.length > 0;
       const before = baseline[row.id];
-      const pass = (!hasBase || before !== null && before !== undefined && before !== false)
-        && evaluate(row, values[row.id], hasBase ? before : undefined);
+      const present = row.direction === 'pass' ? typeof values[row.id] === 'boolean' && (!hasBase || before === true)
+        : Number.isFinite(values[row.id]) && (!hasBase || Number.isFinite(before));
+      const pass = present && (row.reportOnly === true || evaluate(row, values[row.id], hasBase ? before : undefined));
       ok &&= pass;
       const limit = budget(row, hasBase ? before : undefined);
       const delta = Number.isFinite(values[row.id]) && Number.isFinite(before) ? values[row.id] - before : 'n/a';
       const excess = row.direction === 'min' ? limit - values[row.id] : values[row.id] - limit;
       if (!pass) console.error(`${row.id}: ${Number.isFinite(excess) && Number.isFinite(values[row.id]) ? `+${Number(excess.toFixed(3))} ${row.unit ?? 'units'} ${row.direction === 'min' ? 'below floor' : 'over budget'}` : 'missing measurement'}`);
-      lines.push(`| ${[row.id, row.metric, hasBase ? before : 'bootstrap', values[row.id], limit, typeof delta === 'number' ? `${delta >= 0 ? '+' : ''}${Number(delta.toFixed(3))}` : delta, pass ? 'PASS' : 'FAIL'].map(cell).join(' | ')} |`);
+      lines.push(`| ${[row.id, row.metric, hasBase ? before : 'bootstrap', values[row.id], limit, typeof delta === 'number' ? `${delta >= 0 ? '+' : ''}${Number(delta.toFixed(3))}` : delta, !pass ? 'FAIL' : row.reportOnly === true ? 'REPORT ONLY' : 'PASS'].map(cell).join(' | ')} |`);
     }
     for (const row of rows.filter(r => r.runner === 'm1')) lines.push(`| ${[row.id, row.metric, 'pending deploy', 'pending deploy', row.ceiling, 'n/a', 'REPORT ONLY'].map(cell).join(' | ')} |`);
     if (!rows.some(r => r.runner === 'ci')) throw Error('no CI rows');
