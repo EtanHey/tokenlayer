@@ -13,7 +13,10 @@ Uses usage-refresher PR #9's snapshot shape: `generated_at`, `stale`,
 Candidates are not disabled and not explicitly `enabled:false`; `active` does not
 exclude an account. Rejected or unknown accounts (including either window status),
 and exhausted weekly or five-hour windows have no headroom and are excluded.
-A partial or fully null window is unknown for that account only; healthy siblings still decide.
+A null used percentage is unknown for that account only; healthy siblings still decide.
+A known five-hour percentage always applies its utilization brake even without a reset.
+A missing reset yields null elapsed time and score, warns, and applies at least brake60
+to workers. Unknown pacing cannot relax a utilization brake; lead caps still follow usage.
 A producer-marked `{used_pct:0,resets_at:null,rolled_over:true}` window has 0% usage
 and no pacing warning. It restores headroom after an idle reset without inventing a reset time.
 A weekly rejection overrides five-hour headroom. Admission uses only accounts
@@ -58,3 +61,7 @@ abstraction; per-role caps, budget accounting and collection remain caller oblig
 The CLI only checks: callers must serialize the check plus their own reservation as
 modeled. The implementation enumeration expands all three worker kinds.
 The jar and TLC state files stay outside tracked source.
+
+Run `python3 scripts/check-admit-blind-mutation.py` to reproduce the independent
+raw-field safety check: the unknown-as-headroom mutation passes the old oracle
+and violates `NoBlindAdmit`. Logs stay in `docs.local/admit-blind-mutation/`.

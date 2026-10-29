@@ -37,7 +37,7 @@ export function timestamp(value: unknown): number {
   if (!Number.isFinite(parsed) || parsed !== wall - offset) throw Error('invalid timestamp');
   return parsed;
 }
-function windowReading(value: unknown, resetRequired: boolean) {
+function windowReading(value: unknown) {
   const window = record(value);
   if (window.rolled_over === true) {
     if (window.used_pct !== 0 || window.resets_at !== null) throw Error('invalid rollover');
@@ -45,7 +45,7 @@ function windowReading(value: unknown, resetRequired: boolean) {
   }
   const used = window.used_pct === null ? null : percent(window.used_pct);
   const reset = window.resets_at == null ? undefined : timestamp(window.resets_at);
-  if (used === null || window.resets_at === null || (resetRequired && reset === undefined)) return null;
+  if (used === null) return null;
   return { used, reset, rolledOver: false };
 }
 export function evaluate(input: unknown, options: Options) {
@@ -62,21 +62,21 @@ export function evaluate(input: unknown, options: Options) {
     const five = record(a.five_hour), weekly = record(a.weekly);
     if ([five.status, weekly.status].some(status => status === 'unknown' || status === 'rejected')) return null;
     if (a.status !== 'allowed' || (five.status !== undefined && five.status !== 'allowed') || (weekly.status !== undefined && weekly.status !== 'allowed')) throw Error('unhealthy serving account');
-    const fiveReading = windowReading(five, true), weeklyReading = windowReading(weekly, false);
+    const fiveReading = windowReading(five), weeklyReading = windowReading(weekly);
     if (!fiveReading || !weeklyReading) return null;
     const used = fiveReading.used;
     if (weeklyReading.used >= 100 || used >= 100) return null;
-    const remaining = fiveReading.rolledOver ? 0 : (fiveReading.reset! - options.now) / 60000;
+    const remaining = fiveReading.rolledOver || fiveReading.reset === undefined ? 0 : (fiveReading.reset - options.now) / 60000;
     if (remaining < 0 || remaining >= 300) throw Error('invalid reset window');
-    const elapsed_min = fiveReading.rolledOver ? null : 300 - remaining;
-    const score = elapsed_min === null ? 0 : used * 300 / elapsed_min;
-    const warn = score > 80;
+    const elapsed_min = fiveReading.rolledOver || fiveReading.reset === undefined ? null : 300 - remaining;
+    const score = fiveReading.rolledOver ? 0 : elapsed_min === null ? null : used * 300 / elapsed_min;
+    const warn = score === null || score > 80;
     const level: Level = used >= 80 ? 'brake80' : used >= 60 || (warn && options.kind !== 'lead') ? 'brake60' : 'green';
     return { label: redactText(a.label.length === 15 && /^claude-[0-9a-f]{8}$/.test(a.label) ? a.label : REDACTED), level, pacing: { used, elapsed_min, score, warn } };
   }).filter(a => a !== null);
   if (!accounts.length) return deny('no accounts with headroom');
   const rank = { green:0, brake60:1, brake80:2, 'no-headroom':3 };
-  accounts.sort((a,b) => rank[b.level]-rank[a.level] || b.pacing.score-a.pacing.score);
+  accounts.sort((a,b) => rank[b.level]-rank[a.level] || (b.pacing.score ?? Infinity)-(a.pacing.score ?? Infinity));
   const worst = accounts[0];
   if (!worst) return deny('no accounts with headroom');
   const admit = predicate(worst.level, options);

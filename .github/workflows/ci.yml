@@ -46,6 +46,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
+      - name: Independent admission safety mutation
+        run: python3 scripts/check-admit-blind-mutation.py
       - name: Ratchet (main versus this PR)
         if: always() && steps.tools.outcome == 'success'
         env:

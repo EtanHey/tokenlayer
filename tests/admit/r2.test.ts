@@ -9,11 +9,11 @@ import weekly from '../fixtures/admit/producer-weekly.json';
 const now = '2026-03-02T12:00:00.000Z';
 const account = () => ({ label:'claude-a1b2c3d4', disabled:false, status:'allowed', five_hour:{used_pct:20,resets_at:now}, weekly:{used_pct:20} });
 const snapshot = () => ({ generated_at:now, stale:false, accounts:[account()] });
-function cli(data: unknown, time = now, kind = 'claude.judgment') {
+function cli(data: unknown, time = now, kind = 'claude.judgment', activeLeads = 0) {
   const dir = mkdtempSync(join(tmpdir(),'admit-r2-'));
   try {
     const file = join(dir,'usage.json'); writeFileSync(file,JSON.stringify(data));
-    const p = Bun.spawnSync([process.execPath,'src/admit/main.ts','--file',file,'--now',time,'--kind',kind,...(kind === 'lead' ? ['--active-leads','0'] : [])]);
+    const p = Bun.spawnSync([process.execPath,'src/admit/main.ts','--file',file,'--now',time,'--kind',kind,...(kind === 'lead' ? ['--active-leads',String(activeLeads)] : [])]);
     expect(p.stderr.toString()).toBe('');
     return { exit:p.exitCode, result:JSON.parse(p.stdout.toString()) };
   } finally { rmSync(dir,{recursive:true}); }
@@ -76,7 +76,7 @@ test('expired but rejected signals never manufacture headroom', () => {
   expect(cli(data)).toMatchObject({exit:1,result:{admit:false}});
 });
 for (const field of ['five_hour','weekly']) for (const reading of [null,
-  {used_pct:null,resets_at:now}, {used_pct:20,resets_at:null}, {used_pct:null,resets_at:null}])
+  {used_pct:null,resets_at:now}, {used_pct:null,resets_at:null}])
 test(`partial null ${field} is per-account unknown: ${JSON.stringify(reading)}`, () => {
   const unknown = {...account(),[field]:reading};
   expect(cli({...snapshot(),accounts:[unknown,account()]})).toMatchObject({exit:0,result:{admit:true}});
@@ -104,4 +104,34 @@ test('both windows can roll over at the boundary; unknown is never inferred as r
   const unknown = usageSnapshot({files:[{id:'unknown',provider:'claude',account_type:'oauth'}]},ms);
   expect(unknown.accounts[0]!.five_hour).toEqual({used_pct:null,resets_at:null});
   expect(cli(unknown)).toMatchObject({exit:1,result:{admit:false}});
+});
+
+for (const used of [60, 95])
+for (const kind of ['lead','claude.judgment','claude.subagent.cheap','claude.subagent.mechanical'])
+for (const source of ['fixture', 'producer'])
+test(`known ${used}% without reset brakes ${kind} via ${source}`, () => {
+  const ms = Date.parse(now);
+  const data = source === 'producer' ? usageSnapshot({files:[used,10].map((pct,i) => ({
+    id:`partial-${i}`,provider:'claude',account_type:'oauth',status:'active',quota:{signals:{
+      'anthropic-ratelimit-unified-5h-utilization':String(pct/100),
+      ...(i === 1 ? {'anthropic-ratelimit-unified-5h-reset':String((ms+7200000)/1000)} : {}),
+      'anthropic-ratelimit-unified-7d-utilization':'0.20',
+      'anthropic-ratelimit-unified-7d-reset':String((ms+86400000)/1000),
+    }},
+  }))},ms) : {...snapshot(),accounts:[
+    {...account(),five_hour:{used_pct:used,resets_at:null}},
+    {...account(),five_hour:{used_pct:10,resets_at:new Date(ms+7200000).toISOString()}},
+  ]};
+  expect(cli(data,now,kind,4)).toMatchObject({exit:1,result:{admit:false,
+    level:used >= 80 ? 'brake80' : 'brake60',pacing:{used,score:null,elapsed_min:null,warn:true}}});
+});
+
+test('unknown pacing preserves utilization caps and permits an essential brake80 lead', () => {
+  for (const used of [20,60,95]) {
+    const data = {...snapshot(),accounts:[{...account(),five_hour:{used_pct:used,resets_at:null}}]};
+    const options = {kind:'lead' as const,activeLeads:0,essential:true,now:Date.parse(now)};
+    expect(evaluate(data,options)).toMatchObject({admit:true,level:used >= 80 ? 'brake80' : used >= 60 ? 'brake60' : 'green'});
+    expect(evaluate(data,{...options,essential:false}).admit).toBe(used < 80);
+    expect(evaluate(data,{...options,kind:'claude.judgment'})).toMatchObject({admit:false,level:used >= 80 ? 'brake80' : 'brake60'});
+  }
 });

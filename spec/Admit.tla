@@ -6,6 +6,15 @@ vars == <<accounts, fresh, paced, pending, leads, ordinary, workers>>
 Accounts == {1, 2}
 Dispatchers == {1, 2}
 Readings == {"zero", "warm", "brake60", "brake80", "exhausted", "unknown", "rejected", "rolled"}
+(* Raw observations for the independent safety oracle. Never call Usage/Headroom here. *)
+Raw(a) == [status |-> IF accounts[a] = "rejected" THEN "rejected"
+                     ELSE IF accounts[a] = "unknown" THEN "unknown" ELSE "allowed",
+           used_pct |-> CASE accounts[a] \in {"zero", "rolled"} -> 0
+                        [] accounts[a] = "warm" -> 59
+                        [] accounts[a] = "brake60" -> 60
+                        [] accounts[a] = "brake80" -> 80
+                        [] OTHER -> 100,
+           rolled_over |-> accounts[a] = "rolled"]
 Usage(a) == CASE accounts[a] \in {"zero", "rolled"} -> 0
                  [] accounts[a] = "warm" -> 59
                  [] accounts[a] = "brake60" -> 60
@@ -52,6 +61,10 @@ Spec == Init /\ [][Next]_vars
 TypeOK == /\ leads \in Nat /\ ordinary \in 0..leads /\ workers \in 0..1
           /\ pending \in [Dispatchers -> {"idle", "lead", "essential", "worker"}]
 HeadroomOnly == (~fresh \/ Headroom = {}) => leads + workers = 0
+NoBlindAdmit ==
+  (~fresh \/ ~\E a \in Accounts :
+    Raw(a).status = "allowed" /\
+    (Raw(a).rolled_over \/ Raw(a).used_pct < 100)) => leads + workers = 0
 CanonLeads == leads <= greenCap
 Lead60 == Hot(60) => leads <= brake60Cap
 Lead80 == Hot(80) => leads <= brake80Cap /\ ordinary = 0
