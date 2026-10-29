@@ -87,7 +87,7 @@ test('deterministic query policy is tight; CI timing is report-only and M1 twins
   expect(evaluate(ingest, 8000, 10000)).toBe(true); // a 20% drop alone does not trip the 25% band
 });
 
-import { clickhouseBinary, startLocalClickHouse } from '../tests/support/local-clickhouse';
+import { clickhouseBinary, startLocalClickHouse } from '../src/lib/local-clickhouse';
 import { queryMetrics } from './r1';
 (clickhouseBinary() ? test : test.skip)('full-scan rewrite fails the declared sessions-between read_rows gate', async () => {
   const local = await startLocalClickHouse({ queryLog: true });

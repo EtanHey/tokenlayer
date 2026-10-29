@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { parseRows, evaluate } from './table.mjs';
 import { checkRows } from './guard.mjs';
-import { startLocalClickHouse, clickhouseBinary } from '../tests/support/local-clickhouse';
+import { startLocalClickHouse, clickhouseBinary } from '../src/lib/local-clickhouse';
 import { queryMetrics } from './r1';
 import { pairedSamples } from './paired.mjs';
 
