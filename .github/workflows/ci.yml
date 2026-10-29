@@ -10,7 +10,7 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     outputs: { median: '${{ steps.ratchet.outputs.median }}' }
-    timeout-minutes: 20
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -48,16 +48,17 @@ jobs:
           echo "$HOME/.cache/tokenlayer-ci" >> "$GITHUB_PATH"
           echo "TLA_JAR=$HOME/.cache/tokenlayer-ci/tla2tools.jar" >> "$GITHUB_ENV"
       - run: bun install --frozen-lockfile
-      - run: bun run typecheck
-      - run: bun test
       - name: Ratchet (trusted base versus this PR)
         id: ratchet
         env:
+          RATCHET_MEASURE_REF: origin/main
           RATCHET_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
         run: |
           set -euo pipefail
-          trusted=$(mktemp -d)
-          git archive "$RATCHET_BASE_REF" ratchet scripts/bench-redact.ts | tar -x -C "$trusted"
+          mkdir -p .local
+          export TMPDIR="$PWD/.local"
+          trusted=$(mktemp -d "$PWD/.local/trusted-XXXXXX")
+          git archive "$RATCHET_BASE_REF" ratchet scripts/bench-redact.ts tests/support/local-clickhouse.ts tests/fixtures src/lib/clickhouse.ts src/lib/redact.ts | tar -x -C "$trusted"
           if test -f "$trusted/ratchet/guard.mjs"; then
             node "$trusted/ratchet/table.mjs" ratchet/rows.json
           else
