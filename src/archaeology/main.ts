@@ -1,10 +1,9 @@
 import { mkdirSync, writeFileSync, readFileSync, lstatSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { classify, repoMap, manifest, dryRun, sha256, parseEvidenceLine, type Inventory, type Evidence, type ExistingCount } from "./pipeline";
+import { classify, repoMap, manifest, dryRun, parseEvidenceLine, type Inventory, type Evidence, type ExistingCount } from "./pipeline";
 import { localSources } from "./sources";
-import { startLocalClickHouse } from "../lib/local-clickhouse";
-import { applySchema } from "../lib/schema";
+import { validatedDryRun } from "./validation";
 
 export function readTSV(path: string): Record<string, string>[] {
   const [header, ...lines] = readFileSync(path, "utf8").replace(/\r?\n$/, "").split(/\r?\n/);
@@ -39,25 +38,16 @@ if (import.meta.main) {
   }) : [];
   const maps = repoMap(rows.filter(r => classify(r).session), evidence), entries = manifest(rows, maps);
   let processed = 0;
-  const sources = localSources(entries), report = await dryRun(entries, { ...sources, existing, database: join(out, "dedupe.sqlite"), onEntry: () => { if (++processed % 1000 === 0) process.stderr.write(`verified progress ${processed}/${entries.length}\n`); } });
-  let validated = 0;
-  if (values.validate) {
-    const local = await startLocalClickHouse();
-    try {
-      await applySchema(local.client);
-      await local.client.insert("session_events", report.sample);
-      const stored = await local.client.queryJSON<{ raw: string; content_hash: string }>("SELECT raw,content_hash FROM tokenlayer.session_events FINAL");
-      if (stored.length !== report.sample.length || stored.some(r => sha256(Buffer.from(r.raw)) !== r.content_hash || !report.sample.some(s => s.raw === r.raw && s.content_hash === r.content_hash))) throw new Error("ClickHouse sample mismatch");
-      validated = stored.length;
-    } finally { await local.stop(); }
-  }
+  const sources = localSources(entries);
+  const options = {...sources,existing,database:join(out,"dedupe.sqlite"),onEntry:()=>{if(++processed%1000===0)process.stderr.write(`verified progress ${processed}/${entries.length}\n`);}};
+  const {report,validated,baseline} = values.validate ? await validatedDryRun(entries,options) : {report:await dryRun(entries,options),validated:0,baseline:null};
   const output = (name: string, value: string) => writeFileSync(join(out, name), value);
   output("repo_map.ndjson", maps.map(m => JSON.stringify(m)).join("\n") + "\n"); output("repo_map.ddl.sql", ddl);
   output("unresolved-cwds.ndjson", maps.filter(m => !m.repo_canonical).map(m => JSON.stringify(m)).join("\n") + "\n");
   const keys = Object.keys(entries[0] ?? {});
   output("manifest.tsv", [keys.join("\t"), ...entries.map(e => keys.map(k => String(Reflect.get(e, k)).replace(/[\t\r\n]/g, " ")).join("\t"))].join("\n") + "\n");
   const { sample, ...counts } = report;
-  output("dry-run.json", JSON.stringify({ at: new Date().toISOString(), ...counts, validated, source_errors: sources.errors }, null, 2) + "\n");
+  output("dry-run.json", JSON.stringify({ at: new Date().toISOString(), ...counts, validated, validation_baseline:baseline, source_errors: sources.errors }, null, 2) + "\n");
   const rejected = new Set(entries.filter(e => e.status === "not_transcript").map(e => JSON.stringify([e.machine,e.container,e.member_path])));
   output("classification.tsv", "session\treason\tmachine\tcontainer\tmember_path\n" + rows.map(r => { const c = rejected.has(JSON.stringify([r.machine,r.container,r.member_path])) ? {session:false,reason:"verified content lacks matching transcript identity"} : classify(r); return [c.session, c.reason, r.machine, r.container, r.member_path].join("\t"); }).join("\n") + "\n");
   process.stdout.write(JSON.stringify({ sessions: new Set(entries.map(e => e.session_id)).size, copies: entries.length, import_rows: report.import_rows, validated }) + "\n");

@@ -12,6 +12,6 @@ The library accepts replayable streams. The local adapter reads files twice and 
 
 Verified content must prove the declared session: Claude identity records match (untagged state markers inherit it), or a subagent is under that parent session; Codex starts with matching session_meta.payload.id. Rejected copies are not_transcript.
 Only LF-terminated lines count. Trailing incomplete bytes are reported. Invalid UTF-8 and changed/unreadable sources fail closed and remain explicit in the manifest. Raw retains all source whitespace and LF; hashes cover those exact bytes.
-The SQLite scratch index contains session/stream ids, hashes and occurrence maxima. A stream is a session plus its subagent file id (main transcripts use `::main`). Reports never contain raw lines. `--validate` inserts at most 100 sample rows into a random-port throwaway local ClickHouse and tears it down; no shared endpoint is accepted. There is no apply mode.
+The SQLite scratch index contains session/stream ids, hashes and occurrence maxima. A stream is a session plus its subagent file id (main transcripts use `::main`). Reports never contain raw lines. `--validate` pre-seeds a throwaway local ClickHouse baseline, measures unchanged counts across dryRun, and checks at most 100 rows in a separate schema-identical sample table before teardown; no shared endpoint is accepted. There is no apply mode.
 
 Focused verification: `bun test tests/archaeology`. Full verification: `bun run typecheck && bun test`.
