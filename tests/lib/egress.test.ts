@@ -103,3 +103,20 @@ test('exact stripping precedes patterns, handles overlap and preserves case', as
   expect(await new Response(proc.stdout).text()).toBe('[redacted] | QUIET MEADOW | public count 123\n');
   expect(await proc.exited).toBe(0);
 });
+
+test('stack review: every program prefix and non-secret TOKENLAYER setting survives', async () => {
+  const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? files(join(dir, e.name)) : [join(dir, e.name)]);
+  const names = [...new Set(files(join(root, 'src')).flatMap(f => [...readFileSync(f, 'utf8').matchAll(/TOKENLAYER_[A-Z_]+/g)].map(m => m[0])))];
+  const settings = Object.fromEntries(names.map((name, i) => [name, ['m1', '5', 'e', '/synthetic/path', 'http://localhost:8317'][i % 5]]));
+  const lines = ['ship', 'drain', 'steer', 'usage', 'admit', 'schema'].map(p => `tokenlayer-${p}: files=5 machine=m1 errors=0`);
+  const input = [...lines, ...Object.entries(settings).map(([k, v]) => `${k}=${v}`)].join('\n');
+  const proc = Bun.spawn([process.execPath, '-e', `import { registerSecrets, sanitizeOutput } from './src/lib/egress'; registerSecrets(${JSON.stringify(settings)}); process.stdout.write(sanitizeOutput(${JSON.stringify(input)}));`], { cwd: root, env: { PATH: process.env.PATH }, stdout: 'pipe' });
+  expect(await new Response(proc.stdout).text()).toBe(input);
+  expect(await proc.exited).toBe(0);
+});
+
+for (const kind of ['lead', 'claude.judgment', 'claude.subagent.cheap', 'claude.subagent.mechanical']) test(`stack review: admit ${kind} retains byte-exact JSON under short settings`, async () => {
+  const result = await run('admit', { TOKENLAYER_MACHINE: 'm1', TOKENLAYER_SHIP_RATE_MB: 'e', TOKENLAYER_HUB: '5' }, undefined, ['--kind', kind, '--active-leads', '0', '--file', '/dev/null']);
+  expect(result.out).toBe('{"admit":false,"reason":"invalid arguments or unavailable healthy telemetry","level":"no-headroom","pacing":{"used":null,"elapsed_min":null,"score":null,"warn":false},"accounts":[]}\n');
+  expect(JSON.parse(result.out).admit).toBe(false);
+});

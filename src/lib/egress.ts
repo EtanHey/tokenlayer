@@ -5,7 +5,7 @@ const secretForms = new Set<string>();
 let exactPattern: RegExp | undefined;
 export function registerSecrets(env: Record<string, string | undefined>): void {
   for (const [name, value] of Object.entries(env)) {
-    if (!/password|secret|token|key|auth/i.test(name) || !value) continue;
+    if (!/(^|_)(password|secret|token|key|auth)(_|$)/i.test(name) || !value) continue;
     const encoded = encodeURIComponent(value);
     for (const form of [value, encoded, encoded.replace(/%[0-9A-F]{2}/g, v => v.toLowerCase()),
       new URLSearchParams({ v: value }).toString().slice(2),

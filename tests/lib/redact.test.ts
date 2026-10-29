@@ -12,6 +12,29 @@ const EMAIL = "alice.fake@example.invalid";
 const PASSWORD = "hunter2-fake-pw";
 const SENTINELS = [KEY, OAUTH, REFRESH, GOOGLE, BEARER, JWT, EMAIL, PASSWORD];
 
+test('stack review: key families and JWTs after JSON escapes at every echo depth', () => {
+  for (const key of [KEY, 'ghp_SYNTHETICfake01234567890123456789', JWT, REFRESH]) {
+    for (const prefix of ['\\n', '\\t', '\\r', '\\b', '\\f', '\\u003e', '>']) {
+      let input = `{"text":"here:${prefix}${key}"}`;
+      for (let depth = 0; depth < 4; depth++, input = JSON.stringify(input)) {
+        const out = redactText(input);
+        expect(out).not.toContain(key);
+        expect(out).toContain(REDACTED);
+        expect(() => JSON.parse(out)).not.toThrow();
+      }
+    }
+  }
+});
+
+test('sensitive names match complete segments, never identifier substrings', () => {
+  const controls = { tokenlayer: 'm1', TOKENLAYER_HOST: '5', monkey: 'e', keyboard: 'public' };
+  expect(redactDeep(controls)).toEqual(controls);
+  expect(redactText(JSON.stringify(controls))).toBe(JSON.stringify(controls));
+  for (const key of ['token', 'access_token', 'X-Auth-Token', 'accessToken', 'APIKey']) {
+    expect(redactDeep({ [key]: 'opaque' })).toEqual({ [key]: REDACTED });
+  }
+});
+
 const authFile = {
   type: "claude",
   email: EMAIL,
