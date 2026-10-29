@@ -135,3 +135,9 @@ test("S-3 dated machine evidence splits reused directories and current mappings 
   expect(entries.find(e=>e.member_path==="old.jsonl")?.repo).toBe("Owner/old");
   expect(entries.find(e=>e.member_path==="new.jsonl")?.repo).toBe("Owner/current");
 });
+
+test("MF-3 a generic session_id field cannot impersonate Claude sessionId", async () => {
+  const bytes=Buffer.from('{"session_id":"session","type":"anti-pattern","title":"fixture"}\n');
+  const result=await dryRun(manifest([row({member_path:"notes.jsonl",bytes:String(bytes.length),sha256:sha256(bytes)})],[]),{read:async()=>(async function*(){yield bytes;})()});
+  expect(result.import_rows).toBe(0);expect(result.not_transcript).toBe(1);
+});

@@ -71,9 +71,10 @@ export function streamId(session: string, path: string): string {
   const agent = subagentFileId(path);
   return `${session}::${agent ? `subagent/${agent}` : "main"}`;
 }
-function codexHeaderMatches(raw: string, session: string): boolean {
+function identityMatches(raw: string, session: string, kind: "claude" | "codex"): boolean {
   try {
     const o: unknown = JSON.parse(raw);
+    if (kind === "claude") return !!o && typeof o === "object" && "sessionId" in o && o.sessionId === session;
     return !!o && typeof o === "object" && "type" in o && o.type === "session_meta" && "payload" in o
       && !!o.payload && typeof o.payload === "object" && "id" in o.payload && o.payload.id === session;
   } catch { return false; }
@@ -160,7 +161,8 @@ export async function dryRun(entries: Entry[], options: {
       if (!again) throw new Error("source disappeared between verification and reading");
       const st = newFileState(e.harness === "codex" || /rollout-/.test(e.member_path) ? "codex" : "claude", e.harness === "t3" ? "t3" : e.harness === "codex" ? "codex" : "claude", Date.parse(e.first_ts) || 0);
       st.cwd = e.cwd;
-      let identitySeen = false, identityConflict = false, firstLine = true, codexHeader = false;
+      const subagent = !!subagentFileId(e.member_path) && (`/${e.member_path}`).includes(`/${e.session_id}/subagents/`);
+      let identitySeen = st.kind === "claude" && subagent, identityConflict = false, firstLine = true, codexHeader = false;
       let offset = 0, carry = Buffer.alloc(0), rows = 0, bytes = 0, skipLive = 0, skipCopy = 0, liveRows = 0;
       const counts = new Map<string, number>();
       const sample: Event[] = [], secondHash = createHash("sha256");
@@ -174,9 +176,9 @@ export async function dryRun(entries: Entry[], options: {
             const raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(line);
             const text = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
             st.harness = detectHarness(st.kind, [text]) ?? st.harness; e.harness = st.harness;
-            if (firstLine) codexHeader = codexHeaderMatches(text, e.session_id); firstLine = false;
+            if (firstLine && st.kind === "codex") codexHeader = identityMatches(text, e.session_id, "codex"); firstLine = false;
             const parsed = parseLine(text, st);
-            identitySeen ||= st.sessionId === e.session_id;
+            if (st.kind === "claude") identitySeen ||= st.sessionId === e.session_id && identityMatches(text, e.session_id, "claude");
             identityConflict ||= !!st.sessionId && st.sessionId !== e.session_id;
             const existing = find.get(e.session_id, e.stream, hash);
             const occurrence = (counts.get(hash) ?? 0) + 1; counts.set(hash, occurrence);
@@ -195,7 +197,6 @@ export async function dryRun(entries: Entry[], options: {
         }
         if (secondHash.digest("hex") !== fullHash) throw new Error("source changed during second read");
         // Untagged state markers inherit a proven Claude identity. Subagents may prove it by their parent directory.
-        const subagent = !!subagentFileId(e.member_path) && (`/${e.member_path}`).includes(`/${e.session_id}/subagents/`);
         if (identityConflict || !(st.kind === "codex" ? codexHeader : identitySeen || subagent)) {
           db.exec("ROLLBACK"); e.status = "not_transcript"; e.relation = "not_transcript"; e.selected = false;
           report.not_transcript++; options.onEntry?.(e); continue;
