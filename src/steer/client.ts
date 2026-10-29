@@ -1,0 +1,61 @@
+import { redactText, REDACTED } from "../lib/redact";
+import type { SteerHub } from "./steer";
+import type { Credential } from "./types";
+
+export const BACKOFF_CAP_MS = 300_000;
+
+export class HubError extends Error {
+  constructor(message: string, readonly retryAfterMs: number) { super(message); }
+}
+
+function retryAfter(value: string | null): number {
+  if (!value) return 0;
+  const ms = /^\d+(?:\.\d+)?$/.test(value) ? Number(value) * 1000 : Date.parse(value) - Date.now();
+  return Number.isFinite(ms) ? Math.min(BACKOFF_CAP_MS, Math.max(0, ms)) : 0;
+}
+
+/** CLIProxyAPI v8 management API (internal/api/server_management_v8.go). */
+export class HubClient implements SteerHub {
+  private readonly base: string;
+
+  constructor(
+    baseUrl: string,
+    private readonly mgmtKey: string,
+    private readonly timeoutMs = 15_000,
+  ) {
+    this.base = `${baseUrl.replace(/\/+$/, "")}/v8/management`;
+  }
+
+  async list(): Promise<Credential[]> {
+    const body = (await this.request("GET", "/credentials")) as { files?: Credential[] };
+    return body.files ?? [];
+  }
+
+  /** Persists `priority` into the credential's auth JSON (PatchAuthFileFields → Manager.Modify → persist). */
+  async setPriority(id: string, priority: number): Promise<void> {
+    await this.request("PATCH", "/credentials/fields", { name: id, priority });
+  }
+
+  private async request(method: string, path: string, body?: unknown): Promise<unknown> {
+    const res = await fetch(`${this.base}${path}`, {
+      method,
+      headers: { Authorization: `Bearer ${this.mgmtKey}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      let detail = text;
+      try {
+        detail = (JSON.parse(text) as { error?: string }).error ?? text;
+      } catch {}
+      // Strip the exact configured key before any pattern matching or truncation.
+      const stripped = String(detail).split(this.mgmtKey).join(REDACTED);
+      const safe = redactText(stripped)
+        .replace(/\b(?:authorization|proxy-authorization)\s*[:=]\s*[^\r\n]*/gi, REDACTED)
+        .replace(/\bbearer\s+[^\s"',;]+/gi, REDACTED);
+      throw new HubError(`${method} ${path} -> ${res.status}: ${safe.slice(0, 200)}`, retryAfter(res.headers.get("retry-after")));
+    }
+    return text ? JSON.parse(text) : {};
+  }
+}
