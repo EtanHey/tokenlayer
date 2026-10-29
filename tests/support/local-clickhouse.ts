@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ClickHouse } from "../../src/lib/clickhouse";
 
@@ -11,7 +11,7 @@ export function clickhouseBinary(): string | null {
 export type LocalClickHouse = { client: ClickHouse; stop: () => Promise<void> };
 
 /** Start a throwaway `clickhouse server` on random ports under .local/ (gitignored). */
-export async function startLocalClickHouse(): Promise<LocalClickHouse> {
+export async function startLocalClickHouse(options: { queryLog?: boolean } = {}): Promise<LocalClickHouse> {
   const bin = clickhouseBinary();
   if (!bin) throw new Error("clickhouse binary not found");
   const root = join(import.meta.dir, "..", "..", ".local");
@@ -20,10 +20,17 @@ export async function startLocalClickHouse(): Promise<LocalClickHouse> {
   mkdirSync(join(dir, "data"), { recursive: true });
   const http = 20000 + Math.floor(Math.random() * 20000);
   const tcp = http + 1;
+  if (options.queryLog) writeFileSync(join(dir, 'config.xml'), `<clickhouse>
+    <profiles><default/></profiles>
+    <users><default><password/><networks><ip>127.0.0.1</ip></networks><profile>default</profile><quota>default</quota></default></users>
+    <quotas><default/></quotas>
+    <query_log><database>system</database><table>query_log</table><flush_interval_milliseconds>1000</flush_interval_milliseconds></query_log>
+  </clickhouse>`);
   const proc = Bun.spawn(
     [
       bin,
       "server",
+      ...(options.queryLog ? [`--config-file=${join(dir, 'config.xml')}`] : []),
       "--",
       `--http_port=${http}`,
       `--tcp_port=${tcp}`,
