@@ -5,7 +5,7 @@ Repeat `--inventory` for additional inventories. `--manifest /absolute/manifest.
 `--existing /absolute/pairs.tsv` seeds a read-only shipper export with columns `session_id`, `stream` (or source `path`), `content_hash`, and positive integer `count`. Coverage uses the maximum count per stream/hash; it never sums duplicate copies.
 
 Evidence NDJSON contains `cwd`, `repo` (`owner/name`), `evidence`, and `confidence` (`high`/`medium`). GitHub redirects and current remotes must be gathered read-only before running. Conflicting identities remain unresolved.
-`repo_map` intervals cover observed timestamps, with an exclusive upper bound; they do not prove a directory was never reused.
+`repo_map` preserves machine/from/to evidence and splits dated directory reuse. Bounds are half-open; null valid_to is open-ended for current mappings. Conflicting overlaps remain unresolved.
 
 The library accepts replayable streams. The local adapter reads files twice and streams tar containers sequentially, holding one member in memory (1 GiB guard), without extraction. Remote and dataless sources need fetching; T3 SQLite metadata needs transcript export.
 `manifest.selected` recommends the longest candidate; verified divergent copies also remain selected. Every accessible copy is compared and counted so prefix and duplicate skips are observable. Remote relationships remain unverified.

@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, statSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classify, origin, repoMap, manifest, dryRun, sha256, shipperCovers, streamId, type Inventory } from "../../src/archaeology/pipeline";
+import { classify, origin, repoMap, manifest, dryRun, sha256, shipperCovers, streamId, parseEvidenceLine, type Inventory } from "../../src/archaeology/pipeline";
 
 const row = (overrides: Partial<Inventory> = {}): Inventory => ({ machine: "M4", source_kind: "archive_dir", container: "", member_path: "/Users/etanheyman/.claude-archive/projects/old/s.jsonl", session_id: "session", harness: "claude", bytes: "1", lines: "1", first_ts: "2026-01-01T00:00:00Z", last_ts: "2026-01-01T00:00:00Z", cwd: "/Users/etanheyman/Desktop/Gits/old/.worktrees/lane", sha256: "", mtime: "", ...overrides });
 test("canonical longest copy, prefix skips, renamed repo and unchanged sources", async () => {
@@ -121,4 +121,17 @@ test("MF-3 findings and Cursor fixtures fail path and verified-content gates", a
   const result=await dryRun(entries,{read:async e=>(async function*(){yield data.get(e.member_path)!;})()});
   expect(result.import_rows).toBe(0);expect(result.not_transcript).toBe(3);
   expect(entries.every(e=>e.status==="not_transcript"&&!e.selected)).toBe(true);
+});
+
+
+test("S-3 dated machine evidence splits reused directories and current mappings remain open", () => {
+  const cwd="/workspace/reused";
+  const evidence=[parseEvidenceLine(JSON.stringify({machine:"m4",cwd,repo:"Owner/old",evidence:"old remote",confidence:"high",valid_from:"2025-01-01",valid_to:"2026-01-01"})),parseEvidenceLine(JSON.stringify({machine:"m4",cwd,repo:"Owner/current",evidence:"current remote",confidence:"high",valid_from:"2026-01-01",valid_to:null})),parseEvidenceLine(JSON.stringify({machine:"m1",cwd,repo:"Other/repo",evidence:"other machine",confidence:"high",valid_from:null,valid_to:null}))];
+  expect(evidence[1].machine).toBe("m4");expect(evidence[1].valid_to).toBe(null);
+  const rows=[row({cwd,first_ts:"2025-06-01",last_ts:"2025-06-01",member_path:"old.jsonl"}),row({cwd,first_ts:"2027-06-01",last_ts:"2027-06-01",member_path:"new.jsonl"})];
+  const maps=repoMap(rows,evidence),entries=manifest(rows,maps);
+  expect(maps.filter(m=>m.repo_canonical)).toHaveLength(2);
+  expect(maps.find(m=>m.repo_canonical==="Owner/current")?.valid_to).toBe(null);
+  expect(entries.find(e=>e.member_path==="old.jsonl")?.repo).toBe("Owner/old");
+  expect(entries.find(e=>e.member_path==="new.jsonl")?.repo).toBe("Owner/current");
 });

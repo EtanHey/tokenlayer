@@ -3,8 +3,8 @@ import { Database } from "bun:sqlite";
 import { newFileState, parseLine, detectHarness, type ParsedLine } from "../ship/parse";
 
 export type Inventory = Record<"machine" | "source_kind" | "container" | "member_path" | "session_id" | "harness" | "bytes" | "lines" | "first_ts" | "last_ts" | "cwd" | "sha256" | "mtime", string>;
-export type Evidence = { cwd: string; repo: string; evidence: string; confidence: "high" | "medium"; machine?: string; valid_from?: string; valid_to?: string };
-export type RepoMap = { machine: string; cwd: string; repo_canonical: string; valid_from: string; valid_to: string; evidence: string[]; confidence: string };
+export type Evidence = { cwd: string; repo: string; evidence: string; confidence: "high" | "medium"; machine?: string; valid_from?: string | null; valid_to?: string | null };
+export type RepoMap = { machine: string; cwd: string; repo_canonical: string; valid_from: string | null; valid_to: string | null; evidence: string[]; confidence: string };
 export type Entry = Inventory & { origin: string; repo: string; selected: boolean; relation: string; status: string; container_hash: string; stream: string };
 export type Event = ParsedLine & { machine: string; harness: string; path: string; generation: string; byte_offset: number; content_hash: string; line_bytes: number };
 type Chunks = AsyncIterable<Uint8Array>;
@@ -31,15 +31,34 @@ export function origin(r: Pick<Inventory, "machine" | "cwd" | "member_path">): s
   return /^(m1|m4)$/i.test(r.machine) ? r.machine.toLowerCase() : "unknown";
 }
 
+export function parseEvidenceLine(line: string): Evidence {
+  const e: unknown = JSON.parse(line);
+  if (!e || typeof e !== "object" || !("cwd" in e) || typeof e.cwd !== "string" || !("repo" in e) || typeof e.repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(e.repo) || !("evidence" in e) || typeof e.evidence !== "string" || !("confidence" in e) || (e.confidence !== "high" && e.confidence !== "medium")) throw Error("invalid repo evidence");
+  const result: Evidence = {cwd:e.cwd,repo:e.repo,evidence:e.evidence,confidence:e.confidence};
+  if ("machine" in e) { if (typeof e.machine !== "string") throw Error("invalid evidence machine"); result.machine=e.machine; }
+  for (const key of ["valid_from","valid_to"] as const) if (key in e) {
+    const v: unknown=Reflect.get(e,key); if (v!==null && (typeof v!=="string" || !Number.isFinite(Date.parse(v)))) throw Error("invalid evidence interval"); result[key]=v;
+  }
+  if (result.valid_from && result.valid_to && Date.parse(result.valid_from)>=Date.parse(result.valid_to)) throw Error("empty evidence interval");
+  return result;
+}
+
 export function repoMap(rows: Inventory[], evidence: Evidence[]): RepoMap[] {
   const groups = new Map<string, Inventory[]>();
   for (const r of rows) { const key = `${origin(r)}\0${r.cwd}`; const group = groups.get(key) ?? []; group.push(r); groups.set(key, group); }
-  return [...groups.values()].map(group => {
-    const r = group[0], machine = origin(r);
-    const matches = evidence.filter(e => e.cwd === r.cwd && (!e.machine || e.machine === machine));
-    const repos = new Set(matches.map(e => e.repo));
-    const times = group.flatMap(x => [x.first_ts, x.last_ts]).filter(x => Number.isFinite(Date.parse(x))).sort((a, b) => Date.parse(a) - Date.parse(b));
-    return { machine, cwd: r.cwd, repo_canonical: repos.size === 1 ? matches[0].repo : "", valid_from: times[0] ?? "", valid_to: times.length ? new Date(Date.parse(times.at(-1)!) + 1).toISOString() : "", evidence: matches.map(e => e.evidence), confidence: repos.size === 1 ? matches.every(e => e.confidence === "high") ? "high" : "medium" : "unresolved" };
+  const byCwd = new Map<string, Evidence[]>();
+  for (const e of evidence) { const list=byCwd.get(e.cwd)??[];list.push(e);byCwd.set(e.cwd,list); }
+  return [...groups.values()].flatMap(group => {
+    const r=group[0],machine=origin(r),matches=(byCwd.get(r.cwd)??[]).filter(e=>!e.machine||e.machine.toLowerCase()===machine);
+    const times=group.flatMap(x=>[x.first_ts,x.last_ts]).map(Date.parse).filter(Number.isFinite);
+    const observed=times.length?times.reduce((min,ts)=>Math.min(min,ts),Infinity):-Infinity;
+    const ranges=matches.map(e=>({e,from:e.valid_from===undefined?observed:e.valid_from===null?-Infinity:Date.parse(e.valid_from),to:e.valid_to?Date.parse(e.valid_to):Infinity}));
+    const start=ranges.reduce((min,r)=>Math.min(min,r.from),observed);
+    const cuts=[...new Set([start,Infinity,...ranges.flatMap(e=>[e.from,e.to])])].sort((a,b)=>a-b);
+    return cuts.slice(0,-1).filter((from,i)=>from<cuts[i+1]).map(from=>{
+      const to=cuts[cuts.indexOf(from)+1],active=ranges.filter(e=>e.from<=from&&e.to>=to).map(r=>r.e),repos=new Set(active.map(e=>e.repo));
+      return {machine,cwd:r.cwd,repo_canonical:repos.size===1?active[0].repo:"",valid_from:from===-Infinity?null:new Date(from).toISOString(),valid_to:to===Infinity?null:new Date(to).toISOString(),evidence:[...new Set(active.map(e=>e.evidence))],confidence:repos.size===1?active.every(e=>e.confidence==="high")?"high":"medium":"unresolved"};
+    });
   });
 }
 
@@ -71,11 +90,14 @@ export function shipperCovers(path: string, roots?: readonly string[]): boolean 
 }
 
 export function manifest(rows: Inventory[], maps: RepoMap[]): Entry[] {
-  const repos = new Map(maps.map(m => [`${m.machine}\0${m.cwd}`, m.repo_canonical]));
+  const repos = new Map<string, RepoMap[]>();
+  for (const m of maps) {const key=`${m.machine}\0${m.cwd}`,list=repos.get(key)??[];list.push(m);repos.set(key,list);}
   const copies = new Map<string, Entry>();
   for (const r of rows.filter(r => classify(r).session)) {
     const key = JSON.stringify([r.machine, r.source_kind, r.container, r.member_path, r.sha256]);
-    copies.set(key, { ...r, source_kind: r.source_kind === "live" && !shipperCovers(r.member_path) ? "archive_dir" : r.source_kind, origin: origin(r), repo: repos.get(`${origin(r)}\0${r.cwd}`) ?? "", selected: false, relation: "unverified", status: "pending", container_hash: "", stream: streamId(r.session_id, r.member_path) });
+    const ts=Date.parse(r.first_ts), matching=(repos.get(`${origin(r)}\0${r.cwd}`)??[]).filter(m=>(m.valid_from===null||ts>=Date.parse(m.valid_from))&&(m.valid_to===null||ts<Date.parse(m.valid_to)));
+    const names=new Set(matching.map(m=>m.repo_canonical));
+    copies.set(key, { ...r, source_kind: r.source_kind === "live" && !shipperCovers(r.member_path) ? "archive_dir" : r.source_kind, origin: origin(r), repo: names.size===1?matching[0].repo_canonical:"", selected: false, relation: "unverified", status: "pending", container_hash: "", stream: streamId(r.session_id, r.member_path) });
   }
   const entries = [...copies.values()].sort((a, b) => Number(b.bytes) - Number(a.bytes) || a.member_path.localeCompare(b.member_path));
   const largest = new Map<string, Entry>();

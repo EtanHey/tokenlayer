@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync, readFileSync, lstatSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { classify, repoMap, manifest, dryRun, sha256, type Inventory, type Evidence, type ExistingCount } from "./pipeline";
+import { classify, repoMap, manifest, dryRun, sha256, parseEvidenceLine, type Inventory, type Evidence, type ExistingCount } from "./pipeline";
 import { localSources } from "./sources";
 import { startLocalClickHouse } from "../../tests/support/local-clickhouse";
 import { applySchema } from "../lib/schema";
@@ -17,18 +17,14 @@ export function inventory(path: string): Inventory[] {
     return { machine: r.machine, source_kind: r.source_kind, container: r.container, member_path: r.member_path, session_id: r.session_id, harness: r.harness, bytes: r.bytes, lines: r.lines, first_ts: r.first_ts, last_ts: r.last_ts, cwd: r.cwd, sha256: r.sha256, mtime: r.mtime };
   });
 }
-const ddl = `-- PROPOSAL: tokenlayer owns final DDL. Intervals cover observed session timestamps only.\nCREATE TABLE tokenlayer.repo_map (machine LowCardinality(String), cwd String, repo_canonical String, valid_from Nullable(DateTime64(3,'UTC')), valid_to Nullable(DateTime64(3,'UTC')), evidence Array(String), confidence LowCardinality(String)) ENGINE=MergeTree ORDER BY (machine,cwd);\n`;
+const ddl = `-- PROPOSAL: tokenlayer owns final DDL. Intervals follow dated evidence; null bounds are open.\nCREATE TABLE tokenlayer.repo_map (machine LowCardinality(String), cwd String, repo_canonical String, valid_from Nullable(DateTime64(3,'UTC')), valid_to Nullable(DateTime64(3,'UTC')), evidence Array(String), confidence LowCardinality(String)) ENGINE=MergeTree ORDER BY (machine,cwd);\n`;
 
 if (import.meta.main) {
   const { values } = parseArgs({ options: { inventory: { type: "string", multiple: true }, manifest: { type: "string" }, existing: { type: "string" }, evidence: { type: "string" }, out: { type: "string" }, validate: { type: "boolean", default: false } } });
   if (!values.out || (!values.manifest && !values.inventory?.length)) throw new Error("usage: --inventory TSV [--inventory TSV] --evidence NDJSON --out DIR [--validate]");
   const inputPaths = values.manifest ? [values.manifest] : values.inventory ?? [];
   const rows = inputPaths.flatMap(inventory);
-  const evidence: Evidence[] = values.evidence ? readFileSync(values.evidence, "utf8").trim().split("\n").filter(Boolean).map(line => {
-    const e: unknown = JSON.parse(line);
-    if (!e || typeof e !== "object" || !("cwd" in e) || typeof e.cwd !== "string" || !("repo" in e) || typeof e.repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(e.repo) || !("evidence" in e) || typeof e.evidence !== "string" || !("confidence" in e) || (e.confidence !== "high" && e.confidence !== "medium")) throw new Error("invalid repo evidence");
-    return { cwd: e.cwd, repo: e.repo, evidence: e.evidence, confidence: e.confidence };
-  }) : [];
+  const evidence: Evidence[] = values.evidence ? readFileSync(values.evidence, "utf8").split("\n").filter(Boolean).map(parseEvidenceLine) : [];
   if (process.env.USER === "happycampr") throw new Error("Phase 4 dry-run is M4-only");
   const out = resolve(values.out);
   const targets = ["dedupe.sqlite", "dedupe.sqlite-wal", "dedupe.sqlite-shm", "repo_map.ndjson", "repo_map.ddl.sql", "unresolved-cwds.ndjson", "manifest.tsv", "dry-run.json", "classification.tsv"].map(p => join(out, p));
