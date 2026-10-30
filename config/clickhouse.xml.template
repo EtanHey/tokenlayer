@@ -1,8 +1,7 @@
 <clickhouse>
   <listen_host>127.0.0.1</listen_host>
   <http_port>8123</http_port><tcp_port>19000</tcp_port>
-  <mysql_port>0</mysql_port><postgresql_port>0</postgresql_port>
-  <interserver_http_port>0</interserver_http_port>
+  <storage_configuration><disks><default><keep_free_space_bytes>37580963840</keep_free_space_bytes></default></disks></storage_configuration>
   <path>__HOME__/Library/Application Support/tokenlayer/clickhouse/</path>
   <logger>
     <level>warning</level><console>0</console><size>10M</size><count>3</count>

@@ -1,9 +1,11 @@
 import { expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { configureClient, render, startServer } from '../../scripts/deploy/deploy';
 import { parseEnv } from '../../src/lib/env';
 import { ClickHouse } from '../../src/lib/clickhouse';
+import { checkSpace } from '../../scripts/deploy/backfill';
 import { applySchema } from '../../src/lib/schema';
 
 test('deploy config serves authenticated queries, refuses default, hides auth in preprocessed config', async () => {
@@ -30,12 +32,16 @@ test('deploy config serves authenticated queries, refuses default, hides auth in
     expect(ready).toBe(true);
     await applySchema(ch);
     expect(await ch.queryJSON('SELECT 42 AS n')).toEqual([{ n: 42 }]);
+    await expect(checkSpace(ch, Number.MAX_SAFE_INTEGER)).rejects.toThrow('35 GiB');
     await expect(new ClickHouse({ ...ch.config, user: 'default', password: '' }).exec('SELECT 1')).rejects.toThrow();
     await expect(new ClickHouse({ ...ch.config, password: 'wrong-synthetic' }).exec('SELECT 1')).rejects.toThrow();
     const processed = readFileSync(join(data, 'preprocessed_configs/clickhouse.xml'), 'utf8');
     expect(processed.includes(password)).toBe(false);
     expect(processed).not.toContain('<password_sha256_hex');
     expect(template).toContain('<listen_host>127.0.0.1</listen_host>');
-    for (const port of ['mysql', 'postgresql', 'interserver_http']) expect(template).toContain(`<${port}_port>0</${port}_port>`);
+    const listeners = spawnSync('lsof', ['-nP', '-a', '-p', String(proc.pid), '-iTCP', '-sTCP:LISTEN', '-Fn'], { encoding: 'utf8' });
+    expect(listeners.status).toBe(0);
+    expect(listeners.stdout.split('\n').filter(line => line.startsWith('n')).sort()).toEqual([`n127.0.0.1:${http}`, `n127.0.0.1:${tcp}`].sort());
+    expect(await ch.queryJSON('SELECT keep_free_space FROM system.disks WHERE name=\'default\'')).toEqual([{ keep_free_space: 35 * 1024 ** 3 }]);
   } finally { proc.kill('SIGKILL'); await proc.exited; }
 }, 40000);

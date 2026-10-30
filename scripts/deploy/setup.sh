@@ -4,6 +4,15 @@ set -euo pipefail
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 REPO=$(cd "$(dirname "$0")/../.." && pwd -P)
 BUN=$(command -v bun) || { echo 'bun missing from deploy PATH' >&2; exit 1; }
+required=(dirname)
+if [[ ${1:-} == hub ]]; then
+  required+=(uname mkdir curl shasum mv chmod openssl plutil launchctl tailscale)
+elif [[ ${1:-} == ship ]]; then
+  required+=(plutil launchctl)
+fi
+for binary in "${required[@]}"; do
+  command -v "$binary" >/dev/null || { echo "$binary missing from deploy PATH; no changes made" >&2; exit 1; }
+done
 # Never invoke git/xcrun. Pin the official single arm64 binary; verify on EVERY run.
 if [[ ${1:-} == hub ]]; then
   [[ $(uname -s) == Darwin && $(uname -m) == arm64 ]] || exit 1

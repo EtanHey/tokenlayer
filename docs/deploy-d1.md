@@ -25,9 +25,11 @@ and the existing mode-600 `~/.config/tokenlayer/hub.env` with `CLIPROXY_MGMT_KEY
    ```
 
    `hub` downloads/verifies the pinned official macOS arm64 binary (26.10.2.103, GitHub asset SHA256), generates a
-   256-bit password once with `openssl rand`, stops local ship/drain, renders/bootstrap/kickstarts ClickHouse,
+   256-bit password once with `openssl rand`, stops local ship/drain, renders and bootstraps ClickHouse once,
    waits for `/ping`, runs `bun run schema:apply`, then configures
-   `tailscale serve --bg --https=8123 http://127.0.0.1:8123`. No git, brew, sudo or xcrun is used.
+   `tailscale serve --bg --https=8123 http://127.0.0.1:8123`, then restores the ship/drain agents it stopped (also on failure).
+   Setup checks all required binaries on PATH before changing anything. Teardown waits up to 10 seconds; bootstrap
+   retries launchd error 5 five times with bounded backoff and never kickstarts a newly bootstrapped job. No git, brew, sudo or xcrun is used.
    This matches the hub's documented 127.0.0.1:8317 + Serve boundary; the repo has no captured live Serve mapping.
    Verify the pre-existing :8317 mapping remains unchanged. The setup never resets Serve or enables Funnel.
    Record `Self.DNSName` from status (trim its trailing dot); the M4 URL is `https://<DNSName>:8123`.
@@ -36,14 +38,13 @@ and the existing mode-600 `~/.config/tokenlayer/hub.env` with `CLIPROXY_MGMT_KEY
    do not overwrite an existing credential. For a first deployment:
 
    ```sh
-   umask 077
-   mkdir -p ~/.config/tokenlayer
-   ( set -o noclobber; ssh m1 cat .config/tokenlayer/clickhouse.env > ~/.config/tokenlayer/clickhouse.env )
-   chmod 600 ~/.config/tokenlayer/clickhouse.env
+   bash scripts/deploy/copy-password.sh m1
    ```
 
-   A failed transfer can leave an incomplete file: keep it and investigate before proceeding. The script refuses
-   invalid credentials, symlinks, foreign ownership or a mode other than 600. Never paste or echo the password.
+   The helper uses umask 077, writes to a same-directory temporary file, requires a successful nonempty transfer,
+   then moves it atomically without overwriting an existing credential. Failure leaves no empty final file.
+   Setup forces the owned config directory to 0700 and env files to 0600, including existing files;
+   symlinks and foreign ownership are refused. Never paste or echo the password.
 
 4. On each Mac, from its durable checkout, install sidecars and backfill:
 
@@ -56,7 +57,16 @@ and the existing mode-600 `~/.config/tokenlayer/hub.env` with `CLIPROXY_MGMT_KEY
    scripts/deploy/backfill.sh --days 90 --rate-mb 2
    ```
 
-   Run one backfill per Mac at a time. It uses `backfill-state.json` separately from the daemon's `ship-state.json`
+   Run the two Macs' backfills sequentially, one process at a time, so they do not budget the same hub free space.
+   Before importing, the runner inventories all `.jsonl` source bytes (conservatively including older files and
+   checkpoint replays; `.zst` stays excluded) and queries the authenticated hub's default disk and active
+   session-table compression. Formula: `projected_bytes = ceil(inventory_bytes * 2 * max(1, compressed/uncompressed))`;
+   an empty table uses ratio 1. The 2x factor budgets metadata/index/merge overhead; observed compression savings
+   receive no credit, while observed expansion raises the estimate. The runner refuses unless `free_space - projected_bytes >= 35 GiB`.
+   Every insert batch rechecks the hub volume with the same formula on serialized batch bytes, covering source growth
+   and concurrent writes. ClickHouse's default disk also reserves `keep_free_space_bytes=37580963840` (35 GiB),
+   including daemon/drain writes. This measures M1 disk space even when backfill runs on M4.
+   It uses `backfill-state.json` separately from the daemon's `ship-state.json`
    and retains both `.generations` sidecars. Stable source identity plus the replacement key and FINAL make replay
    safe; losing both progress and lineage, or copying source files to new inodes, can add archive histories.
    `--since` selects files by mtime, not individual event dates. The UTC cutoff is today minus N days; an eligible
@@ -67,15 +77,16 @@ and the existing mode-600 `~/.config/tokenlayer/hub.env` with `CLIPROXY_MGMT_KEY
 
 - Check `launchctl print gui/$(id -u)/com.tokenlayer.clickhouse` on M1, and `com.tokenlayer.ship` on both Macs;
   check `com.tokenlayer.drain` on M1. Confirm `/ping` and authenticated queries, and rejection of default/wrong passwords.
-- On M1, `lsof -nP -iTCP -sTCP:LISTEN` must show ClickHouse only on 127.0.0.1:8123 and 127.0.0.1:19000.
-  MySQL, PostgreSQL and interserver listeners must be absent. Inspect Serve status: only tailnet HTTPS for :8123.
+- On M1, get the actual ClickHouse server PID (not its Bun wrapper) and run
+  `lsof -nP -a -p <server-pid> -iTCP -sTCP:LISTEN`. Expect exactly two listeners:
+  127.0.0.1:8123 and 127.0.0.1:19000. MySQL, PostgreSQL and interserver port keys are omitted; no random ports may appear. Inspect Serve status: only tailnet HTTPS for :8123.
 - Run the query in [telemetry.md](telemetry.md#sessions-per-day-by-repo-and-model) from M4; verify both machines,
-  dates and expected repos/models. Session counts alone do not prove compressed-history coverage.
+  dates and expected repos/models. After backfill, time the Etan query (elapsed, read_rows, memory from system.query_log). Session counts alone do not prove compressed-history coverage.
 - Rollback: stop backfill if running; on M4 boot out `com.tokenlayer.ship`; on M1 boot out ship, drain, then ClickHouse
   with `launchctl bootout gui/$(id -u)/<label>`. Disable only this route using `tailscale serve --https=8123 off` on M1.
   Keep data at `~/Library/Application Support/tokenlayer/clickhouse/`, credentials, progress/lineage, logs and binary.
   Keep rendered plists for inspection; bootout alone is temporary until login, so move them out of LaunchAgents if
-  rollback must survive login. Rerun setup to restore. No data deletion is part of rollback.
+  rollback must survive login. Rerun setup to restore; `hub` also restores the ship/drain agents it stopped. No data deletion is part of rollback.
 
 ## M4 metadata inventory
 
