@@ -17,7 +17,8 @@ test("35 GiB of real free space must remain after import", () => {
 });
 
 test("disk plan CLI fails closed on unknown or insufficient destination free space", async () => {
-  const {mkdtempSync,writeFileSync,readFileSync}=await import("node:fs");
+  const {mkdirSync,mkdtempSync,writeFileSync,readFileSync}=await import("node:fs");
+  mkdirSync(`${process.cwd()}/.local`, { recursive: true });
   const dir=mkdtempSync(`${process.cwd()}/.local/disk-review-`);
   const report=`${dir}/report.json`,out=`${dir}/plan.json`;
   writeFileSync(report,JSON.stringify({import_bytes:4*1024**3,groups:{"m1\tcodex\tfixture":{bytes:4*1024**3}}}));
