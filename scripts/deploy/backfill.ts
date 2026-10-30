@@ -8,10 +8,11 @@ import { verifySessionSchema } from '../../src/lib/session-schema';
 import { listJsonl, shipOnce, type ShipRoot } from '../../src/ship/ship';
 
 export const FREE_FLOOR = 35 * 1024 ** 3;
-// Count all JSONL (including checkpoint replays), conservatively exceeding the mtime-selected subset.
-export function inventoryBytes(roots: ShipRoot[]) {
+// Match shipOnce's initial --since file selection; plain files still win over compressed twins.
+export function inventoryBytes(roots: ShipRoot[], sinceMs: number) {
   return roots.flatMap(root => listJsonl(root.dir, root.kind === 'codex')).reduce((sum, path) => {
-    const size = statSync(path).size;
+    const { size, mtimeMs } = statSync(path);
+    if (mtimeMs < sinceMs) return sum;
     if (!path.endsWith('.zst')) return sum + size;
     // -lv sums frame content sizes, including concatenated frames, without decompressing.
     const info = spawnSync('zstd', ['-lv', '--', path], { encoding: 'utf8', timeout: 30_000 });
@@ -27,8 +28,9 @@ export async function checkSpace(ch: ClickHouse, bytes: number) {
     FROM system.disks WHERE name='default'`);
   if (!disk || [disk.free_space, disk.keep_free_space, disk.compressed, disk.uncompressed].some(v => !/^\d+$/.test(String(v)))) throw Error('cannot measure hub data-volume headroom');
   const free = Number(disk.free_space), reserve = Number(disk.keep_free_space), compressed = Number(disk.compressed), uncompressed = Number(disk.uncompressed);
-  // 2x for row/index/merge overhead; do not credit compression savings from an unrepresentative sample.
-  const factor = 2 * Math.max(1, uncompressed > 0 ? compressed / uncompressed : 1);
+  // At >= 1 GiB active uncompressed data, projected = decoded inventory * max(observed ratio, 0.30) * 1.25.
+  // The ratio floor limits compression credit; 25% covers merge/index overhead. Smaller samples use 2x.
+  const factor = uncompressed >= 1024 ** 3 ? Math.max(compressed / uncompressed, 0.30) * 1.25 : 2;
   const projected = Math.ceil(bytes * factor);
   // ClickHouse 26.10 free_space excludes keep_free_space; add it back to count the 35 GiB floor once.
   const realFree = free + reserve;
@@ -57,8 +59,8 @@ if (import.meta.main) {
     { kind: 'claude', dir: expandHome(env.TOKENLAYER_CLAUDE_DIR ?? '~/.claude/projects') },
     { kind: 'codex', dir: expandHome(env.TOKENLAYER_CODEX_DIR ?? '~/.codex/sessions') },
   ];
-  const bytes = inventoryBytes(roots), factor = await checkSpace(ch, bytes);
-  writeOut(`backfill inventory_bytes=${bytes} projected_bytes=${Math.ceil(bytes * factor)}; projected=ceil(inventory_bytes*2*max(1,observed_compressed/uncompressed)); floor=35 GiB real free; real_free=free_space+keep_free_space`);
+  const bytes = inventoryBytes(roots, sinceMs), factor = await checkSpace(ch, bytes);
+  writeOut(`backfill inventory_bytes=${bytes} projected_bytes=${Math.ceil(bytes * factor)}; projected=ceil(decoded_inventory*(uncompressed>=1GiB?max(compressed/uncompressed,0.30)*1.25:2)); floor=35 GiB real free; real_free=free_space+keep_free_space`);
   await verifySessionSchema(ch);
   const result = await shipOnce({ machine: env.TOKENLAYER_MACHINE, roots, clickhouse: ch,
     statePath: expandHome(env.TOKENLAYER_SHIP_STATE ?? join('~/.config/tokenlayer', 'backfill-state.json')),
