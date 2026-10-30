@@ -111,6 +111,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
   const started = performance.now();
   let lastSave = performance.now();
   let dirty = false;
+  let warnedMissingZstd = false;
   const failures: unknown[] = [];
 
   const save = () => {
@@ -123,6 +124,13 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
     for (const root of opts.roots) {
       for (const physical of listJsonl(root.dir, root.kind === "codex")) {
         const compressed = physical.endsWith(".zst");
+        if (compressed && !Bun.which("zstd")) {
+          if (!warnedMissingZstd) {
+            opts.log?.(sanitizeOutput("warning: zstd CLI missing from PATH; skipping compressed rollouts (checkpoints unchanged)"));
+            warnedMissingZstd = true;
+          }
+          continue;
+        }
         const path = compressed ? physical.slice(0, -4) : physical;
         try {
           let st: Stats;

@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync, unlinkSync, utimesSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, unlinkSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { ClickHouse } from "../../src/lib/clickhouse";
 import { listJsonl, shipOnce, type ShipOptions } from "../../src/ship/ship";
@@ -20,6 +20,46 @@ function options(name: string): ShipOptions {
   return {machine:"m4",roots:[{kind:"codex",dir:root}],statePath:join(dir,name+".state"),clickhouse:new ClickHouse({url:`http://127.0.0.1:${server.port}`,user:"default",password:"",database:"tokenlayer"}),rateBytesPerSec:0,batchBytes:64,log:m=>logs.push(m)};
 }
 function compressed(path:string, data=bytes) {writeFileSync(path,Bun.zstdCompressSync(data));}
+
+test("missing zstd warns once per pass, preserves compressed checkpoints and keeps shipping plain files", async () => {
+ const o = options("missing-decoder"), p = join(o.roots[0].dir, "old.jsonl");
+ writeFileSync(p, bytes); await shipOnce(o);
+ compressed(p + ".zst"); unlinkSync(p);
+ compressed(join(o.roots[0].dir, "unseen.jsonl.zst"));
+ const checkpoint = loadState(o.statePath).files[p];
+ const journal = readFileSync(o.statePath + ".generations", "utf8");
+ const plain = join(o.roots[0].dir, "plain.jsonl"); writeFileSync(plain, "{}\n");
+ const script = `
+  import { shipOnce } from ${JSON.stringify(join(import.meta.dir, "../../src/ship/ship.ts"))};
+  import { ClickHouse } from ${JSON.stringify(join(import.meta.dir, "../../src/lib/clickhouse.ts"))};
+  const logs = [];
+  const opts = ${JSON.stringify({ ...o, clickhouse: undefined, log: undefined })};
+  opts.clickhouse = new ClickHouse(${JSON.stringify(o.clickhouse.config)});
+  opts.log = msg => logs.push(msg);
+  const first = await shipOnce(opts);
+  const second = await shipOnce(opts);
+  console.log(JSON.stringify({ first, second, logs }));
+ `;
+ // An isolated process exercises real PATH lookup without changing the test runner's environment.
+ const proc = Bun.spawn([process.execPath, "--eval", script], {
+  cwd: dir, env: { PATH: "" }, stdout: "pipe", stderr: "pipe",
+ });
+ const output = await new Response(proc.stdout).text(), error = await new Response(proc.stderr).text();
+ expect(await proc.exited).toBe(0); expect(error).toBe("");
+ const result = JSON.parse(output);
+ expect(result.first.lines).toBe(1); expect(result.second.lines).toBe(0);
+ expect(result.logs).toHaveLength(2);
+ for (const warning of result.logs) {
+  expect(warning).toMatch(/warning.*zstd.*PATH/);
+  expect(warning.split("\n")).toHaveLength(1);
+ }
+ const state = loadState(o.statePath);
+ expect(state.files[p]).toEqual(checkpoint);
+ expect(state.files[join(o.roots[0].dir, "unseen.jsonl")]).toBeUndefined();
+ expect(state.files[plain].offset).toBe(3);
+ expect(loadState(o.statePath + ".generations").files[p]).toEqual(JSON.parse(journal).files[p]);
+ expect(loadState(o.statePath + ".generations").files[join(o.roots[0].dir, "unseen.jsonl")]).toBeUndefined();
+});
 
 test("Codex discovery includes compressed rollouts",()=>{
  const o=options("discovery"); const p=join(o.roots[0].dir,"r.jsonl.zst");compressed(p);
@@ -80,5 +120,6 @@ test("large decoded file yields bounded batches, skips decoded prefix and leaves
   expect(b.lines[0].offset).toBe(line.length+total);
   total+=b.raw.length;batches++;
  }
- expect(total).toBe(line.length*(count-1));expect(batches).toBeGreaterThan(100);
+ expect(total).toBe(line.length*(count-1));
+ expect(batches).toBeGreaterThanOrEqual(Math.ceil(total/(65536+256*1024)));
 });

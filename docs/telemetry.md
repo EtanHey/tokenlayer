@@ -48,6 +48,9 @@ Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
 
 - Sources: `~/.claude/projects/**/*.jsonl` (includes `<session>/subagents/agent-*.jsonl`) and `~/.codex/sessions/**/*.{jsonl,jsonl.zst}` (including T3-origin Codex rollouts).
 - Compressed Codex rollouts require `zstd` on the shipper's PATH (`brew install zstd` on macOS).
+  Check the daemon's actual PATH before deployment. If unavailable, each pass emits one sanitized warning,
+  skips compressed files without changing their progress checkpoints or generation journal, and continues
+  shipping plain files. The daemon stays running; compressed files retry when `zstd` becomes available.
   Decode uses `zstd -qdc -- PATH` with backpressure and checked exit status. Bun 1.4.4's
   `node:zlib.createZstdDecompress` accepted a truncated frame in the fixture probe, so it is not used.
   The first streaming pass validates the entire file before inserts and verifies any recorded decoded prefix;
