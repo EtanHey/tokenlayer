@@ -19,10 +19,21 @@ export function inventory(path: string): Inventory[] {
 }
 const ddl = `-- PROPOSAL: tokenlayer owns final DDL. Intervals follow dated evidence; null bounds are open.\nCREATE TABLE tokenlayer.repo_map (machine LowCardinality(String), cwd String, repo_canonical String, valid_from Nullable(DateTime64(3,'UTC')), valid_to Nullable(DateTime64(3,'UTC')), evidence Array(String), confidence LowCardinality(String)) ENGINE=MergeTree ORDER BY (machine,cwd);\n`;
 
+export function readExisting(path: string | undefined): ExistingCount[] {
+  if (!path) throw Error("requires --existing ClickHouse occurrence export; local live files are not coverage");
+  const keys = readFileSync(path,"utf8").split(/\r?\n/,1)[0].split("\t");
+  if (!["machine","session_id","generation","content_hash","count"].every(k=>keys.includes(k)) || !keys.some(k=>k==="path"||k==="stream")) throw Error("invalid --existing export header");
+  return readTSV(path).map((r): ExistingCount => {
+    if (!/^(m1|m4)$/.test(r.machine) || !r.session_id || !(r.stream || r.path) || !r.generation || !/^\d+$/.test(r.count ?? "")) throw Error("invalid --existing export row");
+    return [r.machine, r.session_id, r.stream || r.path, r.content_hash, Number(r.count)];
+  });
+}
+
 if (import.meta.main) {
   installErrorHandlers();
   const { values } = parseArgs({ options: { inventory: { type: "string", multiple: true }, manifest: { type: "string" }, existing: { type: "string" }, evidence: { type: "string" }, roots: {type:"string"}, out: { type: "string" }, validate: { type: "boolean", default: false } } });
-  if (!values.out || (!values.manifest && !values.inventory?.length)) throw new Error("usage: --inventory TSV [--inventory TSV] --evidence NDJSON --out DIR [--validate]");
+  if (!values.out || (!values.manifest && !values.inventory?.length)) throw new Error("usage: --inventory TSV [--inventory TSV] --evidence NDJSON --existing EXPORT.tsv --out DIR [--validate]");
+  const existing = readExisting(values.existing);
   const inputPaths = values.manifest ? [values.manifest] : values.inventory ?? [];
   const rows = inputPaths.flatMap(inventory);
   const evidence: Evidence[] = values.evidence ? readFileSync(values.evidence, "utf8").split("\n").filter(Boolean).map(parseEvidenceLine) : [];
@@ -34,10 +45,6 @@ if (import.meta.main) {
   mkdirSync(out, { recursive: true });
   if (inputPaths.some(p => ["manifest.tsv", "classification.tsv"].some(n => resolve(p) === join(out, n)))) throw new Error("output directory must not contain input inventories");
   if (values.manifest && !values.evidence) for (const r of readTSV(values.manifest)) if (/^[\w.-]+\/[\w.-]+$/.test(r.repo ?? "")) evidence.push({ cwd: r.cwd, repo: r.repo, evidence: "prior manifest mapping", confidence: "medium" });
-  const existing = values.existing ? readTSV(values.existing).map((r): ExistingCount => {
-    if (!r.session_id || !(r.stream || r.path) || !/^\d+$/.test(r.count ?? "")) throw new Error("existing export requires session_id, stream or path, content_hash, count");
-    return [r.session_id, r.stream || r.path, r.content_hash, Number(r.count)];
-  }) : [];
   const roots=values.roots?parseShipperRoots(JSON.parse(readFileSync(values.roots,"utf8"))):DEFAULT_SHIPPER_ROOTS;
   const maps = repoMap(rows.filter(r => classify(r).session), evidence), entries = manifest(rows, maps, roots);
   let processed = 0;
