@@ -4,6 +4,9 @@
 archaeology `repoHint`, and generated ClickHouse functions. No filesystem lookup is used. `~/Gits/<repo>/…` (including historical `Desktop/Gits`) and T3 worktrees
 resolve to their enclosing repo on either Mac. Historical superpowers/rig hints remain supported. Unknown cwd strings, including external lab directories, are
 `(other)`; existing archaeology Git evidence remains separate.
+Every recognized cwd shape drops one trailing `.noindex` suffix from the repo
+segment, case-insensitively, while preserving the rest of the name. For example,
+`~/Gits/VoiceLayer-Lab.noindex/2026-10-30/exploration/code` resolves to `VoiceLayer-Lab`.
 Only streams with **no recorded cwd on any line** use Claude project slugs.
 The single `KNOWN_REPOS` list matches case-insensitively, longest complete name
 first; unknown slugs are `(other)`. Encoding is lossy, so known-name collisions
