@@ -94,7 +94,7 @@ function identityMatches(raw: string, session: string, kind: "claude" | "codex")
       && !!o.payload && typeof o.payload === "object" && "id" in o.payload && o.payload.id === session;
   } catch { return false; }
 }
-export type ExistingCount = [session: string, streamOrPath: string, hash: string, count: number];
+export type ExistingCount = [machine: string, session: string, streamOrPath: string, hash: string, count: number];
 
 export type MachineRoots = Readonly<Record<string, readonly string[]>>;
 export const DEFAULT_SHIPPER_ROOTS: MachineRoots = {
@@ -123,7 +123,9 @@ export function manifest(rows: Inventory[], maps: RepoMap[], roots: MachineRoots
     const key = JSON.stringify([r.machine, r.source_kind, r.container, r.member_path, r.sha256]);
     const ts=Date.parse(r.first_ts), matching=(repos.get(`${origin(r)}\0${r.cwd}`)??[]).filter(m=>(m.valid_from===null||ts>=Date.parse(m.valid_from))&&(m.valid_to===null||ts<Date.parse(m.valid_to)));
     const names=new Set(matching.map(m=>m.repo_canonical));
-    copies.set(key, { ...r, source_kind: r.source_kind === "live" && !shipperCovers(r.member_path,origin(r),roots) ? "archive_dir" : r.source_kind, origin: origin(r), repo: names.size===1?matching[0].repo_canonical:"", selected: false, relation: "unverified", status: "pending", container_hash: "", stream: streamId(r.session_id, r.member_path) });
+    const physical = r.machine.toLowerCase(), inferred = origin(r);
+    const kind = r.source_kind === "live" && physical === inferred && !shipperCovers(r.member_path,physical,roots) ? "archive_dir" : r.source_kind;
+    copies.set(key, { ...r, source_kind: kind, origin: inferred, repo: names.size===1?matching[0].repo_canonical:"", selected: false, relation: "unverified", status: "pending", container_hash: "", stream: streamId(r.session_id, r.member_path) });
   }
   const entries = [...copies.values()].sort((a, b) => Number(b.bytes) - Number(a.bytes) || a.member_path.localeCompare(b.member_path));
   const largest = new Map<string, Entry>();
@@ -142,9 +144,9 @@ export async function dryRun(entries: Entry[], options: {
   onEntry?: (entry: Entry) => void;
 }) {
   const db = new Database(options.database ?? ":memory:");
-  db.exec("DROP TABLE IF EXISTS seen; CREATE TABLE IF NOT EXISTS occurrences(session TEXT, stream TEXT, hash TEXT, live_count INTEGER, prior_count INTEGER, PRIMARY KEY(session,stream,hash)) WITHOUT ROWID; DELETE FROM occurrences");
-  const insert = db.query("INSERT INTO occurrences VALUES(?,?,?,?,?) ON CONFLICT(session,stream,hash) DO UPDATE SET live_count=max(live_count,excluded.live_count),prior_count=max(prior_count,excluded.prior_count)");
-  const find = db.query<{ live_count: number; prior_count: number }, [string, string, string]>("SELECT live_count,prior_count FROM occurrences WHERE session=? AND stream=? AND hash=?");
+  db.exec("DROP TABLE IF EXISTS seen; DROP TABLE IF EXISTS occurrences; CREATE TABLE occurrences(machine TEXT, session TEXT, stream TEXT, hash TEXT, live_count INTEGER, prior_count INTEGER, PRIMARY KEY(machine,session,stream,hash)) WITHOUT ROWID; DELETE FROM occurrences");
+  const insert = db.query("INSERT INTO occurrences VALUES(?,?,?,?,?,?) ON CONFLICT(machine,session,stream,hash) DO UPDATE SET live_count=max(live_count,excluded.live_count),prior_count=max(prior_count,excluded.prior_count)");
+  const find = db.query<{ live_count: number; prior_count: number }, [string, string, string, string]>("SELECT live_count,prior_count FROM occurrences WHERE machine=? AND session=? AND stream=? AND hash=?");
   const report = { import_rows: 0, import_bytes: 0, import_sessions: 0, skip_live: 0, skip_copy: 0, live_rows: 0, needs_fetch: 0, source_changed: 0, read_errors: 0, not_transcript: 0, invalid_member_hash: 0, divergent_sessions: 0, divergent_streams: 0, unterminated_bytes: 0, sample: [] as Event[], groups: {} as Record<string, { rows: number; bytes: number; skip_live: number; skip_copy: number }> };
   const sessions = new Set<string>(), divergent = new Map<string, string>();
   const prefixes = new Map<string, Map<number, string>>();
@@ -155,14 +157,14 @@ export async function dryRun(entries: Entry[], options: {
   for (const [stream, sizes] of sizeSets) lengths.set(stream, [...sizes].sort((a,b)=>a-b));
   const ordered = [...entries].sort((a, b) => Number(b.source_kind === "live") - Number(a.source_kind === "live") || Number(b.bytes) - Number(a.bytes));
   try {
-    for (const [session, path, hash, count] of options.existing ?? []) {
-      if (!hashOK(hash) || !Number.isSafeInteger(count) || count < 1) throw new Error("invalid existing occurrence count/hash");
-      const stream=streamId(session,path); insert.run(stream.split("::")[0], stream, hash, count, 0);
+    for (const [machine, session, path, hash, count] of options.existing ?? []) {
+      if (!/^(m1|m4)$/.test(machine) || !hashOK(hash) || !Number.isSafeInteger(count) || count < 1) throw new Error("invalid existing occurrence count/hash");
+      const stream=streamId(session,path); insert.run(machine, stream.split("::")[0], stream, hash, count, 0);
     }
     for await (const e of options.order ?? ordered) {
       try {
       if (e.status === "invalid_member_hash") { report.invalid_member_hash++; options.onEntry?.(e); continue; }
-      const source = e.origin === "unknown" || e.source_kind === "t3_sqlite" ? null : await options.read(e);
+      const source = e.origin === "unknown" || (e.source_kind === "live" && e.machine.toLowerCase() !== e.origin) || e.source_kind === "t3_sqlite" ? null : await options.read(e);
       if (!source) { e.status = "needs_fetch_or_export"; report.needs_fetch++; options.onEntry?.(e); continue; }
       const digest = createHash("sha256"), checkpoints = new Map<number, string>();
       let size = 0, checkpointIndex = 0; const boundaries = lengths.get(e.stream) ?? [];
@@ -198,6 +200,7 @@ export async function dryRun(entries: Entry[], options: {
           secondHash.update(chunk); carry = Buffer.concat([carry, chunk]);
           let start = 0, nl: number;
           while ((nl = carry.indexOf(10, start)) >= 0) {
+            if (nl === start) { offset++; start = nl + 1; continue; } // Match ship/tail.ts: bare LF has no row.
             const line = carry.subarray(start, nl + 1), hash = sha256(line);
             const raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(line);
             const text = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
@@ -206,18 +209,17 @@ export async function dryRun(entries: Entry[], options: {
               const identity=codexIdentity(text,e.session_id,e.member_path);codexHeader=!!identity;
               if(identity){stream=`${identity.native}::main`;eventSession=identity.session;}
             } firstLine = false;
-            const parsed = parseLine(text, st);
+            const parsed = parseLine(raw);
             if (st.kind === "claude") identitySeen ||= identityMatches(text, e.session_id, "claude");
-            const existing = find.get(stream.split("::")[0], stream, hash);
+            const existing = find.get(e.origin, stream.split("::")[0], stream, hash);
             const occurrence = (counts.get(hash) ?? 0) + 1; counts.set(hash, occurrence);
-            if (e.source_kind === "live") {
-              if (occurrence > (existing?.live_count ?? 0)) insert.run(stream.split("::")[0], stream, hash, occurrence, 0);
-              liveRows++;
-            } else if (occurrence <= (existing?.live_count ?? 0)) skipLive++;
+            if (e.source_kind === "live") liveRows++;
+            // Only a server export establishes coverage; local live files can be unshipped.
+            if (occurrence <= (existing?.live_count ?? 0)) skipLive++;
             else if (occurrence <= (existing?.prior_count ?? 0)) skipCopy++;
             else {
-              insert.run(stream.split("::")[0], stream, hash, 0, occurrence); rows++; bytes += line.length;
-              if (sample.length < (options.sampleSize ?? 100)) sample.push({ ...parsed, session_id: eventSession, raw, project: e.repo || parsed.project, machine: e.origin, harness: st.harness, path: `archive://${e.container_hash || fullHash}/${e.member_path}`, generation: `archive:${fullHash}`, byte_offset: offset, content_hash: hash, line_bytes: line.length });
+              insert.run(e.origin, stream.split("::")[0], stream, hash, 0, occurrence); rows++; bytes += line.length;
+              if (sample.length < (options.sampleSize ?? 100)) sample.push({ ...parsed, session_id: parsed.type === "invalid" ? parsed.session_id : eventSession, raw, project: e.repo || parsed.project, machine: e.origin, harness: st.harness, path: `archive://${e.container_hash || fullHash}/${e.member_path}`, generation: `archive:${fullHash}`, byte_offset: offset, content_hash: hash, line_bytes: line.length });
             }
             offset += line.length; start = nl + 1;
           }

@@ -41,3 +41,22 @@ test("real FINAL: plain → zst → replay preserves events, sessions and every 
     expect(rows[0]).toMatchObject({session_id:"child",session_alias:"parent"});
   } finally { await ch.stop(); }
 }, 40000);
+
+
+test("real FINAL: 100 shipped + 50 new resumes without replay inserts or replay rate bytes", async () => {
+ const ch=await startLocalClickHouse();
+ const dir=mkdtempSync(join(import.meta.dir,"../../.local/zst-resume-it-")), path=join(dir,"rollout.jsonl");
+ const prefix=Buffer.from(Array.from({length:100},(_,i)=>JSON.stringify({type:"fixture",i})).join("\n")+"\n");
+ const suffix=Buffer.from(Array.from({length:50},(_,i)=>JSON.stringify({type:"fixture",i:i+100})).join("\n")+"\n");
+ const opts={machine:"m4",roots:[{kind:"codex" as const,dir}],statePath:join(dir,"state"),clickhouse:ch.client,rateBytesPerSec:0};
+ try {
+  await applySchema(ch.client); writeFileSync(path,prefix); expect((await shipOnce(opts)).lines).toBe(100);
+  const count=async(final:boolean)=>Number((await ch.client.exec("SELECT count() FROM tokenlayer.session_events"+(final?" FINAL":""))).trim());
+  expect(await count(true)).toBe(100);
+  writeFileSync(path+".zst",Bun.zstdCompressSync(Buffer.concat([prefix,suffix]))); unlinkSync(path);
+  const result=await shipOnce(opts);
+  expect(result.lines).toBe(50); expect(result.bytes).toBe(suffix.length);
+  expect(await count(false)).toBe(150); expect(await count(true)).toBe(150);
+  expect((await shipOnce(opts)).bytes).toBe(0); expect(await count(true)).toBe(150);
+ } finally { await ch.stop(); }
+},40000);

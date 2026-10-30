@@ -1,9 +1,9 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, unlinkSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { ClickHouse } from "../../src/lib/clickhouse";
 import { listJsonl, shipOnce, type ShipOptions } from "../../src/ship/ship";
-import { readZstd } from "../../src/ship/zst";
+import { compressedHash, spawnZstd, readZstd } from "../../src/ship/zst";
 import { loadState } from "../../src/ship/state";
 
 const scratch = join(import.meta.dir, "../../.local");
@@ -21,7 +21,7 @@ function options(name: string): ShipOptions {
 }
 function compressed(path:string, data=bytes) {writeFileSync(path,Bun.zstdCompressSync(data));}
 
-test("missing zstd warns once per pass, preserves compressed checkpoints and keeps shipping plain files", async () => {
+test("missing zstd warns once per process, preserves compressed checkpoints and keeps shipping plain files", async () => {
  const o = options("missing-decoder"), p = join(o.roots[0].dir, "old.jsonl");
  writeFileSync(p, bytes); await shipOnce(o);
  compressed(p + ".zst"); unlinkSync(p);
@@ -48,7 +48,7 @@ test("missing zstd warns once per pass, preserves compressed checkpoints and kee
  expect(await proc.exited).toBe(0); expect(error).toBe("");
  const result = JSON.parse(output);
  expect(result.first.lines).toBe(1); expect(result.second.lines).toBe(0);
- expect(result.logs).toHaveLength(2);
+ expect(result.logs).toHaveLength(1);
  for (const warning of result.logs) {
   expect(warning).toMatch(/warning.*zstd.*PATH/);
   expect(warning.split("\n")).toHaveLength(1);
@@ -92,9 +92,11 @@ test.each(["corrupt","truncated"])("%s zst is isolated, reports path/reason with
  const o=options(kind),p=join(o.roots[0].dir,"bad.jsonl.zst");
  const packed=Bun.zstdCompressSync(Buffer.concat([bytes,Buffer.alloc(200000,120)]));
  writeFileSync(p,kind==="corrupt"?Buffer.from("SYNTHETIC_PRIVATE_CONTENT"):packed.subarray(0,packed.length-3));
- const start=rows.length;await expect(shipOnce(o)).rejects.toThrow();
+ const start=rows.length; const error=await shipOnce(o).then(()=>null,e=>e);
+ expect(error).toBeInstanceOf(AggregateError);
  expect(rows.length).toBe(start);expect(loadState(o.statePath).files[p.slice(0,-4)]).toBeUndefined();
- expect(logs.at(-1)).toContain(p);expect(logs.at(-1)).not.toContain("SYNTHETIC_PRIVATE_CONTENT");
+ expect(error.errors[0].message).toContain(p);expect(error.errors[0].message).toContain("zstd decode failed");
+ expect(error.errors[0].message).not.toContain("SYNTHETIC_PRIVATE_CONTENT");
 });
 test("backfill since uses compressed mtime and cap counts decoded bytes",async()=>{
  const o=options("since"),p=join(o.roots[0].dir,"r.jsonl.zst"); compressed(p);
@@ -108,7 +110,7 @@ test("changed corrupt container preserves the last good checkpoint and recovers"
  const before=JSON.stringify(loadState(o.statePath));
  writeFileSync(p,Bun.zstdCompressSync(bytes).subarray(0,15));
  await expect(shipOnce(o)).rejects.toThrow();expect(JSON.stringify(loadState(o.statePath))).toBe(before);
- compressed(p);expect((await shipOnce(o)).lines).toBe(3);
+ compressed(p);expect((await shipOnce(o)).lines).toBe(0);
 });
 test("large decoded file yields bounded batches, skips decoded prefix and leaves unterminated tail",async()=>{
  const o=options("bounded"),p=join(o.roots[0].dir,"r.jsonl.zst");
@@ -122,4 +124,76 @@ test("large decoded file yields bounded batches, skips decoded prefix and leaves
  }
  expect(total).toBe(line.length*(count-1));
  expect(batches).toBeGreaterThanOrEqual(Math.ceil(total/(65536+256*1024)));
+});
+
+
+test("completed backfill idle pass neither reads zst nor spawns zstd", async () => {
+ const o=options("idle"), p=join(o.roots[0].dir,"r.jsonl.zst"); compressed(p);
+ let reads=0, spawns=0;
+ const zstd = {
+  fingerprint: async (path: string) => { reads++; return compressedHash(path); },
+  spawn: (path: string) => { spawns++; return spawnZstd(path); },
+ };
+ await shipOnce({...o,zstd}); expect(reads).toBeGreaterThan(0); expect(spawns).toBeGreaterThan(0);
+ reads=0; spawns=0;
+ expect((await shipOnce({...o,zstd})).lines).toBe(0);
+ expect(reads).toBe(0); expect(spawns).toBe(0);
+});
+
+test("verified 100-line prefix resumes with only 50 new rows and new-byte rate accounting", async () => {
+ const o=options("resume"), p=join(o.roots[0].dir,"r.jsonl");
+ const line=Buffer.from('{"fixture":true}\n');
+ writeFileSync(p,Buffer.from(line.toString().repeat(100))); await shipOnce(o);
+ compressed(p+".zst",Buffer.from(line.toString().repeat(150))); unlinkSync(p);
+ const start=rows.length, r=await shipOnce(o);
+ expect(r.lines).toBe(50); expect(rows.length-start).toBe(50); expect(r.bytes).toBe(line.length*50);
+ expect(rows[start].byte_offset).toBe(line.length*100);
+});
+
+test("second decode cannot insert swapped unvalidated bytes", async () => {
+ const o=options("swap"), p=join(o.roots[0].dir,"r.jsonl.zst"); compressed(p);
+ let spawns=0;
+ const zstd={spawn:(path:string)=>{
+  if (++spawns===2) compressed(path,Buffer.from('{"swapped":true}\n'.repeat(100000)));
+  return spawnZstd(path);
+ }};
+ const start=rows.length;
+ await expect(shipOnce({...o,zstd})).rejects.toThrow();
+ expect(spawns).toBe(2); expect(rows.length).toBe(start);
+ expect(loadState(o.statePath).files[p.slice(0,-4)]?.offset ?? 0).toBe(0);
+});
+
+test("ClickHouse failures are labelled correctly and have one reporting path", async () => {
+ const o=options("insert-error"), p=join(o.roots[0].dir,"r.jsonl.zst"); compressed(p);
+ const messages:string[]=[];
+ const unavailable=Bun.serve({port:0,fetch:()=>new Response("fixture database unavailable",{status:503})});
+ try {
+  o.clickhouse=new ClickHouse({...o.clickhouse.config,url:unavailable.url.href});
+  const error=await shipOnce({...o,log:m=>messages.push(m)}).then(()=>null,e=>e);
+  expect(error).toBeInstanceOf(AggregateError);
+  expect(error.errors).toHaveLength(1);
+  expect(error.errors[0].message).toContain("clickhouse insert");
+  expect(error.errors[0].message).not.toContain("zstd source failed");
+  expect(messages).toHaveLength(0);
+ } finally { unavailable.stop(true); }
+});
+
+test("ship daemon and deploy renderer include Homebrew in PATH", async () => {
+ const { render }=await import("../../scripts/deploy/deploy");
+ const template=readFileSync(join(import.meta.dir,"../../launchd/com.tokenlayer.ship.plist.template"),"utf8");
+ const plist=render(template,{BUN:"/fixture/bun",REPO:"/fixture/repo",HOME:"/fixture/home",MACHINE:"m4"});
+ expect(plist).toMatch(/<key>PATH<\/key>\s*<string>\/opt\/homebrew\/bin:\/usr\/local\/bin:\/usr\/bin:\/bin<\/string>/);
+});
+
+
+test("decoder copies chunks only linearly while building batches", async () => {
+ const o=options("linear"),p=join(o.roots[0].dir,"r.jsonl.zst");
+ const input=Buffer.from(('x'.repeat(1000)+'\n').repeat(20000)); compressed(p,input);
+ const concat=Buffer.concat; let copied=0, total=0;
+ const spy=spyOn(Buffer,"concat").mockImplementation((chunks,length)=>{
+  copied+=length ?? chunks.reduce((n,b)=>n+b.length,0); return concat(chunks,length);
+ });
+ try { for await (const b of readZstd(p,0,4*1024*1024)) total+=b.raw.length; }
+ finally { spy.mockRestore(); }
+ expect(total).toBe(input.length); expect(copied).toBeLessThan(input.length*3);
 });

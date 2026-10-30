@@ -1,4 +1,5 @@
-import { writeOut } from "../lib/egress";
+import { writeOut, installErrorHandlers } from "../lib/egress";
+import { assertOutputsSeparate } from "./output-paths";
 import { readFileSync, writeFileSync, statfsSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseArgs } from "node:util";
@@ -10,8 +11,10 @@ export function diskVerdict(importBytes: number, freeBytes: number) {
   return {after_import_free_bytes:freeBytes-importBytes,minimum_after_import_free_bytes:minimumAfterImport,import_bytes:importBytes,overhead_bytes:overheadBytes,margin_bytes:marginBytes,required_free_bytes:required,free_bytes:freeBytes,required_gib:required/1024**3,free_gib:freeBytes/1024**3,verdict:freeBytes>=required?"PASS":"FAIL"};
 }
 if(import.meta.main){
+  installErrorHandlers();
   const {values}=parseArgs({options:{report:{type:"string"},out:{type:"string"},"m1-free-gib":{type:"string"}}});
   if(!values.report||!values.out)throw Error("requires --report dry-run.json --out disk-plan.json");
+  assertOutputsSeparate([values.out],[values.report]);
   if(!values["m1-free-gib"]?.trim())throw Error("requires measured real free space via --m1-free-gib; unknown space fails closed (35 GiB must remain after import)");
   if(process.env.USER==="happycampr")throw Error("Phase 4 disk reporting is M4-only");
   const report:unknown=JSON.parse(readFileSync(values.report,"utf8"));

@@ -7,12 +7,13 @@ import { sha256Hex } from "../lib/hash";
 import { detectHarness, newFileState, parseLine, type Harness, type SourceKind } from "./parse";
 import { loadState, saveState, type FileCheckpoint, type ShipState } from "./state";
 import { readCompleteLines } from "./tail";
-import { compressedHash, inspectZstd, readZstd } from "./zst";
+import { compressedHash, inspectZstd, readZstd, type ZstdSpawner } from "./zst";
 import { sanitizeOutput } from "../lib/egress";
 
 export type ShipRoot = { kind: SourceKind; dir: string };
 
 export type ShipOptions = {
+  zstd?: { spawn?: ZstdSpawner; fingerprint?: typeof compressedHash };
   machine: string;
   roots: ShipRoot[];
   clickhouse: ClickHouse;
@@ -31,6 +32,7 @@ export type ShipOptions = {
 export type ShipResult = { files: number; lines: number; bytes: number; resets: number };
 
 const HEAD_LINES_BYTES = 64 * 1024;
+let warnedMissingZstd = false;
 
 export function listJsonl(dir: string, compressed = false): string[] {
   const out: string[] = [];
@@ -111,7 +113,6 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
   const started = performance.now();
   let lastSave = performance.now();
   let dirty = false;
-  let warnedMissingZstd = false;
   const failures: unknown[] = [];
 
   const save = () => {
@@ -144,9 +145,9 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           const replay = !cp || (recorded && (recorded.generation !== cp.generation || recorded.offset > cp.offset));
           if (replay && recorded) cp = structuredClone(recorded);
           if (!cp && !state.legacyReplay?.includes(path) && opts.sinceMs !== undefined && st.mtimeMs < opts.sinceMs) continue;
-          const packedHash = compressed ? await compressedHash(physical) : undefined;
-          if (compressed && cp?.compressed?.complete && cp.compressed.size === st.size && cp.compressed.fingerprint === packedHash && cp.mtimeMs === st.mtimeMs && cp.ctimeMs === st.ctimeMs && !replay) continue;
-          const decoded = compressed ? await inspectZstd(physical, cp?.offset ?? 0) : undefined;
+          if (compressed && cp?.compressed?.complete && cp.compressed.size === st.size && identity(st) === cp.identity && cp.mtimeMs === st.mtimeMs && cp.ctimeMs === st.ctimeMs && !replay) continue;
+          const packedHash = compressed ? await (opts.zstd?.fingerprint ?? compressedHash)(physical) : undefined;
+          const decoded = compressed ? await inspectZstd(physical, cp?.offset ?? 0, opts.zstd?.spawn) : undefined;
           const size = decoded?.size ?? st.size;
           const head = () => decoded?.head ?? headLines(path);
           const fresh = () => {
@@ -198,10 +199,6 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             }
           }
           if (!cp) cp = fresh();
-          if (compressed && !replay) {
-            // Changed containers replay from zero, preserving a verified lineage where possible.
-            cp.offset = 0; cp.fingerprint = ""; hash = createHash("sha256");
-          }
           cp.identity = identity(st);
           cp.inode = st.ino;
           cp.compressed = packedHash ? { size: st.size, fingerprint: packedHash, complete: false } : undefined;
@@ -219,7 +216,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
               offset = chunk.nextOffset;
             }
           }
-          const batches = compressed ? readZstd(physical, cp.offset, batchBytes) : plainBatches(cp.offset);
+          const batches = compressed ? readZstd(physical, cp.offset, batchBytes, opts.zstd?.spawn, decoded?.blocks) : plainBatches(cp.offset);
           for await (const { lines, nextOffset, raw } of batches) {
             // A fresh checkpoint starts at offset 0, so lines[0] is the file's first line.
 
@@ -276,9 +273,8 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           }
           if (shippedFromFile) result.files++;
         } catch (err) {
-          const reason = compressed ? `zstd source failed: ${err instanceof Error ? err.message : "read failure"}` : err instanceof Error ? err.message : String(err);
+          const reason = err instanceof Error ? err.message : String(err);
           const message = compressed ? `${sanitizeOutput(physical)}: ${sanitizeOutput(reason)}` : redactText(reason);
-          if (compressed) opts.log?.(message);
           failures.push(new Error(message));
         }
       }
