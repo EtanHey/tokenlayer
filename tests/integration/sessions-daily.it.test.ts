@@ -42,6 +42,8 @@ test('daily sessions: normalized repos, per-event models, native child ids and r
       { day: '2026-10-28', repo: 'repo-a', model: 'model-a', harness: 'claude', machine: 'm4', sessions: 1 },
       { day: '2026-10-28', repo: 'repo-a', model: 'model-b', harness: 'claude', machine: 'm4', sessions: 1 },
       { day: '2026-10-29', repo: 'repo-a', model: 'model-a', harness: 'claude', machine: 'm4', sessions: 1 },
+      { day: '2026-10-29', repo: 'repo-b', model: '(none)', harness: 'claude', machine: 'm4', sessions: 1 },
+      { day: '2026-10-29', repo: 'repo-b', model: '(none)', harness: 'codex', machine: 'm4', sessions: 2 },
       { day: '2026-10-29', repo: 'repo-b', model: 'model-a', harness: 'codex', machine: 'm4', sessions: 2 },
       { day: '2026-10-29', repo: 'repo-b', model: 'model-b', harness: 'claude', machine: 'm4', sessions: 1 },
     ]);

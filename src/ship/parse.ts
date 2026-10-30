@@ -1,10 +1,10 @@
 import { repoFromCwd } from "../lib/repo";
 import { parseTimestampMs, toClickHouseTime } from "../lib/time";
 
-export type SourceKind = "claude" | "codex";
-export type Harness = "claude" | "codex" | "t3";
+export type SourceKind = "claude" | "codex" | "antigravity-cli" | "t3-antigravity";
+export type Harness = "claude" | "codex" | "t3" | "antigravity";
 
-/** V3 checkpoint shape. Legacy context fields remain readable; line parsing never consumes them. */
+/** V3 checkpoint shape. Antigravity uses native metadata and timestamp carry-forward. */
 export type FileState = {
   kind: SourceKind;
   harness: Harness;
@@ -60,6 +60,8 @@ function tryParse(line: string): Obj | null {
  * `session_meta.payload.originator: "T3 Code"`. Returns null while the head has no deciding line.
  */
 export function detectHarness(kind: SourceKind, headLines: string[]): Harness | null {
+  if (kind === "antigravity-cli") return "antigravity";
+  if (kind === "t3-antigravity") return "t3";
   for (const line of headLines) {
     const o = tryParse(line);
     if (!o) continue;
