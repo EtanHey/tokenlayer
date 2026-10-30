@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.tokenlayer.clickhouse</string>
+  <key>ProgramArguments</key><array>
+    <string>__BUN__</string><string>__REPO__/scripts/deploy/deploy.ts</string>
+    <string>server</string><string>__CLICKHOUSE__</string>
+  </array>
+  <key>WorkingDirectory</key><string>__HOME__/Library/Application Support/tokenlayer/clickhouse</string>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/tokenlayer/clickhouse-launchd.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/tokenlayer/clickhouse-launchd.log</string>
+</dict></plist>
