@@ -7,7 +7,16 @@ test.skipIf(!clickhouseBinary())("NIT-4 validatedDryRun completes with a real sa
   const bytes = Buffer.from('{"sessionId":"happy-path","type":"user"}\n');
   const row: Inventory = { machine: "m4", source_kind: "archive_dir", container: "", member_path: "happy-path.jsonl", session_id: "happy-path", harness: "claude", bytes: String(bytes.length), lines: "1", first_ts: "2026-01-01", last_ts: "2026-01-01", cwd: "/Users/etanheyman/Gits/example", sha256: sha256(bytes), mtime: "" };
   const listeners = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
-  const result = await validatedDryRun(manifest([row], []), { read: async () => (async function* () { yield bytes; })() }, 2);
+  // Only synthetic input and an owned throwaway server; exercise this fixture on either Mac.
+  const previousUser = process.env.USER;
+  let result: Awaited<ReturnType<typeof validatedDryRun>>;
+  try {
+    process.env.USER = "fixture";
+    result = await validatedDryRun(manifest([row], []), { read: async () => (async function* () { yield bytes; })() }, 2);
+  } finally {
+    if (previousUser === undefined) delete process.env.USER;
+    else process.env.USER = previousUser;
+  }
   expect(result.validated).toBe(1);
   expect(result.report.import_rows).toBe(1);
   expect(result.report.sample[0].raw).toBe(bytes.toString());
