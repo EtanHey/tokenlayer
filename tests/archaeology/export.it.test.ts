@@ -9,7 +9,7 @@ import { shipOnce } from "../../src/ship/ship";
 
 test.skipIf(!clickhouseBinary())("SHOULD-B canonical CLI export covers empty session ids, subagents and generations", async () => {
   mkdirSync(".local", { recursive: true });
-  const dir = realpathSync(mkdtempSync(".local/existing-export-")), sessions = join(dir, "sessions"), parent = "11111111-1111-4111-8111-111111111111";
+  const dir = realpathSync(mkdtempSync(".local/existing-export-")), sessions = join(dir, "Etan's sessions"), parent = "11111111-1111-4111-8111-111111111111";
   const agent = join(sessions, parent, "subagents", "agent-a.jsonl"), main = join(sessions, `${parent}.jsonl`);
   mkdirSync(join(sessions, parent, "subagents"), { recursive: true });
   const marker = Buffer.from('{"type":"mode"}\n');

@@ -71,15 +71,15 @@ test("raw preserves a UTF-8 BOM while the hash covers its exact bytes", async ()
 });
 
 
-test("MF-1 compressed live rollouts are historical unless the shipper covers them", async () => {
-  const path = "/Users/etanheyman/.codex/sessions/2026/01/01/rollout-session.jsonl.zst";
+test("MF-1 compressed rollouts outside shipper roots remain historical", async () => {
+  const path = "/history/2026/01/01/rollout-session.jsonl.zst";
   const bytes = Buffer.from('{"type":"session_meta","payload":{"id":"session"}}\n');
   const compressedHash = sha256(Buffer.from("compressed-container-fixture"));
   const entries = manifest([row({ source_kind: "live", harness: "codex", member_path: path, bytes: String(bytes.length), sha256: sha256(bytes) })], []);
   entries[0].container_hash = compressedHash;
   const result = await dryRun(entries, { read: async () => (async function* () { yield bytes; })() });
   expect(shipperCovers(path,"m4")).toBe(false);
-  expect(shipperCovers(path.replace(/\.zst$/, ""),"m4")).toBe(true);
+  expect(shipperCovers(path.replace(/\.zst$/, ""),"m4")).toBe(false);
   expect(result.live_rows).toBe(0); expect(result.import_rows).toBe(1);
   expect(result.sample[0].path).toBe(`archive://${compressedHash}/${path}`);
 });

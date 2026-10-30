@@ -1,7 +1,7 @@
 import { writeOut, writeErr, installErrorHandlers } from "../lib/egress";
-import { assertOutputsSeparate } from "./output-paths";
+import { assertOutputsSeparate, atomicOutput } from "./output-paths";
 import { basename } from "node:path";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { classify, origin, type Evidence } from "./pipeline";
 import { inventory, readTSV } from "./main";
@@ -61,10 +61,10 @@ if (import.meta.main) {
   const names = new Set([...observations.map(o=>o.remote),...targets.map(t=>repoHint(t.cwd)).filter(n=>/^[\w.-]{2,80}$/.test(n)&&!/[0-9a-f-]{20}/.test(n)).map(n=>`EtanHey/${n}`)]);
   const missing = [...names].filter(n=>n&&!cache[n]); let next=0;
   await Promise.all(Array.from({length:4},async()=>{for(;;){const name=missing[next++];if(!name)break;const proc=Bun.spawn(["gh","api",`repos/${name}`,"--jq",".full_name"],{stdout:"pipe",stderr:"ignore"});const repo=repoName((await new Response(proc.stdout).text()).trim());cache[name]={repo,at:new Date().toISOString(),status:await proc.exited};}}));
-  writeFileSync(values.lookups,JSON.stringify(cache,null,2)+"\n");
+  atomicOutput(values.lookups,JSON.stringify(cache,null,2)+"\n");
   const lookup=new Map(Object.entries(cache).filter(([,v])=>v.repo).map(([k,v])=>[k,v.repo]));
   const evidence=deriveRepoEvidence(targets,observations,lookup);
-  writeFileSync(values.out,evidence.map(e=>JSON.stringify(e)).join("\n")+"\n");
-  writeFileSync(values.out+".observations.ndjson",observations.map(o=>JSON.stringify(o)).join("\n")+"\n");
+  atomicOutput(values.out,evidence.map(e=>JSON.stringify(e)).join("\n")+"\n");
+  atomicOutput(values.out+".observations.ndjson",observations.map(o=>JSON.stringify(o)).join("\n")+"\n");
   writeOut(JSON.stringify({targets:targets.length,evidence:evidence.length,lookups:lookup.size}));
 }

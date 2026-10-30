@@ -1,6 +1,6 @@
 import { writeOut, installErrorHandlers } from "../lib/egress";
-import { assertOutputsSeparate } from "./output-paths";
-import { readFileSync, writeFileSync, statfsSync } from "node:fs";
+import { assertOutputsSeparate, atomicOutput } from "./output-paths";
+import { readFileSync, statfsSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -27,6 +27,6 @@ if(import.meta.main){
   if(Object.values(byOrigin).reduce((a,b)=>a+b,0)!==report.import_bytes)throw Error("import byte groups do not sum");
   const fs=statfsSync(dirname(values.out)),m4Free=fs.bavail*fs.bsize,m1Free=Math.floor(Number(values["m1-free-gib"])*1024**3);
   const result={at:new Date().toISOString(),import_bytes:report.import_bytes,per_origin_import_bytes:byOrigin,destinations:{m4:{...diskVerdict(report.import_bytes,m4Free),free_evidence:"native statfs at report time; current scratch already allocated"},m1:{...diskVerdict(report.import_bytes,m1Free),free_evidence:"explicit measured real free space from --m1-free-gib; no M1 probe performed"}},note:"Each destination verdict budgets the whole current import projection, not version/copy bytes. At least 35 GiB real free must remain after import (before the separate 25% overhead budget); the 25% overhead plus 14 GiB reserve gate also applies. Unfetched history is additional unknown demand; remeasure before apply."};
-  writeFileSync(values.out,JSON.stringify(result,null,2)+"\n");writeOut(JSON.stringify(result.destinations));
+  atomicOutput(values.out,JSON.stringify(result,null,2)+"\n");writeOut(JSON.stringify(result.destinations));
   if(Object.values(result.destinations).some(d=>d.verdict==="FAIL")){writeOut("Disk plan FAIL: each destination requires at least 35 GiB real free after import and the overhead/reserve budget.");process.exitCode=1;}
 }

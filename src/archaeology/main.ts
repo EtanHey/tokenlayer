@@ -1,11 +1,11 @@
 import { writeOut, writeErr, installErrorHandlers } from "../lib/egress";
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { classify, repoMap, manifest, dryRun, parseEvidenceLine, parseShipperRoots, DEFAULT_SHIPPER_ROOTS, type Inventory, type Evidence } from "./pipeline";
 import { localSources } from "./sources";
 import { validatedDryRun } from "./validation";
-import { assertOutputsSeparate } from "./output-paths";
+import { assertOutputsSeparate, assertSafeOutput, atomicOutput } from "./output-paths";
 import { readExisting, exportExisting } from "./existing";
 export { readExisting } from "./existing";
 
@@ -48,9 +48,12 @@ if (import.meta.main) {
   const maps = repoMap(rows.filter(r => classify(r).session), evidence), entries = manifest(rows, maps, roots);
   let processed = 0;
   const sources = localSources(entries);
-  const options = {...sources,existing,database:join(out,"dedupe.sqlite"),onEntry:()=>{if(++processed%1000===0)writeErr(`verified progress ${processed}/${entries.length}`);}};
+  const database = join(mkdtempSync(join(out, ".dedupe-")), "dedupe.sqlite");
+  const options = {...sources,existing,database,onEntry:()=>{if(++processed%1000===0)writeErr(`verified progress ${processed}/${entries.length}`);}};
   const {report,validated,baseline} = values.validate ? await validatedDryRun(entries,options) : {report:await dryRun(entries,options),validated:0,baseline:null};
-  const output = (name: string, value: string) => writeFileSync(join(out, name), value);
+  assertSafeOutput(join(out, "dedupe.sqlite"));
+  renameSync(database, join(out, "dedupe.sqlite"));
+  const output = (name: string, value: string) => atomicOutput(join(out, name), value);
   output("shipper-roots.json",JSON.stringify(roots,null,2)+"\n");
   output("repo_map.ndjson", maps.map(m => JSON.stringify(m)).join("\n") + "\n"); output("repo_map.ddl.sql", ddl);
   output("unresolved-cwds.ndjson", maps.filter(m => !m.repo_canonical).map(m => JSON.stringify(m)).join("\n") + "\n");
@@ -60,6 +63,6 @@ if (import.meta.main) {
   output("dry-run.json", JSON.stringify({ at: new Date().toISOString(), ...counts, validated, validation_baseline:baseline, source_errors: sources.errors }, null, 2) + "\n");
   const rejected = new Set(entries.filter(e => e.status === "not_transcript").map(e => JSON.stringify([e.machine,e.container,e.member_path])));
   output("classification.tsv", "session\treason\tmachine\tcontainer\tmember_path\n" + rows.map(r => { const c = rejected.has(JSON.stringify([r.machine,r.container,r.member_path])) ? {session:false,reason:"verified content lacks matching transcript identity"} : classify(r); return [c.session, c.reason, r.machine, r.container, r.member_path].join("\t"); }).join("\n") + "\n");
-  writeOut(JSON.stringify({ sessions: new Set(entries.map(e => e.session_id)).size, copies: entries.length, import_rows: report.import_rows, needs_shipper_backfill: report.needs_shipper_backfill, validated }));
-  if (report.needs_shipper_backfill) process.exitCode = 2;
+  writeOut(JSON.stringify({ sessions: new Set(entries.map(e => e.session_id)).size, copies: entries.length, import_rows: report.import_rows, needs_shipper_backfill: report.needs_shipper_backfill, blocked_live: report.blocked_live, validated }));
+  if (report.needs_shipper_backfill || report.blocked_live) process.exitCode = 2;
 }
