@@ -23,6 +23,8 @@ export async function verifySessionSchema(ch: ClickHouse): Promise<void> {
 
 /** Run with shippers stopped. EXCHANGE is atomic; the old table remains as an archive. */
 export async function migrateSessionSchema(ch: ClickHouse): Promise<void> {
+  // Additive F-1 upgrade: existing rows keep an empty alias without rebuilding the archive.
+  await ch.exec("ALTER TABLE tokenlayer.session_events ADD COLUMN IF NOT EXISTS session_alias String CODEC(ZSTD(3))");
   try { await verifySessionSchema(ch); return; } catch {}
   const columns = await ch.queryJSON<{ name: string }>(
     "SELECT name FROM system.columns WHERE database='tokenlayer' AND table='session_events'",

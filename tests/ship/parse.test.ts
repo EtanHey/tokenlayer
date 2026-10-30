@@ -216,3 +216,12 @@ test("review: all parsed columns depend only on line bytes", () => {
     expect(warm).toEqual(before);
   }
 });
+
+
+test("F-1 native Codex header identity wins; the legacy parent is a line-local alias", () => {
+  const raw=JSON.stringify({type:"session_meta",session_id:"outer-alias",payload:{id:"child",session_id:"parent"}});
+  expect(parseLine(raw)).toMatchObject({session_id:"child",session_alias:"parent",raw});
+  expect(parseLine(JSON.stringify({type:"session_meta",payload:{id:"solo"}}))).toMatchObject({session_id:"solo",session_alias:""});
+  expect(parseLine('{bad')).toMatchObject({session_id:"",session_alias:""});
+  expect(parseLine(JSON.stringify({type:"event_msg",payload:{type:"fixture"}}))).toMatchObject({session_id:"",session_alias:""});
+});

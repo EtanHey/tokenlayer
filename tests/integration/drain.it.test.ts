@@ -6,7 +6,7 @@ import fixture from "../fixtures/usage-queue.json";
 import { applySchema } from "../../src/lib/schema";
 import { drainOnce } from "../../src/drain/drain";
 import { Spool } from "../../src/drain/spool";
-import { clickhouseBinary, startLocalClickHouse, type LocalClickHouse } from "../support/local-clickhouse";
+import { clickhouseBinary, startLocalClickHouse, type LocalClickHouse } from "../../src/lib/local-clickhouse";
 
 describe.skipIf(!clickhouseBinary())("drain → real local ClickHouse", () => {
   let ch: LocalClickHouse;

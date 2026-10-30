@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS tokenlayer.session_events
     line_bytes            UInt32                 CODEC(T64, ZSTD(3)),
     ts                    DateTime64(3, 'UTC')   CODEC(Delta, ZSTD(3)),
     session_id            String                 CODEC(ZSTD(3)),
+    session_alias         String                 CODEC(ZSTD(3)),
     project               LowCardinality(String),
     cwd                   LowCardinality(String),
     type                  LowCardinality(String),
