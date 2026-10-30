@@ -1,8 +1,9 @@
 # Read-only archaeology
 Requires the immutable/exact-raw shipper schema (#16/#19), Bun, Python 3 and zstd for compressed rollouts.
-Run `bun src/archaeology/main.ts --inventory /absolute/inventory.tsv --evidence /absolute/evidence.ndjson --out /absolute/new-output --validate`.
+Run the owning shipper's `--backfill` first. Then export fresh coverage with `CLICKHOUSE_*` set: `bun src/archaeology/main.ts export-existing --out /absolute/new-existing.tsv`. This runs the checked-in `existing.sql`, reads metadata only, and refuses to overwrite an existing output. It does not load env files.
+Run `bun src/archaeology/main.ts --inventory /absolute/inventory.tsv --evidence /absolute/evidence.ndjson --existing /absolute/new-existing.tsv --out /absolute/new-output --validate`.
 Repeat `--inventory` for additional inventories. `--manifest /absolute/manifest.tsv` replays an earlier manifest into a different output directory.
-`--existing /absolute/pairs.tsv` seeds a read-only shipper export with columns `session_id`, `stream` (or source `path`), `content_hash`, and positive integer `count`. Coverage uses the maximum count per stream/hash; it never sums duplicate copies.
+`--existing` requires columns `machine`, `session_id`, `path` (legacy `stream` accepted), `generation`, `content_hash`, and positive integer `count`. Coverage uses the maximum count per machine/stream/hash across paths and generations, never their sum. The canonical SQL derives native UUIDs and subagent parents from paths and uses file-generation identity for session-less markers. Unresolvable owners fail closed; never substitute a placeholder. TabSeparated paths are unescaped on read.
 
 Evidence NDJSON contains `cwd`, `repo` (`owner/name`), `evidence`, and `confidence` (`high`/`medium`). GitHub redirects and current remotes must be gathered read-only before running. Conflicting identities remain unresolved.
 `repo_map` preserves machine/from/to evidence and splits dated directory reuse. Bounds are half-open; null valid_to is open-ended for current mappings. Conflicting overlaps remain unresolved.
@@ -12,7 +13,7 @@ The library accepts replayable streams. The local adapter reads files twice and 
 
 Verified content must prove the declared session: Claude identity records match (untagged state markers inherit it), or a subagent is under that parent session; Codex starts with matching session_meta.payload.id. Rejected copies are not_transcript.
 Only LF-terminated lines count. Trailing incomplete bytes are reported. Invalid UTF-8 and changed/unreadable sources fail closed and remain explicit in the manifest. Raw retains all source whitespace and LF; hashes cover those exact bytes.
-The SQLite scratch index contains session/stream ids, hashes and occurrence maxima. A stream is a session plus its subagent file id (main transcripts use `::main`). Reports never contain raw lines. `--validate` pre-seeds a throwaway local ClickHouse baseline, measures unchanged counts across dryRun, and checks at most 100 rows in a separate schema-identical sample table before teardown; no shared endpoint is accepted. There is no apply mode.
+The SQLite scratch index contains session/stream ids, hashes and occurrence maxima. A stream is a session plus its subagent file id (main transcripts use `::main`). Reports never contain raw lines. `--validate` pre-seeds a throwaway local ClickHouse baseline and checks at most 100 rows in a separate schema-identical sample table, verifying that sample insertion leaves the baseline unchanged; no shared endpoint is accepted. There is no apply mode.
 
 Focused verification: `bun test tests/archaeology`. Full verification: `bun run typecheck && bun test`.
 
@@ -21,3 +22,4 @@ Origin labels are inferred from usernames (etanheyman→m4, happycampr→m1), no
 The invariant imports one session and two JSONL line rows; row counts always mean lines, not sessions.
 
 Live coverage uses explicit per-machine roots, with fixed m4/m1 home defaults. Pass `--roots /absolute/roots.json` to override them: `{"m4":["/Users/etanheyman/.claude/projects","/Users/etanheyman/.codex/sessions"],"m1":["/Users/happycampr/.claude/projects","/Users/happycampr/.codex/sessions"]}`. The resolved configuration is recorded in shipper-roots.json; M4 process environment variables never define M1 coverage.
+Live files have one owner: the shipper. Archaeology never emits their bytes under `archive://`. Missing exact-path server coverage becomes `needs_shipper_backfill` (line count and manifest status); matching archive occurrences are reserved as `skip_shipper` until coverage exists. A future apply must refuse any backfill, fetch, changed-source or read-error remainder and require a fresh export. Legacy stream-only exports cannot prove exact live-path coverage. Re-run backfill, export and dry-run after any shipper root/format change, including the separate `.jsonl.zst` lane. Sources are never rewritten, moved or deleted; capacity still requires at least 35 GiB free after import.

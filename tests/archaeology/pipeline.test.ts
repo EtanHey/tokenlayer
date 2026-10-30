@@ -44,7 +44,7 @@ test("divergent copies retain unique lines; live pairs skip; unfetched and chang
   const b = Buffer.from('{"sessionId":"session","type":"assistant"}\n');
   const copies = [row({ source_kind: "live", member_path: "/Users/etanheyman/.claude/projects/project/live.jsonl", sha256: sha256(a), bytes: String(a.length) }), row({ member_path: "archive.jsonl", sha256: sha256(b), bytes: String(b.length) }), row({ member_path: "duplicate.jsonl", sha256: sha256(a), bytes: String(a.length) }), row({ member_path: "remote.jsonl", session_id: "remote", source_kind: "drive_file" })];
   const entries = manifest(copies, []);
-  const result = await dryRun(entries, { existing: [["m4", "session", "session::main", sha256(a), 1]], read: async r => r.member_path === "remote.jsonl" ? null : (async function* () { yield r.member_path === "archive.jsonl" ? b : a; })() });
+  const result = await dryRun(entries, { existing: [["m4", "session", copies[0].member_path, sha256(a), 1]], read: async r => r.member_path === "remote.jsonl" ? null : (async function* () { yield r.member_path === "archive.jsonl" ? b : a; })() });
   expect(result.import_rows).toBe(1);
   expect(result.skip_live).toBe(2);
   expect(result.divergent_sessions).toBe(1);
@@ -100,7 +100,7 @@ test("MF-2 missing repeated occurrences survive per stream and retain reconstruc
   const prefix=Buffer.concat([header,repeated]),full=Buffer.concat([header,repeated,repeated,repeated]);
   const data=new Map([["/Users/etanheyman/.claude/projects/p/session.jsonl",prefix],["full.jsonl",full],["session/subagents/agent-a.jsonl",prefix],["copy/session/subagents/agent-a.jsonl",prefix]]);
   const entries=manifest([...data].map(([path,bytes],i)=>row({member_path:path,source_kind:i===0?"live":"archive_dir",bytes:String(bytes.length),sha256:sha256(bytes)})),[]);
-  const result=await dryRun(entries,{existing:[["m4","session","session::main",sha256(header),1],["m4","session","session::main",sha256(repeated),1]],read:async e=>(async function*(){yield data.get(e.member_path)!;})()});
+  const result=await dryRun(entries,{existing:[["m4","session",[...data.keys()][0],sha256(header),1],["m4","session",[...data.keys()][0],sha256(repeated),1]],read:async e=>(async function*(){yield data.get(e.member_path)!;})()});
   const main=result.sample.filter(e=>streamId(e.session_id,e.path)===streamId("session","full.jsonl"));
   expect(main.map(e=>e.byte_offset)).toEqual([prefix.length,prefix.length+repeated.length]);
   expect(Buffer.concat([prefix,...main.sort((a,b)=>a.byte_offset-b.byte_offset).map(e=>Buffer.from(e.raw))]).equals(full)).toBe(true);

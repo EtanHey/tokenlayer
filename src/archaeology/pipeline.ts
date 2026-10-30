@@ -144,10 +144,12 @@ export async function dryRun(entries: Entry[], options: {
   onEntry?: (entry: Entry) => void;
 }) {
   const db = new Database(options.database ?? ":memory:");
-  db.exec("DROP TABLE IF EXISTS seen; DROP TABLE IF EXISTS occurrences; CREATE TABLE occurrences(machine TEXT, session TEXT, stream TEXT, hash TEXT, live_count INTEGER, prior_count INTEGER, PRIMARY KEY(machine,session,stream,hash)) WITHOUT ROWID; DELETE FROM occurrences");
-  const insert = db.query("INSERT INTO occurrences VALUES(?,?,?,?,?,?) ON CONFLICT(machine,session,stream,hash) DO UPDATE SET live_count=max(live_count,excluded.live_count),prior_count=max(prior_count,excluded.prior_count)");
-  const find = db.query<{ live_count: number; prior_count: number }, [string, string, string, string]>("SELECT live_count,prior_count FROM occurrences WHERE machine=? AND session=? AND stream=? AND hash=?");
-  const report = { import_rows: 0, import_bytes: 0, import_sessions: 0, skip_live: 0, skip_copy: 0, live_rows: 0, needs_fetch: 0, source_changed: 0, read_errors: 0, not_transcript: 0, invalid_member_hash: 0, divergent_sessions: 0, divergent_streams: 0, unterminated_bytes: 0, sample: [] as Event[], groups: {} as Record<string, { rows: number; bytes: number; skip_live: number; skip_copy: number }> };
+  db.exec("DROP TABLE IF EXISTS seen; DROP TABLE IF EXISTS occurrences; DROP TABLE IF EXISTS covered_paths; CREATE TABLE occurrences(machine TEXT, session TEXT, stream TEXT, hash TEXT, live_count INTEGER, prior_count INTEGER, owner_count INTEGER, PRIMARY KEY(machine,session,stream,hash)) WITHOUT ROWID; CREATE TABLE covered_paths(machine TEXT,stream TEXT,path TEXT,hash TEXT,count INTEGER,PRIMARY KEY(machine,stream,path,hash)) WITHOUT ROWID");
+  const insert = db.query("INSERT INTO occurrences VALUES(?,?,?,?,?,?,?) ON CONFLICT(machine,session,stream,hash) DO UPDATE SET live_count=max(live_count,excluded.live_count),prior_count=max(prior_count,excluded.prior_count),owner_count=max(owner_count,excluded.owner_count)");
+  const find = db.query<{ live_count: number; prior_count: number; owner_count: number }, [string, string, string, string]>("SELECT live_count,prior_count,owner_count FROM occurrences WHERE machine=? AND session=? AND stream=? AND hash=?");
+  const cover = db.query("INSERT INTO covered_paths VALUES(?,?,?,?,?) ON CONFLICT(machine,stream,path,hash) DO UPDATE SET count=max(count,excluded.count)");
+  const covered = db.query<{ count: number }, [string, string, string, string]>("SELECT count FROM covered_paths WHERE machine=? AND stream=? AND path=? AND hash=?");
+  const report = { import_rows: 0, import_bytes: 0, import_sessions: 0, skip_live: 0, skip_copy: 0, skip_shipper: 0, needs_shipper_backfill: 0, live_rows: 0, needs_fetch: 0, source_changed: 0, read_errors: 0, not_transcript: 0, invalid_member_hash: 0, divergent_sessions: 0, divergent_streams: 0, unterminated_bytes: 0, sample: [] as Event[], groups: {} as Record<string, { rows: number; bytes: number; skip_live: number; skip_copy: number }> };
   const sessions = new Set<string>(), divergent = new Map<string, string>();
   const prefixes = new Map<string, Map<number, string>>();
   const verified = new Map<string, Entry[]>();
@@ -156,12 +158,16 @@ export async function dryRun(entries: Entry[], options: {
   for (const e of entries) { const sizes = sizeSets.get(e.stream) ?? new Set<number>(); sizes.add(Number(e.bytes)); sizeSets.set(e.stream, sizes); }
   for (const [stream, sizes] of sizeSets) lengths.set(stream, [...sizes].sort((a,b)=>a-b));
   const ordered = [...entries].sort((a, b) => Number(b.source_kind === "live") - Number(a.source_kind === "live") || Number(b.bytes) - Number(a.bytes));
+  const pendingLive = new Set(entries.filter(e => e.source_kind === "live"));
   try {
     for (const [machine, session, path, hash, count] of options.existing ?? []) {
       if (!/^(m1|m4)$/.test(machine) || !hashOK(hash) || !Number.isSafeInteger(count) || count < 1) throw new Error("invalid existing occurrence count/hash");
-      const stream=streamId(session,path); insert.run(machine, stream.split("::")[0], stream, hash, count, 0);
+      const stream=streamId(session,path); insert.run(machine, stream.split("::")[0], stream, hash, count, 0, 0);
+      cover.run(machine, stream, path, hash, count);
     }
     for await (const e of options.order ?? ordered) {
+      if (e.source_kind !== "live" && pendingLive.size) throw Error("live sources must precede archives");
+      pendingLive.delete(e);
       try {
       if (e.status === "invalid_member_hash") { report.invalid_member_hash++; options.onEntry?.(e); continue; }
       const source = e.origin === "unknown" || (e.source_kind === "live" && e.machine.toLowerCase() !== e.origin) || e.source_kind === "t3_sqlite" ? null : await options.read(e);
@@ -191,7 +197,7 @@ export async function dryRun(entries: Entry[], options: {
       const subagent = !!subagentFileId(e.member_path) && (`/${e.member_path}`).includes(`/${e.session_id}/subagents/`);
       let stream=e.stream, eventSession=e.session_id;
       let identitySeen = st.kind === "claude" && subagent, firstLine = true, codexHeader = false;
-      let offset = 0, carry = Buffer.alloc(0), rows = 0, bytes = 0, skipLive = 0, skipCopy = 0, liveRows = 0;
+      let offset = 0, carry = Buffer.alloc(0), rows = 0, bytes = 0, skipLive = 0, skipCopy = 0, liveRows = 0, needsBackfill = 0, skipShipper = 0;
       const counts = new Map<string, number>();
       const sample: Event[] = [], secondHash = createHash("sha256");
       db.exec("BEGIN");
@@ -213,12 +219,18 @@ export async function dryRun(entries: Entry[], options: {
             if (st.kind === "claude") identitySeen ||= identityMatches(text, e.session_id, "claude");
             const existing = find.get(e.origin, stream.split("::")[0], stream, hash);
             const occurrence = (counts.get(hash) ?? 0) + 1; counts.set(hash, occurrence);
-            if (e.source_kind === "live") liveRows++;
-            // Only a server export establishes coverage; local live files can be unshipped.
-            if (occurrence <= (existing?.live_count ?? 0)) skipLive++;
+            if (e.source_kind === "live") {
+              liveRows++;
+              // One owner: reserve these occurrences even when backfill has not shipped them.
+              insert.run(e.origin, stream.split("::")[0], stream, hash, 0, 0, occurrence);
+              if (occurrence <= (covered.get(e.origin, stream, e.member_path, hash)?.count ?? 0)) skipLive++;
+              else needsBackfill++;
+            }
+            else if (occurrence <= (existing?.live_count ?? 0)) skipLive++;
+            else if (occurrence <= (existing?.owner_count ?? 0)) skipShipper++;
             else if (occurrence <= (existing?.prior_count ?? 0)) skipCopy++;
             else {
-              insert.run(e.origin, stream.split("::")[0], stream, hash, 0, occurrence); rows++; bytes += line.length;
+              insert.run(e.origin, stream.split("::")[0], stream, hash, 0, occurrence, 0); rows++; bytes += line.length;
               if (sample.length < (options.sampleSize ?? 100)) sample.push({ ...parsed, session_id: parsed.type === "invalid" ? parsed.session_id : eventSession, raw, project: e.repo || parsed.project, machine: e.origin, harness: st.harness, path: `archive://${e.container_hash || fullHash}/${e.member_path}`, generation: `archive:${fullHash}`, byte_offset: offset, content_hash: hash, line_bytes: line.length });
             }
             offset += line.length; start = nl + 1;
@@ -245,7 +257,7 @@ export async function dryRun(entries: Entry[], options: {
       else { e.relation = "canonical_verified"; }
       if (!known || size > Math.max(...known.keys())) prefixes.set(e.stream, checkpoints);
       const priorCopies = verified.get(e.stream) ?? []; priorCopies.push(e); verified.set(e.stream, priorCopies);
-      e.status = "verified"; report.import_rows += rows; report.import_bytes += bytes; report.skip_live += skipLive; report.skip_copy += skipCopy; report.live_rows += liveRows; report.unterminated_bytes += carry.length;
+      e.status = needsBackfill ? "needs_shipper_backfill" : "verified"; report.needs_shipper_backfill += needsBackfill; report.skip_shipper += skipShipper; report.import_rows += rows; report.import_bytes += bytes; report.skip_live += skipLive; report.skip_copy += skipCopy; report.live_rows += liveRows; report.unterminated_bytes += carry.length;
       if (rows) sessions.add(e.session_id);
       report.sample.push(...sample.slice(0, Math.max(0, (options.sampleSize ?? 100) - report.sample.length)));
       const key = [e.origin, e.harness, e.repo || "unresolved"].join("\t"), group = report.groups[key] ?? { rows: 0, bytes: 0, skip_live: 0, skip_copy: 0 };
@@ -253,6 +265,7 @@ export async function dryRun(entries: Entry[], options: {
       options.onEntry?.(e);
       } catch { e.status = "read_error"; report.read_errors++; options.onEntry?.(e); }
     }
+    if (pendingLive.size) throw Error("live sources must precede archives");
     const best = new Map<string, Entry>();
     for (const e of entries) if (e.status !== "not_transcript" && (!best.has(e.stream) || Number(e.bytes) > Number(best.get(e.stream)?.bytes))) best.set(e.stream, e);
     for (const e of entries) e.selected = best.get(e.stream) === e || (e.status === "verified" && e.relation === "divergent");
