@@ -58,18 +58,33 @@ and the existing mode-600 `~/.config/tokenlayer/hub.env` with `CLIPROXY_MGMT_KEY
    ```
 
    Run the two Macs' backfills sequentially, one process at a time, so they do not budget the same hub free space.
-   Before importing, the runner inventories all `.jsonl` source bytes (conservatively including older files and
-   checkpoint replays; `.zst` stays excluded) and queries the authenticated hub's default disk and active
-   session-table compression. Formula: `projected_bytes = ceil(inventory_bytes * 2 * max(1, compressed/uncompressed))`;
-   an empty table uses ratio 1. The 2x factor budgets metadata/index/merge overhead; observed compression savings
-   receive no credit, while observed expansion raises the estimate. The runner refuses unless `free_space - projected_bytes >= 35 GiB`.
-   Every insert batch rechecks the hub volume with the same formula on serialized batch bytes, covering source growth
-   and concurrent writes. ClickHouse's default disk also reserves `keep_free_space_bytes=37580963840` (35 GiB),
+   Before importing, the runner inventories `.jsonl` and Codex `.jsonl.zst` source bytes with `mtime >= sinceMs`,
+   matching the shipper's initial `--since` selection (plain files take precedence over compressed twins), and queries
+   the authenticated hub's default disk and active session-table compression. With at least **1 GiB uncompressed**
+   in active `session_events` parts, the formula is
+   `projected_bytes = ceil(decoded_inventory_bytes * max(compressed/uncompressed, 0.30) * 1.25)`.
+   The 0.30 floor limits compression credit, and 1.25 budgets merge/index headroom. Below 1 GiB (including an
+   empty table), the conservative fallback is `ceil(decoded_inventory_bytes * 2)`.
+   Codex archives use the decompressed frame content size from `zstd -lv` (summing concatenated frames); unknown
+   content sizes or an unavailable CLI fall back to **6x compressed bytes**, before the projection factor.
+   Sizing retains one `zstd -lv` per eligible archive: 200 synthetic archives (3.36 MB decoded each) took
+   606 ms on the M1 hub, about 12 seconds extrapolated to 4,000 files, so no sampled-ratio estimate is used.
+   The measured 2.43 GiB stored / 5.76 GiB uncompressed ratio projects 108 GB decoded to about **56.95 GB**
+   including headroom, which fits against 97 GiB real free while retaining 35 GiB. The runner refuses unless
+   `free_space + keep_free_space - projected_bytes >= 35 GiB`. Local throwaway-server tests on ClickHouse
+   26.10.2.103, with reserves of zero and 35 GiB, verified that `system.disks.free_space` and idle
+   `unreserved_space` already exclude `keep_free_space`; adding it back reconstructs real filesystem free bytes.
+   Thus the floor is counted once: 65.55 GiB reported + 35 GiB reserve - 32.76 GiB projected = 67.79 GiB real free,
+   which passes. A zero reserve still requires 35 GiB after projection.
+   Every `BackfillClient.insert` batch rechecks the hub volume with the same formula on serialized batch bytes,
+   failing closed before the insert on a real shortfall or unknown disk data. This hard backstop covers source growth,
+   older checkpoint replays, and concurrent writes. ClickHouse's default disk also reserves `keep_free_space_bytes=37580963840` (35 GiB),
    including daemon/drain writes. This measures M1 disk space even when backfill runs on M4.
    It uses `backfill-state.json` separately from the daemon's `ship-state.json`
    and retains both `.generations` sidecars. Stable source identity plus the replacement key and FINAL make replay
    safe; losing both progress and lineage, or copying source files to new inodes, can add archive histories.
-   `--since` selects files by mtime, not individual event dates. The UTC cutoff is today minus N days; an eligible
+   The runner requires a valid `--since` date and a finite positive `--rate-mb`; invalid or missing values fail
+   before loading credentials or querying the hub. `--since` selects files by mtime, not individual event dates. The UTC cutoff is today minus N days; an eligible
    file may contribute older events. The 2 MiB/s cap applies to shipped bytes, with extra disk reads for verification.
    Logs are `~/Library/Logs/tokenlayer/backfill{,.err}.log` (replaced each invocation); daemon logs are adjacent.
 
@@ -100,8 +115,8 @@ no session contents read. Source family is the harness directory, not content-ba
 | ~/.codex/sessions (Codex + T3 Codex) | .jsonl | 2,909 | 6,059,242,032 |
 | ~/.codex/sessions | .jsonl.zst | 4,391 | 9,130,147,205 |
 
-The shipper accepts only `.jsonl`: **4,391 compressed Codex files / 9,130,147,205 bytes are excluded**. Route zstd
-support separately; this PR does not implement it. T3-owned storage is outside these source roots: a metadata-only
+The current shipper and backfill inventory include these compressed Codex files; the compressed byte count above
+is an on-disk measurement, not the decompressed projection. T3-owned storage is outside these source roots: a metadata-only
 scan of ~/.t3 (excluding worktrees/node_modules) found 1,078 .jsonl / 120,324,876 bytes, zero .jsonl.zst; these are
 provider/triage/attachment artifacts, not proven sessions. No root-level ~/.t3/*.jsonl were found. T3's native
 SQLite thread store is also not shipped. Exact `t3` harness counts require content inspection, outside this inventory.

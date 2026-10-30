@@ -20,7 +20,7 @@ function freePorts() {
 }
 
 /** Start a throwaway `clickhouse server` on free ports under .local/ (gitignored). */
-export async function startLocalClickHouse(options: { queryLog?: boolean } = {}, allocatePorts = freePorts): Promise<LocalClickHouse> {
+export async function startLocalClickHouse(options: { queryLog?: boolean; keepFreeSpaceBytes?: number } = {}, allocatePorts = freePorts): Promise<LocalClickHouse> {
   const bin = clickhouseBinary();
   if (!bin) throw new Error("clickhouse binary not found");
   const root = join(import.meta.dir, "..", "..", ".local");
@@ -45,6 +45,7 @@ export async function startLocalClickHouse(options: { queryLog?: boolean } = {},
         `--tcp_port=${tcp}`,
         "--listen_host=127.0.0.1",
         `--path=${join(dir, "data")}/`,
+        `--storage_configuration.disks.default.keep_free_space_bytes=${options.keepFreeSpaceBytes ?? 0}`,
         `--logger.log=${join(dir, "server.log")}`,
         `--logger.errorlog=${join(dir, "server.err.log")}`,
         "--logger.console=0",
