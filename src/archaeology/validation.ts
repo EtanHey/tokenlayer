@@ -31,13 +31,12 @@ export async function validatedDryRun(entries: Entry[], options: Parameters<type
     await local.client.insert("session_events",seeds);
     const count = async () => (await local.client.queryJSON<{n:number}>("SELECT toUInt32(count()) AS n FROM tokenlayer.session_events FINAL"))[0].n;
     const before=await count();
+    if(before!==seedRows) throw Error("validation baseline seed mismatch");
     const report=await dryRun(entries,options);
-    const after=await count();
-    if(before!==seedRows || after!==before) throw Error("dry-run changed preseeded ClickHouse rows");
     const validated = await validateSample(local.client, report.sample);
     const afterSample=await count();
     if(afterSample!==before) throw Error("sample validation changed baseline rows");
-    return {report,validated,baseline:{seed_rows:seedRows,before,after,after_sample:afterSample}};
+    return {report,validated,baseline:{seed_rows:seedRows,before,after_sample:afterSample}};
   } finally {
     try { await stop(); }
     finally { process.removeListener("SIGINT",interrupt); process.removeListener("SIGTERM",terminate); }

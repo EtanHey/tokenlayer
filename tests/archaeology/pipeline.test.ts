@@ -44,7 +44,7 @@ test("divergent copies retain unique lines; live pairs skip; unfetched and chang
   const b = Buffer.from('{"sessionId":"session","type":"assistant"}\n');
   const copies = [row({ source_kind: "live", member_path: "/Users/etanheyman/.claude/projects/project/live.jsonl", sha256: sha256(a), bytes: String(a.length) }), row({ member_path: "archive.jsonl", sha256: sha256(b), bytes: String(b.length) }), row({ member_path: "duplicate.jsonl", sha256: sha256(a), bytes: String(a.length) }), row({ member_path: "remote.jsonl", session_id: "remote", source_kind: "drive_file" })];
   const entries = manifest(copies, []);
-  const result = await dryRun(entries, { existing: [["m4", "session", "session::main", sha256(a), 1]], read: async r => r.member_path === "remote.jsonl" ? null : (async function* () { yield r.member_path === "archive.jsonl" ? b : a; })() });
+  const result = await dryRun(entries, { existing: [["m4", "session", copies[0].member_path, sha256(a), 1]], read: async r => r.member_path === "remote.jsonl" ? null : (async function* () { yield r.member_path === "archive.jsonl" ? b : a; })() });
   expect(result.import_rows).toBe(1);
   expect(result.skip_live).toBe(2);
   expect(result.divergent_sessions).toBe(1);
@@ -71,15 +71,15 @@ test("raw preserves a UTF-8 BOM while the hash covers its exact bytes", async ()
 });
 
 
-test("MF-1 compressed live rollouts are historical unless the shipper covers them", async () => {
-  const path = "/Users/etanheyman/.codex/sessions/2026/01/01/rollout-session.jsonl.zst";
+test("MF-1 compressed rollouts outside shipper roots remain historical", async () => {
+  const path = "/history/2026/01/01/rollout-session.jsonl.zst";
   const bytes = Buffer.from('{"type":"session_meta","payload":{"id":"session"}}\n');
   const compressedHash = sha256(Buffer.from("compressed-container-fixture"));
   const entries = manifest([row({ source_kind: "live", harness: "codex", member_path: path, bytes: String(bytes.length), sha256: sha256(bytes) })], []);
   entries[0].container_hash = compressedHash;
   const result = await dryRun(entries, { read: async () => (async function* () { yield bytes; })() });
   expect(shipperCovers(path,"m4")).toBe(false);
-  expect(shipperCovers(path.replace(/\.zst$/, ""),"m4")).toBe(true);
+  expect(shipperCovers(path.replace(/\.zst$/, ""),"m4")).toBe(false);
   expect(result.live_rows).toBe(0); expect(result.import_rows).toBe(1);
   expect(result.sample[0].path).toBe(`archive://${compressedHash}/${path}`);
 });
@@ -100,7 +100,7 @@ test("MF-2 missing repeated occurrences survive per stream and retain reconstruc
   const prefix=Buffer.concat([header,repeated]),full=Buffer.concat([header,repeated,repeated,repeated]);
   const data=new Map([["/Users/etanheyman/.claude/projects/p/session.jsonl",prefix],["full.jsonl",full],["session/subagents/agent-a.jsonl",prefix],["copy/session/subagents/agent-a.jsonl",prefix]]);
   const entries=manifest([...data].map(([path,bytes],i)=>row({member_path:path,source_kind:i===0?"live":"archive_dir",bytes:String(bytes.length),sha256:sha256(bytes)})),[]);
-  const result=await dryRun(entries,{existing:[["m4","session","session::main",sha256(header),1],["m4","session","session::main",sha256(repeated),1]],read:async e=>(async function*(){yield data.get(e.member_path)!;})()});
+  const result=await dryRun(entries,{existing:[["m4","session",[...data.keys()][0],sha256(header),1],["m4","session",[...data.keys()][0],sha256(repeated),1]],read:async e=>(async function*(){yield data.get(e.member_path)!;})()});
   const main=result.sample.filter(e=>streamId(e.session_id,e.path)===streamId("session","full.jsonl"));
   expect(main.map(e=>e.byte_offset)).toEqual([prefix.length,prefix.length+repeated.length]);
   expect(Buffer.concat([prefix,...main.sort((a,b)=>a.byte_offset-b.byte_offset).map(e=>Buffer.from(e.raw))]).equals(full)).toBe(true);

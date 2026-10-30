@@ -2,6 +2,19 @@ import { test, expect } from "bun:test";
 import { startLocalClickHouse, clickhouseBinary } from "../../src/lib/local-clickhouse";
 import { manifest, sha256, type Inventory } from "../../src/archaeology/pipeline";
 
+test.skipIf(!clickhouseBinary())("NIT-4 validatedDryRun completes with a real sample and isolates the baseline", async () => {
+  const { validatedDryRun } = await import("../../src/archaeology/validation");
+  const bytes = Buffer.from('{"sessionId":"happy-path","type":"user"}\n');
+  const row: Inventory = { machine: "m4", source_kind: "archive_dir", container: "", member_path: "happy-path.jsonl", session_id: "happy-path", harness: "claude", bytes: String(bytes.length), lines: "1", first_ts: "2026-01-01", last_ts: "2026-01-01", cwd: "/Users/etanheyman/Gits/example", sha256: sha256(bytes), mtime: "" };
+  const listeners = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
+  const result = await validatedDryRun(manifest([row], []), { read: async () => (async function* () { yield bytes; })() }, 2);
+  expect(result.validated).toBe(1);
+  expect(result.report.import_rows).toBe(1);
+  expect(result.report.sample[0].raw).toBe(bytes.toString());
+  expect(result.baseline).toEqual({ seed_rows: 2, before: 2, after_sample: 2 });
+  expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(listeners);
+}, 40_000);
+
 test.skipIf(!clickhouseBinary())("NIT-4 sample validation writes only its sample table and rejects damaged raw", async () => {
   const bytes=Buffer.from('{"sessionId":"validation-fixture","type":"user"}\n');
   const row: Inventory={machine:"m4",source_kind:"archive_dir",container:"",member_path:"validation.jsonl",session_id:"validation-fixture",harness:"claude",bytes:String(bytes.length),lines:"1",first_ts:"2026-01-01",last_ts:"2026-01-01",cwd:"/Users/etanheyman/Gits/example",sha256:sha256(bytes),mtime:""};

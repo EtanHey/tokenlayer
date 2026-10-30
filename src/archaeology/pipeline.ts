@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Database } from "bun:sqlite";
 import { newFileState, parseLine, detectHarness, type ParsedLine } from "../ship/parse";
+import { isSessionPath, logicalSessionPath, ownsSessionPath } from "../ship/ship";
 
 export type Inventory = Record<"machine" | "source_kind" | "container" | "member_path" | "session_id" | "harness" | "bytes" | "lines" | "first_ts" | "last_ts" | "cwd" | "sha256" | "mtime", string>;
 export type Evidence = { cwd: string; repo: string; evidence: string; confidence: "high" | "medium"; machine?: string; valid_from?: string | null; valid_to?: string | null };
@@ -111,20 +112,23 @@ export function parseShipperRoots(value: unknown): MachineRoots {
   return result;
 }
 /** Mirrors ship.ts listJsonl using the owning machine's explicit roots, never this process's env. */
-export function shipperCovers(path: string, machine: string, roots: MachineRoots = DEFAULT_SHIPPER_ROOTS): boolean {
-  return path.endsWith(".jsonl") && (roots[machine]??[]).some(root=>path.startsWith(root.replace(/\/$/,"")+"/"));
+export function shipperCovers(path: string, machine: string, roots: MachineRoots = DEFAULT_SHIPPER_ROOTS, compressed = true): boolean {
+  return isSessionPath(path, compressed) && (roots[machine]??[]).some(root=>path.startsWith(root.replace(/\/$/,"")+"/"));
 }
 
 export function manifest(rows: Inventory[], maps: RepoMap[], roots: MachineRoots = DEFAULT_SHIPPER_ROOTS): Entry[] {
   const repos = new Map<string, RepoMap[]>();
   for (const m of maps) {const key=`${m.machine}\0${m.cwd}`,list=repos.get(key)??[];list.push(m);repos.set(key,list);}
   const copies = new Map<string, Entry>();
+  const livePaths = new Set(rows.filter(r => r.source_kind === "live").map(r => `${r.machine.toLowerCase()}\0${r.member_path}`));
   for (const r of rows.filter(r => classify(r).session)) {
     const key = JSON.stringify([r.machine, r.source_kind, r.container, r.member_path, r.sha256]);
     const ts=Date.parse(r.first_ts), matching=(repos.get(`${origin(r)}\0${r.cwd}`)??[]).filter(m=>(m.valid_from===null||ts>=Date.parse(m.valid_from))&&(m.valid_to===null||ts<Date.parse(m.valid_to)));
     const names=new Set(matching.map(m=>m.repo_canonical));
     const physical = r.machine.toLowerCase(), inferred = origin(r);
-    const kind = r.source_kind === "live" && physical === inferred && !shipperCovers(r.member_path,physical,roots) ? "archive_dir" : r.source_kind;
+    const compressed = r.harness === "codex" || /rollout-/.test(r.member_path);
+    const owned = shipperCovers(r.member_path,physical,roots,compressed) && ownsSessionPath(r.member_path,compressed,p => livePaths.has(`${physical}\0${p}`));
+    const kind = r.source_kind === "live" && physical === inferred && !owned ? "archive_dir" : r.source_kind;
     copies.set(key, { ...r, source_kind: kind, origin: inferred, repo: names.size===1?matching[0].repo_canonical:"", selected: false, relation: "unverified", status: "pending", container_hash: "", stream: streamId(r.session_id, r.member_path) });
   }
   const entries = [...copies.values()].sort((a, b) => Number(b.bytes) - Number(a.bytes) || a.member_path.localeCompare(b.member_path));
@@ -144,10 +148,12 @@ export async function dryRun(entries: Entry[], options: {
   onEntry?: (entry: Entry) => void;
 }) {
   const db = new Database(options.database ?? ":memory:");
-  db.exec("DROP TABLE IF EXISTS seen; DROP TABLE IF EXISTS occurrences; CREATE TABLE occurrences(machine TEXT, session TEXT, stream TEXT, hash TEXT, live_count INTEGER, prior_count INTEGER, PRIMARY KEY(machine,session,stream,hash)) WITHOUT ROWID; DELETE FROM occurrences");
-  const insert = db.query("INSERT INTO occurrences VALUES(?,?,?,?,?,?) ON CONFLICT(machine,session,stream,hash) DO UPDATE SET live_count=max(live_count,excluded.live_count),prior_count=max(prior_count,excluded.prior_count)");
-  const find = db.query<{ live_count: number; prior_count: number }, [string, string, string, string]>("SELECT live_count,prior_count FROM occurrences WHERE machine=? AND session=? AND stream=? AND hash=?");
-  const report = { import_rows: 0, import_bytes: 0, import_sessions: 0, skip_live: 0, skip_copy: 0, live_rows: 0, needs_fetch: 0, source_changed: 0, read_errors: 0, not_transcript: 0, invalid_member_hash: 0, divergent_sessions: 0, divergent_streams: 0, unterminated_bytes: 0, sample: [] as Event[], groups: {} as Record<string, { rows: number; bytes: number; skip_live: number; skip_copy: number }> };
+  db.exec("DROP TABLE IF EXISTS seen; DROP TABLE IF EXISTS occurrences; DROP TABLE IF EXISTS covered_paths; CREATE TABLE occurrences(machine TEXT, session TEXT, stream TEXT, hash TEXT, live_count INTEGER, prior_count INTEGER, owner_count INTEGER, PRIMARY KEY(machine,session,stream,hash)) WITHOUT ROWID; CREATE TABLE covered_paths(machine TEXT,stream TEXT,path TEXT,hash TEXT,count INTEGER,PRIMARY KEY(machine,stream,path,hash)) WITHOUT ROWID");
+  const insert = db.query("INSERT INTO occurrences VALUES(?,?,?,?,?,?,?) ON CONFLICT(machine,session,stream,hash) DO UPDATE SET live_count=max(live_count,excluded.live_count),prior_count=max(prior_count,excluded.prior_count),owner_count=max(owner_count,excluded.owner_count)");
+  const find = db.query<{ live_count: number; prior_count: number; owner_count: number }, [string, string, string, string]>("SELECT live_count,prior_count,owner_count FROM occurrences WHERE machine=? AND session=? AND stream=? AND hash=?");
+  const cover = db.query("INSERT INTO covered_paths VALUES(?,?,?,?,?) ON CONFLICT(machine,stream,path,hash) DO UPDATE SET count=max(count,excluded.count)");
+  const covered = db.query<{ count: number }, [string, string, string, string]>("SELECT count FROM covered_paths WHERE machine=? AND stream=? AND path=? AND hash=?");
+  const report = { import_rows: 0, import_bytes: 0, import_sessions: 0, skip_live: 0, skip_copy: 0, skip_shipper: 0, needs_shipper_backfill: 0, blocked_live: 0, live_rows: 0, needs_fetch: 0, source_changed: 0, read_errors: 0, not_transcript: 0, invalid_member_hash: 0, divergent_sessions: 0, divergent_streams: 0, unterminated_bytes: 0, sample: [] as Event[], groups: {} as Record<string, { rows: number; bytes: number; skip_live: number; skip_copy: number }> };
   const sessions = new Set<string>(), divergent = new Map<string, string>();
   const prefixes = new Map<string, Map<number, string>>();
   const verified = new Map<string, Entry[]>();
@@ -156,16 +162,25 @@ export async function dryRun(entries: Entry[], options: {
   for (const e of entries) { const sizes = sizeSets.get(e.stream) ?? new Set<number>(); sizes.add(Number(e.bytes)); sizeSets.set(e.stream, sizes); }
   for (const [stream, sizes] of sizeSets) lengths.set(stream, [...sizes].sort((a,b)=>a-b));
   const ordered = [...entries].sort((a, b) => Number(b.source_kind === "live") - Number(a.source_kind === "live") || Number(b.bytes) - Number(a.bytes));
+  const pendingLive = new Set(entries.filter(e => e.source_kind === "live"));
+  const blockedStreams = new Set<string>();
+  const ownerKey = (e: Entry, stream = e.stream) => JSON.stringify([e.origin, stream]);
+  const blockLive = (e: Entry) => {
+    if (e.source_kind === "live") { blockedStreams.add(ownerKey(e)); report.blocked_live++; }
+  };
   try {
     for (const [machine, session, path, hash, count] of options.existing ?? []) {
       if (!/^(m1|m4)$/.test(machine) || !hashOK(hash) || !Number.isSafeInteger(count) || count < 1) throw new Error("invalid existing occurrence count/hash");
-      const stream=streamId(session,path); insert.run(machine, stream.split("::")[0], stream, hash, count, 0);
+      const stream=streamId(session,path); insert.run(machine, stream.split("::")[0], stream, hash, count, 0, 0);
+      cover.run(machine, stream, path, hash, count);
     }
     for await (const e of options.order ?? ordered) {
+      if (e.source_kind !== "live" && pendingLive.size) throw Error("live sources must precede archives");
+      pendingLive.delete(e);
       try {
-      if (e.status === "invalid_member_hash") { report.invalid_member_hash++; options.onEntry?.(e); continue; }
+      if (e.status === "invalid_member_hash") { report.invalid_member_hash++; blockLive(e); options.onEntry?.(e); continue; }
       const source = e.origin === "unknown" || (e.source_kind === "live" && e.machine.toLowerCase() !== e.origin) || e.source_kind === "t3_sqlite" ? null : await options.read(e);
-      if (!source) { e.status = "needs_fetch_or_export"; report.needs_fetch++; options.onEntry?.(e); continue; }
+      if (!source) { e.status = "needs_fetch_or_export"; report.needs_fetch++; blockLive(e); options.onEntry?.(e); continue; }
       const digest = createHash("sha256"), checkpoints = new Map<number, string>();
       let size = 0, checkpointIndex = 0; const boundaries = lengths.get(e.stream) ?? [];
       for await (const chunk of source) {
@@ -181,7 +196,7 @@ export async function dryRun(entries: Entry[], options: {
       }
       const fullHash = digest.digest("hex");
       if ((hashOK(e.sha256) && e.sha256 !== fullHash) || (e.bytes && Number(e.bytes) !== size)) {
-        e.status = "source_changed"; report.source_changed++; options.onEntry?.(e); continue;
+        e.status = "source_changed"; report.source_changed++; blockLive(e); options.onEntry?.(e); continue;
       }
       e.sha256 = fullHash; e.bytes = String(size);
       const again = await options.read(e);
@@ -191,7 +206,7 @@ export async function dryRun(entries: Entry[], options: {
       const subagent = !!subagentFileId(e.member_path) && (`/${e.member_path}`).includes(`/${e.session_id}/subagents/`);
       let stream=e.stream, eventSession=e.session_id;
       let identitySeen = st.kind === "claude" && subagent, firstLine = true, codexHeader = false;
-      let offset = 0, carry = Buffer.alloc(0), rows = 0, bytes = 0, skipLive = 0, skipCopy = 0, liveRows = 0;
+      let offset = 0, carry = Buffer.alloc(0), rows = 0, bytes = 0, skipLive = 0, skipCopy = 0, liveRows = 0, needsBackfill = 0, skipShipper = 0;
       const counts = new Map<string, number>();
       const sample: Event[] = [], secondHash = createHash("sha256");
       db.exec("BEGIN");
@@ -213,12 +228,19 @@ export async function dryRun(entries: Entry[], options: {
             if (st.kind === "claude") identitySeen ||= identityMatches(text, e.session_id, "claude");
             const existing = find.get(e.origin, stream.split("::")[0], stream, hash);
             const occurrence = (counts.get(hash) ?? 0) + 1; counts.set(hash, occurrence);
-            if (e.source_kind === "live") liveRows++;
-            // Only a server export establishes coverage; local live files can be unshipped.
-            if (occurrence <= (existing?.live_count ?? 0)) skipLive++;
+            if (e.source_kind === "live") {
+              liveRows++;
+              // One owner: reserve these occurrences even when backfill has not shipped them.
+              insert.run(e.origin, stream.split("::")[0], stream, hash, 0, 0, occurrence);
+              if (occurrence <= (covered.get(e.origin, stream, logicalSessionPath(e.member_path), hash)?.count ?? 0)) skipLive++;
+              else needsBackfill++;
+            }
+            else if (blockedStreams.has(ownerKey(e, stream))) skipShipper++;
+            else if (occurrence <= (existing?.live_count ?? 0)) skipLive++;
+            else if (occurrence <= (existing?.owner_count ?? 0)) skipShipper++;
             else if (occurrence <= (existing?.prior_count ?? 0)) skipCopy++;
             else {
-              insert.run(e.origin, stream.split("::")[0], stream, hash, 0, occurrence); rows++; bytes += line.length;
+              insert.run(e.origin, stream.split("::")[0], stream, hash, 0, occurrence, 0); rows++; bytes += line.length;
               if (sample.length < (options.sampleSize ?? 100)) sample.push({ ...parsed, session_id: parsed.type === "invalid" ? parsed.session_id : eventSession, raw, project: e.repo || parsed.project, machine: e.origin, harness: st.harness, path: `archive://${e.container_hash || fullHash}/${e.member_path}`, generation: `archive:${fullHash}`, byte_offset: offset, content_hash: hash, line_bytes: line.length });
             }
             offset += line.length; start = nl + 1;
@@ -245,14 +267,15 @@ export async function dryRun(entries: Entry[], options: {
       else { e.relation = "canonical_verified"; }
       if (!known || size > Math.max(...known.keys())) prefixes.set(e.stream, checkpoints);
       const priorCopies = verified.get(e.stream) ?? []; priorCopies.push(e); verified.set(e.stream, priorCopies);
-      e.status = "verified"; report.import_rows += rows; report.import_bytes += bytes; report.skip_live += skipLive; report.skip_copy += skipCopy; report.live_rows += liveRows; report.unterminated_bytes += carry.length;
+      e.status = needsBackfill ? "needs_shipper_backfill" : "verified"; report.needs_shipper_backfill += needsBackfill; report.skip_shipper += skipShipper; report.import_rows += rows; report.import_bytes += bytes; report.skip_live += skipLive; report.skip_copy += skipCopy; report.live_rows += liveRows; report.unterminated_bytes += carry.length;
       if (rows) sessions.add(e.session_id);
       report.sample.push(...sample.slice(0, Math.max(0, (options.sampleSize ?? 100) - report.sample.length)));
       const key = [e.origin, e.harness, e.repo || "unresolved"].join("\t"), group = report.groups[key] ?? { rows: 0, bytes: 0, skip_live: 0, skip_copy: 0 };
       group.rows += rows; group.bytes += bytes; group.skip_live += skipLive; group.skip_copy += skipCopy; report.groups[key] = group;
       options.onEntry?.(e);
-      } catch { e.status = "read_error"; report.read_errors++; options.onEntry?.(e); }
+      } catch { e.status = "read_error"; report.read_errors++; blockLive(e); options.onEntry?.(e); }
     }
+    if (pendingLive.size) throw Error("live sources must precede archives");
     const best = new Map<string, Entry>();
     for (const e of entries) if (e.status !== "not_transcript" && (!best.has(e.stream) || Number(e.bytes) > Number(best.get(e.stream)?.bytes))) best.set(e.stream, e);
     for (const e of entries) e.selected = best.get(e.stream) === e || (e.status === "verified" && e.relation === "divergent");

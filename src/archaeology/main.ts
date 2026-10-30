@@ -1,10 +1,13 @@
 import { writeOut, writeErr, installErrorHandlers } from "../lib/egress";
-import { mkdirSync, writeFileSync, readFileSync, lstatSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { classify, repoMap, manifest, dryRun, parseEvidenceLine, parseShipperRoots, DEFAULT_SHIPPER_ROOTS, type Inventory, type Evidence, type ExistingCount } from "./pipeline";
+import { classify, repoMap, manifest, dryRun, parseEvidenceLine, parseShipperRoots, DEFAULT_SHIPPER_ROOTS, type Inventory, type Evidence } from "./pipeline";
 import { localSources } from "./sources";
 import { validatedDryRun } from "./validation";
+import { assertOutputsSeparate, assertSafeOutput, atomicOutput } from "./output-paths";
+import { readExisting, exportExisting } from "./existing";
+export { readExisting } from "./existing";
 
 export function readTSV(path: string): Record<string, string>[] {
   const [header, ...lines] = readFileSync(path, "utf8").replace(/\r?\n$/, "").split(/\r?\n/);
@@ -19,18 +22,15 @@ export function inventory(path: string): Inventory[] {
 }
 const ddl = `-- PROPOSAL: tokenlayer owns final DDL. Intervals follow dated evidence; null bounds are open.\nCREATE TABLE tokenlayer.repo_map (machine LowCardinality(String), cwd String, repo_canonical String, valid_from Nullable(DateTime64(3,'UTC')), valid_to Nullable(DateTime64(3,'UTC')), evidence Array(String), confidence LowCardinality(String)) ENGINE=MergeTree ORDER BY (machine,cwd);\n`;
 
-export function readExisting(path: string | undefined): ExistingCount[] {
-  if (!path) throw Error("requires --existing ClickHouse occurrence export; local live files are not coverage");
-  const keys = readFileSync(path,"utf8").split(/\r?\n/,1)[0].split("\t");
-  if (!["machine","session_id","generation","content_hash","count"].every(k=>keys.includes(k)) || !keys.some(k=>k==="path"||k==="stream")) throw Error("invalid --existing export header");
-  return readTSV(path).map((r): ExistingCount => {
-    if (!/^(m1|m4)$/.test(r.machine) || !r.session_id || !(r.stream || r.path) || !r.generation || !/^\d+$/.test(r.count ?? "")) throw Error("invalid --existing export row");
-    return [r.machine, r.session_id, r.stream || r.path, r.content_hash, Number(r.count)];
-  });
-}
-
 if (import.meta.main) {
   installErrorHandlers();
+  if (process.argv[2] === "export-existing") {
+    const { values } = parseArgs({ args: process.argv.slice(3), options: { out: { type: "string" } } });
+    if (!values.out) throw Error("usage: export-existing --out NEW_EXPORT.tsv (CLICKHOUSE_* environment)");
+    const { ClickHouse } = await import("../lib/clickhouse");
+    await exportExisting(ClickHouse.fromEnv(), values.out);
+    process.exit(0);
+  }
   const { values } = parseArgs({ options: { inventory: { type: "string", multiple: true }, manifest: { type: "string" }, existing: { type: "string" }, evidence: { type: "string" }, roots: {type:"string"}, out: { type: "string" }, validate: { type: "boolean", default: false } } });
   if (!values.out || (!values.manifest && !values.inventory?.length)) throw new Error("usage: --inventory TSV [--inventory TSV] --evidence NDJSON --existing EXPORT.tsv --out DIR [--validate]");
   const existing = readExisting(values.existing);
@@ -40,8 +40,7 @@ if (import.meta.main) {
   if (process.env.USER === "happycampr") throw new Error("Phase 4 dry-run is M4-only");
   const out = resolve(values.out);
   const targets = ["dedupe.sqlite", "dedupe.sqlite-wal", "dedupe.sqlite-shm", "repo_map.ndjson", "repo_map.ddl.sql", "unresolved-cwds.ndjson", "manifest.tsv", "dry-run.json", "classification.tsv", "shipper-roots.json"].map(p => join(out, p));
-  if (targets.some(t => existsSync(t) && lstatSync(t).isSymbolicLink()) || [...inputPaths, values.evidence, values.existing, values.roots].some(p => p && targets.includes(resolve(p)))) throw new Error("output aliases an input");
-  if (rows.some(r => targets.includes(resolve(r.member_path)) || (r.container && targets.includes(resolve(r.container))))) throw new Error("output overlaps a source");
+  assertOutputsSeparate(targets, [...inputPaths, values.evidence, values.existing, values.roots, ...rows.flatMap(r => [r.member_path, r.container])].filter((p): p is string => !!p));
   mkdirSync(out, { recursive: true });
   if (inputPaths.some(p => ["manifest.tsv", "classification.tsv"].some(n => resolve(p) === join(out, n)))) throw new Error("output directory must not contain input inventories");
   if (values.manifest && !values.evidence) for (const r of readTSV(values.manifest)) if (/^[\w.-]+\/[\w.-]+$/.test(r.repo ?? "")) evidence.push({ cwd: r.cwd, repo: r.repo, evidence: "prior manifest mapping", confidence: "medium" });
@@ -49,9 +48,12 @@ if (import.meta.main) {
   const maps = repoMap(rows.filter(r => classify(r).session), evidence), entries = manifest(rows, maps, roots);
   let processed = 0;
   const sources = localSources(entries);
-  const options = {...sources,existing,database:join(out,"dedupe.sqlite"),onEntry:()=>{if(++processed%1000===0)writeErr(`verified progress ${processed}/${entries.length}`);}};
+  const database = join(mkdtempSync(join(out, ".dedupe-")), "dedupe.sqlite");
+  const options = {...sources,existing,database,onEntry:()=>{if(++processed%1000===0)writeErr(`verified progress ${processed}/${entries.length}`);}};
   const {report,validated,baseline} = values.validate ? await validatedDryRun(entries,options) : {report:await dryRun(entries,options),validated:0,baseline:null};
-  const output = (name: string, value: string) => writeFileSync(join(out, name), value);
+  assertSafeOutput(join(out, "dedupe.sqlite"));
+  renameSync(database, join(out, "dedupe.sqlite"));
+  const output = (name: string, value: string) => atomicOutput(join(out, name), value);
   output("shipper-roots.json",JSON.stringify(roots,null,2)+"\n");
   output("repo_map.ndjson", maps.map(m => JSON.stringify(m)).join("\n") + "\n"); output("repo_map.ddl.sql", ddl);
   output("unresolved-cwds.ndjson", maps.filter(m => !m.repo_canonical).map(m => JSON.stringify(m)).join("\n") + "\n");
@@ -61,5 +63,6 @@ if (import.meta.main) {
   output("dry-run.json", JSON.stringify({ at: new Date().toISOString(), ...counts, validated, validation_baseline:baseline, source_errors: sources.errors }, null, 2) + "\n");
   const rejected = new Set(entries.filter(e => e.status === "not_transcript").map(e => JSON.stringify([e.machine,e.container,e.member_path])));
   output("classification.tsv", "session\treason\tmachine\tcontainer\tmember_path\n" + rows.map(r => { const c = rejected.has(JSON.stringify([r.machine,r.container,r.member_path])) ? {session:false,reason:"verified content lacks matching transcript identity"} : classify(r); return [c.session, c.reason, r.machine, r.container, r.member_path].join("\t"); }).join("\n") + "\n");
-  writeOut(JSON.stringify({ sessions: new Set(entries.map(e => e.session_id)).size, copies: entries.length, import_rows: report.import_rows, validated }));
+  writeOut(JSON.stringify({ sessions: new Set(entries.map(e => e.session_id)).size, copies: entries.length, import_rows: report.import_rows, needs_shipper_backfill: report.needs_shipper_backfill, blocked_live: report.blocked_live, validated }));
+  if (report.needs_shipper_backfill || report.blocked_live) process.exitCode = 2;
 }

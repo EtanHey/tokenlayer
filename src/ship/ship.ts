@@ -34,6 +34,12 @@ export type ShipResult = { files: number; lines: number; bytes: number; resets: 
 const HEAD_LINES_BYTES = 64 * 1024;
 let warnedMissingZstd = false;
 
+/** Shared discovery and logical identity for plain files and Codex compressed rollouts. */
+export const isSessionPath = (path: string, compressed: boolean) => path.endsWith(".jsonl") || compressed && path.endsWith(".jsonl.zst");
+export const logicalSessionPath = (path: string) => path.endsWith(".jsonl.zst") ? path.slice(0, -4) : path;
+export const ownsSessionPath = (path: string, compressed: boolean, plainExists = existsSync) =>
+  isSessionPath(path, compressed) && (path === logicalSessionPath(path) || !plainExists(logicalSessionPath(path)));
+
 export function listJsonl(dir: string, compressed = false): string[] {
   const out: string[] = [];
   let entries;
@@ -45,7 +51,7 @@ export function listJsonl(dir: string, compressed = false): string[] {
   for (const e of entries) {
     const p = join(dir, e.name);
     if (e.isDirectory()) out.push(...listJsonl(p, compressed));
-    else if (e.isFile() && (e.name.endsWith(".jsonl") || compressed && e.name.endsWith(".jsonl.zst") && !existsSync(p.slice(0, -4)))) out.push(p);
+    else if (e.isFile() && ownsSessionPath(p, compressed)) out.push(p);
   }
   return out;
 }
@@ -132,7 +138,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           }
           continue;
         }
-        const path = compressed ? physical.slice(0, -4) : physical;
+        const path = logicalSessionPath(physical);
         try {
           let st: Stats;
           try {
