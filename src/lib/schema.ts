@@ -1,4 +1,5 @@
 import { writeOut, installErrorHandlers } from './egress';
+import { repoFunctionsSQL } from "./repo";
 import { migrateSessionSchema } from "./session-schema";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -14,6 +15,7 @@ export async function applySchema(ch: ClickHouse, dir = SCHEMA_DIR): Promise<str
   for (const f of files) {
     // Views must bind to the migrated column list, including on legacy upgrades.
     if (f === "005_views.sql") await migrateSessionSchema(ch);
+    if (f === "006_session_context.sql") for (const sql of repoFunctionsSQL()) await ch.exec(sql);
     const sql = readFileSync(join(dir, f), "utf8")
       .split("\n")
       .filter((l) => !l.trim().startsWith("--"))

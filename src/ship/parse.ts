@@ -1,4 +1,4 @@
-import { basename } from "node:path";
+import { repoFromCwd } from "../lib/repo";
 import { parseTimestampMs, toClickHouseTime } from "../lib/time";
 
 export type SourceKind = "claude" | "codex";
@@ -73,14 +73,9 @@ export function detectHarness(kind: SourceKind, headLines: string[]): Harness | 
   return null;
 }
 
-/** Repo name for a cwd: `<repo>/.worktrees/<x>` and `~/.t3/worktrees/<repo>/<x>` map to `<repo>`. */
+/** Missing cwd remains empty in the archive; attribution is completed by the context view. */
 export function projectFromCwd(cwd: string): string {
-  if (!cwd) return "";
-  const t3 = /\/\.t3\/worktrees\/([^/]+)/.exec(cwd);
-  if (t3) return t3[1];
-  const wt = /\/([^/]+)\/\.(?:worktrees|claude\/worktrees)\//.exec(cwd);
-  if (wt) return wt[1];
-  return basename(cwd.replace(/\/+$/, ""));
+  return cwd ? repoFromCwd(cwd) : "";
 }
 
 const zeroTokens = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0 };

@@ -1,3 +1,5 @@
+import { repoHint } from "../lib/repo";
+export { repoHint } from "../lib/repo";
 import { writeOut, writeErr, installErrorHandlers } from "../lib/egress";
 import { assertOutputsSeparate, atomicOutput } from "./output-paths";
 import { basename } from "node:path";
@@ -18,10 +20,6 @@ export function observeGit(raw: { machine: string; cwd: string; git_remote: stri
   const current = root?.exitCode === 0;
   const remote = current ? git("remote", "get-url", "origin").stdout.toString().trim() : raw.git_remote;
   return { machine, cwd: raw.cwd, toplevel: current ? root.stdout.toString().trim() : "", remote: repoName(remote), current };
-}
-export function repoHint(cwd: string): string {
-  const match = /\/\.t3\/worktrees\/([^/]+)|\/\.config\/superpowers\/worktrees\/([^/]+)|\/m1-lanes\/rigs\/([^/]+)|\/(?:Desktop\/)?[Gg]its\/([^/]+)|\/([^/]+)\/\.(?:worktrees|claude\/worktrees)\//.exec(cwd);
-  return (match?.slice(1).find(Boolean) ?? "").replace(/-slot[12]$/, "");
 }
 export function deriveRepoEvidence(targets: Target[], observations: GitObservation[], lookup: ReadonlyMap<string, string>): Evidence[] {
   const known = new Map<string, Set<string>>();
