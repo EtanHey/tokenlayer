@@ -3,7 +3,7 @@
 <plist version="1.0"><dict>
   <key>Label</key><string>com.tokenlayer.clickhouse</string>
   <key>ProgramArguments</key><array>
-    <string>__BUN__</string><string>__REPO__/scripts/deploy/deploy.ts</string>
+    <string>__REPO__/bin/tokenlayer database</string><string>__REPO__/scripts/deploy/deploy.ts</string>
     <string>server</string><string>__CLICKHOUSE__</string>
   </array>
   <key>WorkingDirectory</key><string>__HOME__/Library/Application Support/tokenlayer/clickhouse</string>
