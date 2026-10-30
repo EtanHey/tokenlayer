@@ -13,6 +13,7 @@ const cwdPatterns = [
   /\/m1-lanes\/rigs\/([^/]+?)(?:-slot[12])?(?:\/|$)/,
 ];
 const slugPattern = /(?:^|\/)(-Users-[^/]+)(?:\/|$)/;
+const repoSuffix = /\.noindex$/i;
 function slugRepos() {
   const root = '^-Users-[^-]+-(?:(?:Desktop-)?Gits-|-(?:t3|config-superpowers)-worktrees-)';
   return [...KNOWN_REPOS].sort((a, b) => b.length - a.length).map(repo => ({
@@ -24,7 +25,7 @@ function slugRepos() {
 export function repoFromCwd(cwd: string): string {
   for (const regex of cwdPatterns) {
     const repo = regex.exec(cwd)?.[1];
-    if (repo) return repo;
+    if (repo) return repo.replace(repoSuffix, '');
   }
   return '(other)';
 }
@@ -42,6 +43,6 @@ export function repoFunctionsSQL(): string[] {
   const matches = slugRepos().flatMap(({ repo, pattern }) => [`match(tokenlayer_project_slug(path), ${sqlString('(?i)' + pattern)})`, sqlString(repo)]);
   return [
     `CREATE OR REPLACE FUNCTION tokenlayer_project_slug AS path -> extract(path, ${sqlString(slugPattern.source)})`,
-    `CREATE OR REPLACE FUNCTION tokenlayer_repo AS (cwd, path) -> if(cwd != '', coalesce(${extracts.join(', ')}, '(other)'), multiIf(${matches.join(', ')}, '(other)'))`,
+    `CREATE OR REPLACE FUNCTION tokenlayer_repo AS (cwd, path) -> if(cwd != '', replaceRegexpOne(coalesce(${extracts.join(', ')}, '(other)'), ${sqlString(`(?${repoSuffix.flags})${repoSuffix.source}`)}, ''), multiIf(${matches.join(', ')}, '(other)'))`,
   ];
 }

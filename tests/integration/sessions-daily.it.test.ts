@@ -28,6 +28,7 @@ test('daily sessions: normalized repos, per-event models, native child ids and r
     ].map(row => JSON.stringify(row)).join('\n') + '\n');
     writeFileSync(join(claude, 'other.jsonl'), [assistant('other', 29, '/Users/happycampr/Gits/repo-b', 'model-b')].map(row => JSON.stringify(row)).join('\n') + '\n');
     writeFileSync(join(claude, 'empty.jsonl'), JSON.stringify(assistant('empty', 29, '/Users/happycampr/Gits/repo-b', '')) + '\n');
+    writeFileSync(join(claude, 'lab.jsonl'), JSON.stringify(assistant('lab', 30, '/Users/test/Gits/VoiceLayer-Lab.noindex/2026-10-30/exploration/code', 'model-a')) + '\n');
     for (const id of ['parent', 'child']) writeFileSync(join(codex, `${id}.jsonl`), [
       { type: 'session_meta', timestamp: '2026-10-29T12:00:00Z', payload: { id, session_id: 'parent', cwd: '/Users/happycampr/Gits/repo-b' } },
       { type: 'turn_context', timestamp: '2026-10-29T12:01:00Z', payload: { model: 'model-a' } },
@@ -45,6 +46,7 @@ test('daily sessions: normalized repos, per-event models, native child ids and r
       { day: '2026-10-29', repo: 'repo-b', model: '(none)', harness: 'claude', machine: 'm4', sessions: 1 },
       { day: '2026-10-29', repo: 'repo-b', model: 'model-a', harness: 'codex', machine: 'm4', sessions: 2 },
       { day: '2026-10-29', repo: 'repo-b', model: 'model-b', harness: 'claude', machine: 'm4', sessions: 1 },
+      { day: '2026-10-30', repo: 'VoiceLayer-Lab', model: 'model-a', harness: 'claude', machine: 'm4', sessions: 1 },
     ]);
     expect((await ch.client.queryJSON<{ name: string }>('DESCRIBE tokenlayer.v_sessions_daily')).map(r => r.name)).toEqual(['day', 'repo', 'model', 'harness', 'machine', 'sessions']);
     await applySchema(ch.client);
