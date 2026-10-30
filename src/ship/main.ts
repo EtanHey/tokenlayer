@@ -1,13 +1,14 @@
 #!/usr/bin/env bun
 import { writeOut, writeErr, installErrorHandlers } from '../lib/egress';
 installErrorHandlers();
-// tokenlayer-ship: tail Claude Code / Codex / T3 session JSONL into ClickHouse session_events.
+// tokenlayer-ship: tail Claude Code / Codex / Antigravity / T3 JSONL into ClickHouse session_events.
 // Usage:
 //   bun src/ship/main.ts                         # daemon: every TOKENLAYER_SHIP_INTERVAL_MS (default 10s)
 //   bun src/ship/main.ts --backfill [--since 2026-10-01] [--rate-mb 5]   # one pass over everything, then exit
 // Env (or files in TOKENLAYER_ENV_FILES, default ~/.config/tokenlayer/{ship,clickhouse}.env):
 //   TOKENLAYER_MACHINE (required: m4 | m1), CLICKHOUSE_URL, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, CLICKHOUSE_DB,
 //   TOKENLAYER_CLAUDE_DIR (default ~/.claude/projects), TOKENLAYER_CODEX_DIR (default ~/.codex/sessions),
+//   TOKENLAYER_ANTIGRAVITY_CLI_DIR and TOKENLAYER_T3_ANTIGRAVITY_DIR (defaults documented in README),
 //   TOKENLAYER_SHIP_STATE (default ~/.config/tokenlayer/ship-state.json), TOKENLAYER_SHIP_RATE_MB (default 5).
 // The daemon only picks up files without a checkpoint if they changed in the last day; run --backfill once for history.
 import { loadState } from "./state";
@@ -45,6 +46,8 @@ const opts: ShipOptions = {
   roots: [
     { kind: "claude", dir: expandHome(env.TOKENLAYER_CLAUDE_DIR ?? "~/.claude/projects") },
     { kind: "codex", dir: expandHome(env.TOKENLAYER_CODEX_DIR ?? "~/.codex/sessions") },
+    { kind: "antigravity-cli", dir: expandHome(env.TOKENLAYER_ANTIGRAVITY_CLI_DIR ?? "~/.gemini/antigravity-cli/brain") },
+    { kind: "t3-antigravity", dir: expandHome(env.TOKENLAYER_T3_ANTIGRAVITY_DIR ?? "~/.t3/userdata/providers/antigravity") },
   ],
   clickhouse: ClickHouse.fromEnv(env),
   statePath: expandHome(env.TOKENLAYER_SHIP_STATE ?? "~/.config/tokenlayer/ship-state.json"),

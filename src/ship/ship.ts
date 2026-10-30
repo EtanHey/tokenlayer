@@ -9,6 +9,7 @@ import { loadState, saveState, type FileCheckpoint, type ShipState } from "./sta
 import { readCompleteLines } from "./tail";
 import { compressedHash, inspectZstd, readZstd, type ZstdSpawner } from "./zst";
 import { sanitizeOutput } from "../lib/egress";
+import { antigravityCwd, antigravitySession, isAntigravity, parseAntigravity } from "./antigravity";
 
 export type ShipRoot = { kind: SourceKind; dir: string };
 
@@ -101,7 +102,7 @@ function freshCheckpoint(path: string, kind: SourceKind, st: Stats, head = headL
     fingerprint: "",
     generation: identity(st),
     harnessDecided: decided !== null,
-    // Retain checkpoint compatibility; archive parsing no longer reads carry-forward context.
+    // Claude/Codex keep line-local columns; Antigravity seeds its context in fresh().
     parser: newFileState(kind, decided ?? defaultHarness(kind), Math.trunc(st.birthtimeMs || st.mtimeMs)),
   };
 }
@@ -130,6 +131,9 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
   try {
     for (const root of opts.roots) {
       for (const physical of listJsonl(root.dir, root.kind === "codex")) {
+        const agy = isAntigravity(root.kind);
+        const session = agy ? antigravitySession(root.dir, physical, root.kind) : "";
+        if (agy && !session) continue;
         const compressed = physical.endsWith(".zst");
         if (compressed && !Bun.which("zstd")) {
           if (!warnedMissingZstd) {
@@ -158,6 +162,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           const head = () => decoded?.head ?? headLines(path);
           const fresh = () => {
             const checkpoint = freshCheckpoint(path, root.kind, st, head());
+            if (agy) Object.assign(checkpoint.parser, { sessionId: session, cwd: antigravityCwd(root.dir, path, session, root.kind), lastTsMs: 0 });
             if (decoded) checkpoint.generation = decoded.digest.slice(0, 16);
             return checkpoint;
           };
@@ -236,7 +241,8 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
               content_hash: createHash("sha256").update(raw.subarray(l.offset - cp!.offset, l.offset - cp!.offset + l.bytes)).digest("hex"),
               line_bytes: l.bytes,
               [RAW_BYTES]: raw.subarray(l.offset - cp!.offset, l.offset - cp!.offset + l.bytes),
-              ...parseLine(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes)),
+              ...(agy ? parseAntigravity(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes), parser)
+                : parseLine(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes))),
             }));
             // Deterministic token over the rows themselves: an identical retry is deduplicated server-side,
             // while changed rows for the same range (rewrite, late harness decision) are a new insert.
