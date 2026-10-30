@@ -67,7 +67,7 @@ jobs:
           mkdir -p .local
           export TMPDIR="$PWD/.local"
           trusted=$(mktemp -d "$PWD/.local/trusted-XXXXXX")
-          git archive "$RATCHET_BASE_REF" ratchet scripts/bench-redact.ts tests/support/local-clickhouse.ts tests/fixtures src/lib/clickhouse.ts src/lib/redact.ts | tar -x -C "$trusted"
+          git archive "$RATCHET_BASE_REF" ratchet scripts/bench-redact.ts src/lib/local-clickhouse.ts tests/fixtures src/lib/clickhouse.ts src/lib/redact.ts | tar -x -C "$trusted"
           if test -f "$trusted/ratchet/guard.mjs"; then
             node "$trusted/ratchet/table.mjs" ratchet/rows.json
           else

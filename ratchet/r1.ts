@@ -2,7 +2,7 @@
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { startLocalClickHouse } from '../tests/support/local-clickhouse';
+import { startLocalClickHouse } from '../src/lib/local-clickhouse';
 import type { ClickHouse } from '../src/lib/clickhouse';
 const root = resolve(import.meta.dir, '../.local');
 mkdirSync(root, { recursive: true });
