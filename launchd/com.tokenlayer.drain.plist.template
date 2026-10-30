@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- tokenlayer-drain (M1 hub only). Render: replace __BUN__, __REPO__, __HOME__; install to ~/Library/LaunchAgents.
+<!-- tokenlayer-drain (M1 hub only). Render: replace __REPO__, __HOME__; install to ~/Library/LaunchAgents.
      Secrets are read at runtime from ~/.config/tokenlayer/{hub,clickhouse}.env (mode 600), never placed here. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -8,7 +8,7 @@
   <string>com.tokenlayer.drain</string>
   <key>ProgramArguments</key>
   <array>
-    <string>__BUN__</string>
+    <string>__REPO__/bin/tokenlayer usage recorder</string>
     <string>__REPO__/src/drain/main.ts</string>
   </array>
   <key>WorkingDirectory</key>

@@ -88,6 +88,61 @@ and the existing mode-600 `~/.config/tokenlayer/hub.env` with `CLIPROXY_MGMT_KEY
    file may contribute older events. The 2 MiB/s cap applies to shipped bytes, with extra disk reads for verification.
    Logs are `~/Library/Logs/tokenlayer/backfill{,.err}.log` (replaced each invocation); daemon logs are adjacent.
 
+## Named LaunchAgents: render and reload
+
+**reload only when no golems run-1 attempt is running**. The lead checks that lane before any reload.
+Use the reviewed commit in the durable `~/Gits/tokenlayer` checkout, never a disposable worktree.
+The renderer pins Bun to `/opt/homebrew/bin/bun` (the unversioned Homebrew symlink), refuses `/Cellar/`
+paths, and makes `"bin/tokenlayer database"`, `"bin/tokenlayer usage recorder"`, and `"bin/tokenlayer session uploader"` the launch executables. Each wrapper execs
+that stable Bun with the existing arguments; ClickHouse still goes through `deploy.ts server` for
+password hashing and signal forwarding. The session uploader uploads Claude/Codex/T3 session logs;
+the usage recorder records proxy per-request usage. Quote these executable paths when invoking them from a shell.
+Env-file loading, zstd PATH, ship LowPriorityIO/Nice, and logs stay unchanged.
+
+For macOS 15/26, [Apple documents the macOS 13+ naming rules](https://developer.apple.com/documentation/servicemanagement/updating-helper-executables-from-earlier-versions-of-macos):
+an unsigned, unattributed legacy agent displays the executable name from `Program`/`ProgramArguments`.
+A signed helper without an app association displays its signing organization; a valid app association
+can show the app name. `AssociatedBundleIdentifiers` requires a real Launch Services-registered app
+and a matching signing Team Identifier. There is no TokenLayer app bundle, so no association is added.
+Expected names are **tokenlayer database**, **tokenlayer usage recorder**, **tokenlayer session uploader**; the unidentified-developer
+subtitle remains. UI verification is deferred until the lead reloads; old cached entries may remain.
+
+M1, after the run-1 lane is clear (rendering alone does not reload):
+
+```sh
+cd ~/Gits/tokenlayer
+export PATH="/opt/homebrew/bin:$HOME/.bun/bin:$PATH"
+bun scripts/deploy/render.ts m1 .local/launchd-m1 "$HOME/.local/bin/clickhouse-d1-26.10.2.103"
+plutil -lint .local/launchd-m1/com.tokenlayer.clickhouse.plist .local/launchd-m1/com.tokenlayer.drain.plist .local/launchd-m1/com.tokenlayer.ship.plist
+# Stop dependents first; an already absent service is normal. Stop on any other error.
+launchctl bootout "gui/$(id -u)/com.tokenlayer.ship"
+launchctl bootout "gui/$(id -u)/com.tokenlayer.drain"
+launchctl bootout "gui/$(id -u)/com.tokenlayer.clickhouse"
+cp .local/launchd-m1/com.tokenlayer.clickhouse.plist "$HOME/Library/LaunchAgents/com.tokenlayer.clickhouse.plist"
+cp .local/launchd-m1/com.tokenlayer.drain.plist "$HOME/Library/LaunchAgents/com.tokenlayer.drain.plist"
+cp .local/launchd-m1/com.tokenlayer.ship.plist "$HOME/Library/LaunchAgents/com.tokenlayer.ship.plist"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.tokenlayer.clickhouse.plist"
+curl --fail --silent --show-error --retry 20 --retry-connrefused --retry-delay 1 http://127.0.0.1:8123/ping
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.tokenlayer.drain.plist"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.tokenlayer.ship.plist"
+```
+
+M4, after its run-1 lane is clear:
+
+```sh
+cd ~/Gits/tokenlayer
+export PATH="/opt/homebrew/bin:$HOME/.bun/bin:$PATH"
+bun scripts/deploy/render.ts m4 .local/launchd-m4
+plutil -lint .local/launchd-m4/com.tokenlayer.ship.plist
+launchctl bootout "gui/$(id -u)/com.tokenlayer.ship"
+cp .local/launchd-m4/com.tokenlayer.ship.plist "$HOME/Library/LaunchAgents/com.tokenlayer.ship.plist"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.tokenlayer.ship.plist"
+```
+
+These commands preserve credentials, XML config, data, checkpoints, and the existing backfill process;
+they do not rerun setup, schema migration, or Tailscale configuration. Check Login Items / Background
+Activity after reload on each Mac and confirm the names, plus the runtime checks below.
+
 ## Verify and roll back
 
 - Check `launchctl print gui/$(id -u)/com.tokenlayer.clickhouse` on M1, and `com.tokenlayer.ship` on both Macs;

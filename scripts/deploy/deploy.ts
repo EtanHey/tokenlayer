@@ -17,10 +17,14 @@ function run(command: string[], env = process.env) {
   if (r.status !== 0) throw Error(`deploy command failed: ${command[0]}`);
 }
 export function render(template: string, values: Record<string, string>): string {
-  return template.replace(/__([A-Z]+)__/g, (_, name: string) => {
-    if (values[name] === undefined) throw Error(`unresolved placeholder ${name}`);
-    return values[name].replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
+  const xml = template.replace(/__([A-Z]+)__/g, (_, name: string) => {
+    // execPath resolves Homebrew symlinks into the upgrade-sensitive Cellar.
+    const value = name === 'BUN' ? '/opt/homebrew/bin/bun' : values[name];
+    if (value === undefined) throw Error(`unresolved placeholder ${name}`);
+    return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
   });
+  if (xml.includes('/Cellar/')) throw Error('refusing versioned Cellar path in rendered config');
+  return xml;
 }
 function privateFile(path: string, tighten = false) {
   const st = lstatSync(path);
@@ -53,7 +57,7 @@ async function install(label: string, machine: string, binary = '') {
   const agents = join(home, 'Library/LaunchAgents');
   mkdirSync(agents, { recursive: true });
   const target = join(agents, `${label}.plist`);
-  writeFileSync(target, render(readFileSync(join(repo, `launchd/${label}.plist.template`), 'utf8'), { HOME: home, REPO: repo, BUN: process.execPath, MACHINE: machine, CLICKHOUSE: binary }));
+  writeFileSync(target, render(readFileSync(join(repo, `launchd/${label}.plist.template`), 'utf8'), { HOME: home, REPO: repo, MACHINE: machine, CLICKHOUSE: binary }));
   run(['plutil', '-lint', target]);
   await replaceService(label, target);
 }
