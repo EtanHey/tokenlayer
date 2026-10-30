@@ -1,4 +1,5 @@
 import { writeOut, writeErr, installErrorHandlers } from "../lib/egress";
+import { assertOutputsSeparate } from "./output-paths";
 import { basename } from "node:path";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -46,6 +47,9 @@ if (import.meta.main) {
   installErrorHandlers();
   const { values } = parseArgs({ options: { inventory: { type:"string" }, "repo-raw": { type:"string",multiple:true }, lookups: { type:"string" }, out: { type:"string" } } });
   if (!values.inventory || !values.lookups || !values.out) throw Error("requires --inventory --repo-raw --lookups --out");
+  const inputs = [values.inventory, ...(values["repo-raw"] ?? [])];
+  assertOutputsSeparate([values.lookups], inputs);
+  assertOutputsSeparate([values.out, values.out + ".observations.ndjson"], [...inputs, values.lookups]);
   if (process.env.USER === "happycampr") throw Error("Phase 4 evidence collection is M4-only");
   const targets = [...new Map(inventory(values.inventory).filter(r=>classify(r).session&&r.cwd).map(r=>{const t={machine:origin(r),cwd:r.cwd};return [JSON.stringify(t),t];})).values()];
   const observations = (values["repo-raw"] ?? []).flatMap(readTSV).filter(r=>r.cwd).map(r=>observeGit({ machine:r.machine,cwd:r.cwd,git_remote:r.git_remote }));

@@ -44,9 +44,9 @@ test("divergent copies retain unique lines; live pairs skip; unfetched and chang
   const b = Buffer.from('{"sessionId":"session","type":"assistant"}\n');
   const copies = [row({ source_kind: "live", member_path: "/Users/etanheyman/.claude/projects/project/live.jsonl", sha256: sha256(a), bytes: String(a.length) }), row({ member_path: "archive.jsonl", sha256: sha256(b), bytes: String(b.length) }), row({ member_path: "duplicate.jsonl", sha256: sha256(a), bytes: String(a.length) }), row({ member_path: "remote.jsonl", session_id: "remote", source_kind: "drive_file" })];
   const entries = manifest(copies, []);
-  const result = await dryRun(entries, { read: async r => r.member_path === "remote.jsonl" ? null : (async function* () { yield r.member_path === "archive.jsonl" ? b : a; })() });
+  const result = await dryRun(entries, { existing: [["m4", "session", "session::main", sha256(a), 1]], read: async r => r.member_path === "remote.jsonl" ? null : (async function* () { yield r.member_path === "archive.jsonl" ? b : a; })() });
   expect(result.import_rows).toBe(1);
-  expect(result.skip_live).toBe(1);
+  expect(result.skip_live).toBe(2);
   expect(result.divergent_sessions).toBe(1);
   expect(result.needs_fetch).toBe(1);
   const changed = await dryRun(manifest([row({ sha256: sha256(a), bytes: String(a.length) })], []), { read: async () => (async function* () { yield b; })() });
@@ -56,7 +56,7 @@ test("divergent copies retain unique lines; live pairs skip; unfetched and chang
 test("existing shipper pair export prevents cross-path inserts; invalid UTF-8 fails closed", async () => {
   const bytes = Buffer.from('{"sessionId":"session","type":"user"}\r\n');
   const rows = manifest([row({ bytes: String(bytes.length), sha256: sha256(bytes) })], []);
-  const report = await dryRun(rows, { existing: [["session", "session::main", sha256(bytes), 1]], read: async () => (async function* () { yield bytes.subarray(0, 7); yield bytes.subarray(7); })() });
+  const report = await dryRun(rows, { existing: [["m4", "session", "session::main", sha256(bytes), 1]], read: async () => (async function* () { yield bytes.subarray(0, 7); yield bytes.subarray(7); })() });
   expect(report.import_rows).toBe(0); expect(report.skip_live).toBe(1);
   const invalid = Buffer.from([0xff, 10]);
   const rejected = await dryRun(manifest([row({ bytes: "2", sha256: sha256(invalid) })], []), { read: async () => (async function* () { yield invalid; })() });
@@ -100,13 +100,13 @@ test("MF-2 missing repeated occurrences survive per stream and retain reconstruc
   const prefix=Buffer.concat([header,repeated]),full=Buffer.concat([header,repeated,repeated,repeated]);
   const data=new Map([["/Users/etanheyman/.claude/projects/p/session.jsonl",prefix],["full.jsonl",full],["session/subagents/agent-a.jsonl",prefix],["copy/session/subagents/agent-a.jsonl",prefix]]);
   const entries=manifest([...data].map(([path,bytes],i)=>row({member_path:path,source_kind:i===0?"live":"archive_dir",bytes:String(bytes.length),sha256:sha256(bytes)})),[]);
-  const result=await dryRun(entries,{read:async e=>(async function*(){yield data.get(e.member_path)!;})()});
+  const result=await dryRun(entries,{existing:[["m4","session","session::main",sha256(header),1],["m4","session","session::main",sha256(repeated),1]],read:async e=>(async function*(){yield data.get(e.member_path)!;})()});
   const main=result.sample.filter(e=>streamId(e.session_id,e.path)===streamId("session","full.jsonl"));
   expect(main.map(e=>e.byte_offset)).toEqual([prefix.length,prefix.length+repeated.length]);
   expect(Buffer.concat([prefix,...main.sort((a,b)=>a.byte_offset-b.byte_offset).map(e=>Buffer.from(e.raw))]).equals(full)).toBe(true);
-  expect(result.import_rows).toBe(4);expect(result.skip_live).toBe(2);expect(result.skip_copy).toBe(2);
+  expect(result.import_rows).toBe(4);expect(result.skip_live).toBe(4);expect(result.skip_copy).toBe(2);
   expect(result.divergent_sessions).toBe(0);
-  const seeded=await dryRun(manifest([row({bytes:String(full.length),sha256:sha256(full),member_path:"full.jsonl"})],[]),{existing:[["session","full.jsonl",sha256(header),1],["session","full.jsonl",sha256(repeated),1]],read:async()=>(async function*(){yield full;})()});
+  const seeded=await dryRun(manifest([row({bytes:String(full.length),sha256:sha256(full),member_path:"full.jsonl"})],[]),{existing:[["m4","session","full.jsonl",sha256(header),1],["m4","session","full.jsonl",sha256(repeated),1]],read:async()=>(async function*(){yield full;})()});
   expect(seeded.import_rows).toBe(2);expect(seeded.skip_live).toBe(2);
 });
 
@@ -165,7 +165,7 @@ test("NF-1 native child rollout stream is accepted and isolated from its parent 
   expect(entries.filter(e=>e.member_path.includes(child)).every(e=>e.stream===`${child}::main`)).toBe(true);
   expect(result.sample.filter(e=>e.path.includes(child)).every(e=>e.session_id===child)).toBe(true);
   expect(result.sample.filter(e=>!e.path.includes(child)).every(e=>e.session_id===parent)).toBe(true);
-  const seeded=await dryRun(manifest([rows[1]],[]),{read,existing:[[parent,path,sha256(childBytes.subarray(0,childBytes.indexOf(10)+1)),1],[parent,path,sha256(Buffer.from(common)),1]]});
+  const seeded=await dryRun(manifest([rows[1]],[]),{read,existing:[["m4",parent,path,sha256(childBytes.subarray(0,childBytes.indexOf(10)+1)),1],["m4",parent,path,sha256(Buffer.from(common)),1]]});
   expect(seeded.import_rows).toBe(0);expect(seeded.skip_live).toBe(2);
 });
 
