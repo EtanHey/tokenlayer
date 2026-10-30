@@ -27,15 +27,20 @@ export function readCompleteLines(path: string, offset: number, budget: number):
       want = Math.min(want * 2, size - offset);
     }
     if (end < 0) return { lines: [], nextOffset: offset, raw: Buffer.alloc(0) };
-    const lines: Line[] = [];
-    let start = 0;
-    while (start <= end) {
-      const nl = buf.indexOf(NL, start);
-      if (nl > start) lines.push({ offset: offset + start, bytes: nl - start + 1, text: buf.toString("utf8", start, nl) });
-      start = nl + 1;
-    }
-    return { lines, nextOffset: offset + end + 1, raw: buf.subarray(0, end + 1) };
+    return splitLines(buf.subarray(0, end + 1), offset);
   } finally {
     closeSync(fd);
   }
+}
+
+export function splitLines(raw: Buffer, offset: number): ReadResult {
+  const lines: Line[] = [];
+  let start = 0;
+  while (start < raw.length) {
+    const nl = raw.indexOf(NL, start);
+    if (nl < 0) break;
+    if (nl > start) lines.push({ offset: offset + start, bytes: nl - start + 1, text: raw.toString("utf8", start, nl) });
+    start = nl + 1;
+  }
+  return { lines, nextOffset: offset + raw.length, raw };
 }

@@ -46,7 +46,28 @@ Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
 
 ## Shipper guarantees (`tokenlayer-ship`)
 
-- Sources: `~/.claude/projects/**/*.jsonl` (includes `<session>/subagents/agent-*.jsonl`) and `~/.codex/sessions/**/*.jsonl`.
+- Sources: `~/.claude/projects/**/*.jsonl` (includes `<session>/subagents/agent-*.jsonl`) and `~/.codex/sessions/**/*.{jsonl,jsonl.zst}` (including T3-origin Codex rollouts).
+- Compressed Codex rollouts require `zstd` on the shipper's PATH (`brew install zstd` on macOS).
+  Decode uses `zstd -qdc -- PATH` with backpressure and checked exit status. Bun 1.4.4's
+  `node:zlib.createZstdDecompress` accepted a truncated frame in the fixture probe, so it is not used.
+  The first streaming pass validates the entire file before inserts and verifies any recorded decoded prefix;
+  a second streams batches. No full-file memory buffer or decoded disk copy is made. Batch buffers are bounded by
+  the larger of the budget (capped at 64 MiB) and one line, plus a pipe chunk; decoded lines above 64 MiB fail before insertion.
+  Offsets, content hashes, raw bytes and the rate cap use decoded coordinates. Verification reads are additional I/O.
+- `.jsonl.zst` maps to the logical `.jsonl` path. Its verified old prefix reuses the plain-file generation,
+  including existing inode-derived v3 generations. Keep both progress state and the `.generations` journal:
+  compression and later materialization back to plain can change the inode without changing replacement keys.
+  An unseen compressed rollout uses the first 16 hex digits of its complete decoded SHA-256 as generation.
+  Rewrites that do not match the protected prefix retain the existing revision rules and archive variants.
+  Compressed checkpoints also record compressed size, SHA-256, mtime/ctime and successful completion;
+  unchanged completed containers skip decode, changed containers replay. Decode failures report a sanitized path
+  and a content-free reason, leave existing checkpoints intact and do not block other files in the pass.
+- There is no automatic migration for lost lineage: if both state files are absent and the old plain inode is gone,
+  its old generation cannot be reconstructed from compressed content. Restore the journal before replay; otherwise
+  pause backfill and reconcile the logical path's existing generations using an operator-approved occurrence/hash
+  export before importing. Do not silently replay under a new generation and claim unique counts.
+  Archaeology's `shipperCovers(.zst)` remains false until this reader is deployed and the collab's F-3 replay/coverage
+  prerequisites are satisfied; installing source alone must not suppress historical recovery.
 - `harness`: Claude files whose lines carry `entrypoint: "sdk-ts"` → `t3` (T3 drives Claude Code via the Agent SDK),
   otherwise `claude`. Codex files whose `session_meta.payload.originator` is `"T3 Code"` → `t3`, otherwise `codex`.
   A file whose head has no deciding line yet ships with the default and is reshipped once it is decided.

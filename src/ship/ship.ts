@@ -1,12 +1,14 @@
 import { redactText } from "../lib/redact";
 import { createHash } from "node:crypto";
-import { closeSync, openSync, readdirSync, readSync, statSync, type Stats } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readSync, statSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { RAW_BYTES, type ClickHouse } from "../lib/clickhouse";
 import { sha256Hex } from "../lib/hash";
 import { detectHarness, newFileState, parseLine, type Harness, type SourceKind } from "./parse";
 import { loadState, saveState, type FileCheckpoint, type ShipState } from "./state";
 import { readCompleteLines } from "./tail";
+import { compressedHash, inspectZstd, readZstd } from "./zst";
+import { sanitizeOutput } from "../lib/egress";
 
 export type ShipRoot = { kind: SourceKind; dir: string };
 
@@ -30,7 +32,7 @@ export type ShipResult = { files: number; lines: number; bytes: number; resets: 
 
 const HEAD_LINES_BYTES = 64 * 1024;
 
-export function listJsonl(dir: string): string[] {
+export function listJsonl(dir: string, compressed = false): string[] {
   const out: string[] = [];
   let entries;
   try {
@@ -40,8 +42,8 @@ export function listJsonl(dir: string): string[] {
   }
   for (const e of entries) {
     const p = join(dir, e.name);
-    if (e.isDirectory()) out.push(...listJsonl(p));
-    else if (e.isFile() && e.name.endsWith(".jsonl")) out.push(p);
+    if (e.isDirectory()) out.push(...listJsonl(p, compressed));
+    else if (e.isFile() && (e.name.endsWith(".jsonl") || compressed && e.name.endsWith(".jsonl.zst") && !existsSync(p.slice(0, -4)))) out.push(p);
   }
   return out;
 }
@@ -80,8 +82,8 @@ const identity = (st: Stats) => sha256Hex(`${st.dev}:${st.ino}:${st.birthtimeMs}
 
 const defaultHarness = (kind: SourceKind): Harness => (kind === "claude" ? "claude" : "codex");
 
-function freshCheckpoint(path: string, kind: SourceKind, st: Stats): FileCheckpoint {
-  const decided = detectHarness(kind, headLines(path));
+function freshCheckpoint(path: string, kind: SourceKind, st: Stats, head = headLines(path)): FileCheckpoint {
+  const decided = detectHarness(kind, head);
   return {
     inode: st.ino,
     identity: identity(st),
@@ -119,11 +121,13 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
 
   try {
     for (const root of opts.roots) {
-      for (const path of listJsonl(root.dir)) {
+      for (const physical of listJsonl(root.dir, root.kind === "codex")) {
+        const compressed = physical.endsWith(".zst");
+        const path = compressed ? physical.slice(0, -4) : physical;
         try {
           let st: Stats;
           try {
-            st = statSync(path);
+            st = statSync(physical);
           } catch {
             continue;
           }
@@ -131,43 +135,53 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           const recorded = generations.files[path];
           const replay = !cp || (recorded && (recorded.generation !== cp.generation || recorded.offset > cp.offset));
           if (replay && recorded) cp = structuredClone(recorded);
+          if (!cp && !state.legacyReplay?.includes(path) && opts.sinceMs !== undefined && st.mtimeMs < opts.sinceMs) continue;
+          const packedHash = compressed ? await compressedHash(physical) : undefined;
+          if (compressed && cp?.compressed?.complete && cp.compressed.size === st.size && cp.compressed.fingerprint === packedHash && cp.mtimeMs === st.mtimeMs && cp.ctimeMs === st.ctimeMs && !replay) continue;
+          const decoded = compressed ? await inspectZstd(physical, cp?.offset ?? 0) : undefined;
+          const size = decoded?.size ?? st.size;
+          const head = () => decoded?.head ?? headLines(path);
+          const fresh = () => {
+            const checkpoint = freshCheckpoint(path, root.kind, st, head());
+            if (decoded) checkpoint.generation = decoded.digest.slice(0, 16);
+            return checkpoint;
+          };
           // Bootstrap the journal for checkpoints created before this version, including unchanged files.
           if (cp && !recorded) {
             generations.files[path] = structuredClone(cp);
             saveState(generationPath, generations);
           }
           if (!cp) {
-            if (!state.legacyReplay?.includes(path) && opts.sinceMs !== undefined && st.mtimeMs < opts.sinceMs) continue;
             if (st.size === 0) continue;
-          } else if (!replay && st.size === cp.offset && identity(st) === cp.identity && st.mtimeMs === cp.mtimeMs && st.ctimeMs === cp.ctimeMs) {
+          } else if (!compressed && !replay && !cp.compressed && st.size === cp.offset && identity(st) === cp.identity && st.mtimeMs === cp.mtimeMs && st.ctimeMs === cp.ctimeMs) {
             continue;
           }
 
           // Touched since the last pass: verify identity before trusting the offset, even when the size is unchanged.
           let hash = createHash("sha256");
-          const sameFile = cp && identity(st) === cp.identity && st.size >= cp.offset;
-          if (sameFile) hash = prefixHash(path, cp.offset);
+          const sameFile = cp && size >= cp.offset && (identity(st) === cp.identity || root.kind === "codex");
+          if (sameFile) hash = decoded?.prefix ?? prefixHash(path, cp.offset);
           if (cp && (!sameFile || (cp.offset > 0 && hash.copy().digest("hex") !== cp.fingerprint))) {
             opts.log?.(redactText(`reset ${path}: rotated or truncated`));
             const revision = identity(st) === cp.identity
-              ? sha256Hex(`${cp.generation}:${prefixHash(path, st.size).digest("hex")}`).slice(0, 16)
-              : freshCheckpoint(path, root.kind, st).generation;
-            cp = freshCheckpoint(path, root.kind, st);
+              ? sha256Hex(`${cp.generation}:${(decoded?.digest ?? prefixHash(path, st.size).digest("hex"))}`).slice(0, 16)
+              : fresh().generation;
+            cp = fresh();
             cp.generation = revision;
             hash = createHash("sha256");
             result.resets++;
           } else if (cp && replay) {
             const generation = cp.generation;
-            cp = freshCheckpoint(path, root.kind, st);
+            cp = fresh();
             cp.generation = generation;
             hash = createHash("sha256");
           }
           if (cp && !cp.harnessDecided) {
-            const decided = detectHarness(root.kind, headLines(path));
+            const decided = detectHarness(root.kind, head());
             if (decided && decided !== cp.parser.harness) {
               // Earlier rows carry the default harness; reship the file so every row agrees.
               const generation = cp.generation;
-              cp = freshCheckpoint(path, root.kind, st);
+              cp = fresh();
               cp.generation = generation;
               hash = createHash("sha256");
               result.resets++;
@@ -175,16 +189,30 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
               cp.harnessDecided = true;
             }
           }
-          if (!cp) cp = freshCheckpoint(path, root.kind, st);
+          if (!cp) cp = fresh();
+          if (compressed && !replay) {
+            // Changed containers replay from zero, preserving a verified lineage where possible.
+            cp.offset = 0; cp.fingerprint = ""; hash = createHash("sha256");
+          }
+          cp.identity = identity(st);
+          cp.inode = st.ino;
+          cp.compressed = packedHash ? { size: st.size, fingerprint: packedHash, complete: false } : undefined;
           cp.mtimeMs = st.mtimeMs;
           cp.ctimeMs = st.ctimeMs;
           state.files[path] = cp;
           dirty = true;
 
           let shippedFromFile = false;
-          for (;;) {
-            const { lines, nextOffset, raw } = readCompleteLines(path, cp.offset, batchBytes);
-            if (lines.length === 0) break;
+          async function* plainBatches(offset: number) {
+            for (;;) {
+              const chunk = readCompleteLines(path, offset, batchBytes);
+              if (!chunk.raw.length) break;
+              yield chunk;
+              offset = chunk.nextOffset;
+            }
+          }
+          const batches = compressed ? readZstd(physical, cp.offset, batchBytes) : plainBatches(cp.offset);
+          for await (const { lines, nextOffset, raw } of batches) {
             // A fresh checkpoint starts at offset 0, so lines[0] is the file's first line.
 
             const parser = structuredClone(cp.parser);
@@ -230,12 +258,21 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
               if (ahead > 0) await Bun.sleep(ahead * 1000);
             }
             if (performance.now() - lastSave > saveEveryMs) save();
-            const after = statSync(path);
+            const after = statSync(physical);
             // Re-enter identity verification next pass if the source changed while insertion was pending.
             if (identity(after) !== identity(st) || after.mtimeMs !== st.mtimeMs || after.ctimeMs !== st.ctimeMs) break;
           }
+          if (cp.compressed) {
+            cp.compressed.complete = true;
+            dirty = true;
+          }
           if (shippedFromFile) result.files++;
-        } catch (err) { failures.push(new Error(redactText(err instanceof Error ? err.message : String(err)))); }
+        } catch (err) {
+          const reason = compressed ? `zstd source failed: ${err instanceof Error ? err.message : "read failure"}` : err instanceof Error ? err.message : String(err);
+          const message = compressed ? `${sanitizeOutput(physical)}: ${sanitizeOutput(reason)}` : redactText(reason);
+          if (compressed) opts.log?.(message);
+          failures.push(new Error(message));
+        }
       }
     }
   } finally {
