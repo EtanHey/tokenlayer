@@ -43,13 +43,49 @@ test('daily sessions: normalized repos, per-event models, native child ids and r
       { day: '2026-10-28', repo: 'repo-a', model: 'model-b', harness: 'claude', machine: 'm4', sessions: 1 },
       { day: '2026-10-29', repo: 'repo-a', model: 'model-a', harness: 'claude', machine: 'm4', sessions: 1 },
       { day: '2026-10-29', repo: 'repo-b', model: '(none)', harness: 'claude', machine: 'm4', sessions: 1 },
-      { day: '2026-10-29', repo: 'repo-b', model: '(none)', harness: 'codex', machine: 'm4', sessions: 2 },
       { day: '2026-10-29', repo: 'repo-b', model: 'model-a', harness: 'codex', machine: 'm4', sessions: 2 },
       { day: '2026-10-29', repo: 'repo-b', model: 'model-b', harness: 'claude', machine: 'm4', sessions: 1 },
     ]);
     expect((await ch.client.queryJSON<{ name: string }>('DESCRIBE tokenlayer.v_sessions_daily')).map(r => r.name)).toEqual(['day', 'repo', 'model', 'harness', 'machine', 'sessions']);
     await applySchema(ch.client);
     expect(await ch.client.queryJSON('SELECT * FROM tokenlayer.v_sessions_daily ORDER BY day, repo, model, harness, machine')).toEqual(rows);
+  } finally { await ch.stop(); }
+}, 40000);
+
+test('daily sessions: (none) only for sessions without a model that day', async () => {
+  const ch = await startLocalClickHouse();
+  try {
+    await applySchema(ch.client);
+    const cases: [string, string, number, string][] = [
+      ['mixed', 'claude', 28, ''],
+      ['mixed', 'claude', 28, 'model-a'],
+      ['mixed', 'claude', 28, 'model-a'],
+      ['mixed', 'claude', 28, ''],
+      ['model-less', 'antigravity', 28, ''],
+      ['model-less', 'antigravity', 28, ''],
+      ['two-models', 'claude', 28, ''],
+      ['two-models', 'claude', 28, 'model-a'],
+      ['two-models', 'claude', 28, 'model-b'],
+      ['two-models', 'claude', 28, 'model-b'],
+      ['two-days', 'codex', 28, ''],
+      ['two-days', 'codex', 28, ''],
+      ['two-days', 'codex', 29, ''],
+      ['two-days', 'codex', 29, 'model-c'],
+      ['two-days', 'codex', 29, 'model-c'],
+    ];
+    await ch.client.insert('session_events', cases.map(([sessionId, harness, day, model], i) => ({
+      ...parseLine(JSON.stringify({ type: 'assistant', sessionId, cwd: '/Users/test/Gits/tokenlayer',
+        timestamp: `2026-10-${day}T12:00:00Z`, message: { role: 'assistant', model } })),
+      harness, machine: 'fixture', path: `/synthetic/${sessionId}.jsonl`, generation: 'fixture',
+      byte_offset: i, content_hash: `line-${i}`, line_bytes: 1,
+    })));
+    expect(await ch.client.queryJSON('SELECT * FROM tokenlayer.v_sessions_daily ORDER BY day, model, harness')).toEqual([
+      { day: '2026-10-28', repo: 'tokenlayer', model: '(none)', harness: 'antigravity', machine: 'fixture', sessions: 1 },
+      { day: '2026-10-28', repo: 'tokenlayer', model: '(none)', harness: 'codex', machine: 'fixture', sessions: 1 },
+      { day: '2026-10-28', repo: 'tokenlayer', model: 'model-a', harness: 'claude', machine: 'fixture', sessions: 2 },
+      { day: '2026-10-28', repo: 'tokenlayer', model: 'model-b', harness: 'claude', machine: 'fixture', sessions: 1 },
+      { day: '2026-10-29', repo: 'tokenlayer', model: 'model-c', harness: 'codex', machine: 'fixture', sessions: 1 },
+    ]);
   } finally { await ch.stop(); }
 }, 40000);
 
