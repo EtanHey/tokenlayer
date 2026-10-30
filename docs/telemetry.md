@@ -157,3 +157,27 @@ WHERE ts >= now() - INTERVAL 30 DAY
 GROUP BY machine, harness, project, day
 ORDER BY day DESC, events DESC
 ```
+
+## Sessions per day by repo and model
+
+```sql
+SELECT day, repo, model, sum(sessions) AS sessions FROM tokenlayer.v_sessions_daily WHERE day >= today()-30 GROUP BY day, repo, model ORDER BY day DESC, sessions DESC
+```
+
+`v_sessions_daily(day, repo, model, harness, machine, sessions)` reads the context view over `session_events FINAL`.
+Days are UTC activity days. `repo` is the inherited normalized `project` from `projectFromCwd` (including T3 and
+repo-local worktrees). Models are attributed per event, inheriting the latest nonempty model in that source file;
+empty/unattributed models and epoch timestamps are excluded. A session active under several models counts once
+per model per day, so summing across models is not a unique-session total. Codex child native IDs count separately
+from parents (F-1); parent aliases never collapse them. The query sums the per-harness/per-machine groups.
+
+From M4, after [D1 setup](deploy-d1.md), run the following from the checkout. Credentials stay in memory and are
+read from the mode-600 env files, never in shell arguments, URLs or output:
+
+```sh
+bun -e 'import {loadEnvFiles} from "./src/lib/env"; import {ClickHouse} from "./src/lib/clickhouse"; import {installErrorHandlers,writeOut} from "./src/lib/egress"; installErrorHandlers(); const ch=ClickHouse.fromEnv(loadEnvFiles(["~/.config/tokenlayer/ship.env","~/.config/tokenlayer/clickhouse.env"])); writeOut(await ch.exec("SELECT day, repo, model, sum(sessions) AS sessions FROM tokenlayer.v_sessions_daily WHERE day >= today()-30 GROUP BY day, repo, model ORDER BY day DESC, sessions DESC"));'
+```
+
+For deployment verification include `machine,harness` in SELECT/GROUP BY to confirm both feeds. This view is a
+content-free query convenience, not an access-control boundary. Backfill covers eligible uncompressed files;
+see the runbook's compressed-history gap before claiming all 90 days are present.

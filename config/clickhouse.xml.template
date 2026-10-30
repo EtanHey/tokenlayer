@@ -1,0 +1,17 @@
+<clickhouse>
+  <listen_host>127.0.0.1</listen_host>
+  <http_port>8123</http_port><tcp_port>19000</tcp_port>
+  <storage_configuration><disks><default><keep_free_space_bytes>37580963840</keep_free_space_bytes></default></disks></storage_configuration>
+  <path>__HOME__/Library/Application Support/tokenlayer/clickhouse/</path>
+  <logger>
+    <level>warning</level><console>0</console><size>10M</size><count>3</count>
+    <log>__HOME__/Library/Logs/tokenlayer/clickhouse.log</log>
+    <errorlog>__HOME__/Library/Logs/tokenlayer/clickhouse.err.log</errorlog>
+  </logger>
+  <profiles><default><log_queries>0</log_queries><log_query_threads>0</log_query_threads></default></profiles>
+  <users><tokenlayer>
+    <password_sha256_hex from_env="CLICKHOUSE_PASSWORD_SHA256" hide_in_preprocessed="true"/>
+    <networks><ip>127.0.0.1</ip></networks><profile>default</profile><quota>default</quota>
+  </tokenlayer></users>
+  <quotas><default/></quotas>
+</clickhouse>
