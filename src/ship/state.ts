@@ -4,6 +4,8 @@ import type { FileState } from "./parse";
 
 /** Checkpoint for one file: identity (inode, mtime, prefix fingerprint, generation), shipped offset, parser carry-forward. */
 export type FileCheckpoint = {
+  /** Physical compressed representation; offset/fingerprint remain decoded coordinates. */
+  compressed?: { size: number; fingerprint: string; complete: boolean };
   inode: number;
   identity: string;
   /** mtime when last checked; an unchanged size, inode and mtime skips the file without reading it. */

@@ -16,6 +16,8 @@
   <string>__REPO__</string>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>TOKENLAYER_MACHINE</key>
     <string>__MACHINE__</string>
     <key>TOKENLAYER_ENV_FILES</key>
