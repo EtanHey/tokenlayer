@@ -11,7 +11,7 @@ const scratch = () => { mkdirSync(".local", { recursive: true }); return realpat
 const row = (member_path: string, bytes: Buffer, overrides: Partial<Inventory> = {}): Inventory => ({ machine: "m4", source_kind: "live", container: "", member_path, session_id: "session", harness: "claude", bytes: String(bytes.length), lines: "1", first_ts: "2026-01-01", last_ts: "2026-01-01", cwd: "/Users/etanheyman/Gits/example", sha256: sha256(bytes), mtime: "", ...overrides });
 const read = (bytes: Buffer) => async () => (async function* () { yield bytes; })();
 
-test.skipIf(!clickhouseBinary())("SHOULD-2 old live file skipped without backfill is imported unless the server holds it", async () => {
+test.skipIf(!clickhouseBinary())("SHOULD-2 old live file requires shipper backfill and a server export", async () => {
   const dir = scratch(), path = join(dir, "session.jsonl"), bytes = Buffer.from('{"sessionId":"session","type":"user"}\n');
   writeFileSync(path, bytes); utimesSync(path, new Date("2026-01-01"), new Date("2026-01-01"));
   const local = await startLocalClickHouse();
@@ -22,12 +22,12 @@ test.skipIf(!clickhouseBinary())("SHOULD-2 old live file skipped without backfil
     const copies = [row(path, bytes), row(join(dir, "copy.jsonl"), bytes, { source_kind: "archive_dir" })];
     const entries = () => manifest(copies, [], { m4: [dir] });
     const missing = await dryRun(entries(), { existing: [], read: read(bytes) });
-    expect(missing.import_rows).toBe(1); expect(missing.skip_live).toBe(0); expect(missing.skip_copy).toBe(1);
+    expect(missing.import_rows).toBe(0); expect(missing.skip_live).toBe(0); expect(missing.needs_shipper_backfill).toBe(1); expect(missing.skip_shipper).toBe(1);
     expect((await shipOnce(opts)).lines).toBe(1);
     const stored = await local.client.queryJSON<{ machine: string; session_id: string; path: string; content_hash: string; count: number }>("SELECT machine,session_id,path,content_hash,toUInt32(count()) AS count FROM tokenlayer.session_events FINAL GROUP BY machine,session_id,path,generation,content_hash");
     const existing = stored.map(r => [r.machine, r.session_id, r.path, r.content_hash, r.count] satisfies import("../../src/archaeology/pipeline").ExistingCount);
     expect((await dryRun(entries(), { existing, read: read(bytes) })).import_rows).toBe(0);
-    expect((await dryRun(entries(), { existing: existing.map(([,session,path,hash,count]) => ["m1", session, path, hash, count]), read: read(bytes) })).import_rows).toBe(1);
+    expect((await dryRun(entries(), { existing: existing.map(([,session,path,hash,count]) => ["m1", session, path, hash, count]), read: read(bytes) })).needs_shipper_backfill).toBe(1);
   } finally { await local.stop(); }
 }, 40_000);
 
