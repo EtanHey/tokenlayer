@@ -67,6 +67,47 @@ describe.skipIf(!clickhouseBinary())("drain → real local ClickHouse", () => {
     expect(ts.ts).toBe("2026-10-28 07:31:07.123");
   });
 
+  test("public rate-limit headers survive queue, spool and real proxy_usage", async () => {
+    const headers = Object.fromEntries([
+      ...['requests', 'tokens', 'input-tokens', 'output-tokens'].flatMap(b =>
+        ['limit', 'remaining', 'reset'].map(f => `anthropic-ratelimit-${b}-${f}`)),
+      ...['requests', 'tokens'].flatMap(b =>
+        ['limit', 'remaining', 'reset'].map(f => `x-ratelimit-${f}-${b}`)),
+      ...['5h', '7d'].flatMap(w => ['status', 'reset', 'utilization'].map(f => `anthropic-ratelimit-unified-${w}-${f}`)),
+      'retry-after', 'x-codex-primary-reset-after-seconds',
+    ].map((h, i) => [h, `${i}.125`]));
+    const pages = [[{...fixture[0], execution_id: 'header-roundtrip', response_headers: headers}]];
+    const hub = Bun.serve({port: 0, fetch: () => Response.json(pages.shift() ?? [])});
+    try {
+      await drainOnce({hubUrl: hub.url.toString(), mgmtKey: 'synthetic', hub: 'm1', clickhouse: ch.client, spool: new Spool(dir)});
+      const rows = await ch.client.queryJSON<{ratelimit: Record<string, string>}>(
+        "SELECT ratelimit FROM tokenlayer.proxy_usage WHERE execution_id = 'header-roundtrip'");
+      expect(rows).toEqual([{ratelimit: headers}]);
+    } finally { hub.stop(true); }
+  });
+
+  test("object failure bodies survive queue, spool and real proxy_usage losslessly", async () => {
+    const body = { error: { message: `  ${"synthetic failure\nשלום".repeat(1000)}  `, details: [429, false, null] } };
+    const pages = [[{ ...fixture[1], execution_id: "object-body-roundtrip", fail: { status_code: 500, body } }]];
+    const hub = Bun.serve({ port: 0, fetch: () => Response.json(pages.shift() ?? []) });
+    try {
+      const result = await drainOnce({
+        hubUrl: hub.url.toString(),
+        mgmtKey: "synthetic",
+        hub: "m1",
+        clickhouse: ch.client,
+        spool: new Spool(dir),
+      });
+      expect(result).toEqual({ drained: 1, inserted: 1, spooled: 0, rejected: 0 });
+      const rows = await ch.client.queryJSON<{ fail_body: string }>(
+        "SELECT fail_body FROM tokenlayer.proxy_usage WHERE execution_id = 'object-body-roundtrip'",
+      );
+      expect(rows).toEqual([{ fail_body: JSON.stringify(body) }]);
+    } finally {
+      hub.stop(true);
+    }
+  });
+
   test("a rejected insert throws, so the spool keeps the batch", async () => {
     const bad = [{ ts: "not-a-time", execution_id: "e-bad" }];
     await expect(ch.client.insert("proxy_usage", bad)).rejects.toThrow(/clickhouse insert into proxy_usage failed/);

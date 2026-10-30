@@ -41,7 +41,7 @@ const exitCode = await runLoop({
   intervalMs, once, stopping: () => stopping,
   execute: async () => {
     const r = await tick(client, opts);
-    if (once) writeErr(`${new Date().toISOString()} tokenlayer-steer: credentials=${r.credentials} changes=${r.changes} errors=${r.errors}${dryRun ? " (dry-run)" : ""}`);
+    if (once) writeErr(`${new Date().toISOString()} tokenlayer-steer: credentials=${r.credentials} changes=${r.changes} errors=${r.errors} patch_errors=${r.patchErrors ?? 0}${dryRun ? " (dry-run)" : ""}`);
     return r;
   },
   log: message => writeErr(`${new Date().toISOString()} tokenlayer-steer: ${message}`),

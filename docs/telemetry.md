@@ -23,8 +23,10 @@ Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
 - Items that cannot be mapped go to `rejects.ndjson` with identity fields redacted. Nothing is dropped silently.
 - Malformed pages retain only a byte count and SHA-256 receipt through the ordinary reject deep redactor.
   Raw bodies are never retained, including non-array JSON and encoded strings.
-- There is no ingest redaction: rows and the recovery spool retain text exactly. Only egress
-  (rejects, logs, stderr, thrown errors and usage.json) passes the shared redactor
+- Drain proxy_usage rows and their spool preserve telemetry text and public rate-limit
+  header values without ingest redaction or failure-body truncation. Identity columns
+  remain hashed. Rejected records and error egress retain sanitization.
+- Egress (rejects, logs, stderr, thrown errors and usage.json) passes the shared redactor
   (`src/lib/redact.ts`). It removes known API/OAuth key prefixes, JWTs, PEM private keys and emails;
   bearer tokens of at least 8 characters (including letters-only tokens); URL userinfo with a password;
   and values named by sensitive fields, regardless of the value's prefix. Field matching covers camelCase,

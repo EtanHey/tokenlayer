@@ -28,7 +28,7 @@ export type UsageQueueRecord = {
   }>;
   failed?: boolean;
   stream?: boolean;
-  fail?: { status_code?: number; body?: string; code?: string };
+  fail?: { status_code?: number; body?: unknown; code?: string };
   response_headers?: Record<string, string[] | string>;
   accounting_version?: number;
   token_breakdown?: {
@@ -126,7 +126,7 @@ function ratelimitHeaders(headers: UsageQueueRecord["response_headers"]): Record
 
 /**
  * Map one queue item to a proxy_usage row. Throws on items that cannot be stored faithfully.
- * Free text is retained exactly; redaction belongs at egress boundaries.
+ * Preserve telemetry text at ingest; sanitize only when exporting it. Identity columns remain hashed.
  */
 export function mapUsageRecord(input: unknown, opts: { hub: string }): ProxyUsageRow {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
@@ -137,6 +137,7 @@ export function mapUsageRecord(input: unknown, opts: { hub: string }): ProxyUsag
   if (ms === null) throw new Error("usage record has no parseable timestamp");
   const t = r.tokens ?? {};
   const failed = r.failed === true;
+  const body = r.fail?.body;
 
   const row: ProxyUsageRow = {
     ts: toClickHouseTime(ms),
@@ -174,7 +175,7 @@ export function mapUsageRecord(input: unknown, opts: { hub: string }): ProxyUsag
     status_code: bounded(r.fail?.status_code, 16),
     failed,
     fail_code: str(r.fail?.code),
-    fail_body: failed ? str(r.fail?.body) : "",
+    fail_body: failed ? (typeof body === "string" ? body : JSON.stringify(body) ?? "") : "",
     stream: r.stream === true,
     reasoning_effort: str(r.reasoning_effort),
     service_tier: str(r.service_tier),

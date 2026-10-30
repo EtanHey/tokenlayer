@@ -1,5 +1,6 @@
 /**
- * Secret filtering for egress copies (logs, rejects and exported text); archive bytes stay exact.
+ * The egress redaction choke point for logs, errors, rejects, usage.json and exports.
+ * Ingest rows and their spool preserve exact text; redaction happens only at egress.
  * API keys, bearer/OAuth tokens, JWTs, private keys, auth-file JSON and email addresses are replaced
  * with REDACTED. `redactDeep` recurses through objects, arrays and strings; `redactText` covers free text,
  * including JSON (or escaped JSON) embedded in a string.

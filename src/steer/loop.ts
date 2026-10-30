@@ -20,18 +20,21 @@ export async function runLoop(opts: LoopOptions): Promise<number> {
   do {
     const started = now();
     let retryAfterMs = 0;
+    let globalFailure = false;
     try {
       const result = await opts.execute();
-      exitCode = result.errors ? 1 : 0;
+      globalFailure = result.errors > 0;
+      exitCode = result.errors || result.patchErrors ? 1 : 0;
       retryAfterMs = result.retryAfterMs ?? 0;
     } catch (err) {
+      globalFailure = true;
       exitCode = 1;
       retryAfterMs = err instanceof HubError ? err.retryAfterMs : 0;
       const message = err instanceof Error ? err.message : "tick failed";
       if (message !== lastError) opts.log(message);
       lastError = message;
     }
-    if (exitCode) failures = Math.min(failures + 1, 30);
+    if (globalFailure) failures = Math.min(failures + 1, 30);
     else {
       if (failures) opts.log("recovered");
       failures = 0;

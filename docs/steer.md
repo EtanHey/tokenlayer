@@ -61,3 +61,9 @@ on it and records its headers.
 Failed GETs and ticks with PATCH/snapshot errors use exponential backoff with up to 25% jitter,
 capped at five minutes. Retry-After (seconds or HTTP date) is honoured up to that cap.
 Failure delays begin after the tick finishes; a clean tick restores the configured interval.
+
+PATCH failures back off independently per credential (120 s, 240 s, then 300 s,
+honoring Retry-After up to the cap). Other credentials retain the configured tick
+interval. Successful PATCHes clear their backoff; removed credentials are pruned.
+GET and snapshot failures still back off the whole loop. A one-shot PATCH failure
+returns a nonzero exit status. Backoff state is in memory per hub client.
