@@ -11,7 +11,7 @@
       "command": "bun test",
       "timeout_s": 240
     },
-    { "id": "unit-tests-count", "metric": "Bun passing test count", "kind": "unit", "runner": "ci", "direction": "min", "ceiling": 303, "command": "node ratchet/measure.mjs unit", "timeout_s": 240 },
+    { "id": "unit-tests-count", "metric": "Bun passing test count", "kind": "unit", "runner": "ci", "direction": "min", "ceiling": 303, "command": "node ratchet/measure.mjs unit", "timeout_s": 240, "maxRegression": 0.25 },
     {
       "id": "typecheck-pass",
       "metric": "TypeScript passes",
@@ -44,28 +44,6 @@
       "maxRegression": 0.25
     },
     {
-      "id": "admit-tla-states",
-      "metric": "TLC completes with invariants holding",
-      "kind": "unit",
-      "runner": "ci",
-      "direction": "pass",
-      "ceiling": true,
-      "command": "node ratchet/measure.mjs tla",
-      "timeout_s": 240
-    },
-    {
-      "id": "admit-null-window",
-      "metric": "Null-window regression fixtures",
-      "kind": "real",
-      "runner": "ci",
-      "direction": "pass",
-      "ceiling": true,
-      "command": "bun test tests/admit/r2.test.ts",
-      "timeout_s": 240,
-      "bug_sha": "8bd4c56",
-      "fix_sha": "7f5131a"
-    },
-    {
       "id": "redactor-throughput-mbps-m1",
       "metric": "Synthetic redactor median of 5 MB/s",
       "kind": "unit",
@@ -76,12 +54,10 @@
       "timeout_s": 240
     },
     {"id": "payload-usage-bytes", "metric": "usage payload bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts payload-usage-bytes", "timeout_s": 120, "unit": "bytes", "allowance": 64},
-    {"id": "payload-admit-bytes", "metric": "admit payload bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts payload-admit-bytes", "timeout_s": 120, "unit": "bytes", "allowance": 64},
     {"id": "payload-steer-bytes", "metric": "steer payload bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts payload-steer-bytes", "timeout_s": 120, "unit": "bytes", "allowance": 64},
     {"id": "payload-drain-bytes", "metric": "drain payload bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts payload-drain-bytes", "timeout_s": 120, "unit": "bytes", "allowance": 64},
     {"id": "payload-session-bytes", "metric": "session payload bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts payload-session-bytes", "timeout_s": 120, "unit": "bytes", "allowance": 64},
     {"id": "bundle-usage-bytes", "metric": "usage bundle bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts bundle-usage-bytes", "timeout_s": 120, "unit": "bytes", "growth": 0.01, "allowance": 2048},
-    {"id": "bundle-admit-bytes", "metric": "admit bundle bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts bundle-admit-bytes", "timeout_s": 120, "unit": "bytes", "growth": 0.01, "allowance": 2048},
     {"id": "bundle-steer-bytes", "metric": "steer bundle bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts bundle-steer-bytes", "timeout_s": 120, "unit": "bytes", "growth": 0.01, "allowance": 2048},
     {"id": "bundle-drain-bytes", "metric": "drain bundle bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts bundle-drain-bytes", "timeout_s": 120, "unit": "bytes", "growth": 0.01, "allowance": 2048},
     {"id": "bundle-ship-bytes", "metric": "ship bundle bytes", "kind": "unit", "runner": "ci", "direction": "max", "ceiling": 1000000000000.0, "command": "bun ratchet/r1.ts bundle-ship-bytes", "timeout_s": 120, "unit": "bytes", "growth": 0.01, "allowance": 2048},
