@@ -4,7 +4,7 @@ PR CI archives the exact base SHA's `ratchet/` and benchmark into a separate tem
 
 First-adoption boundary: base `e1cd4224f3d6adc84f46c899cf043f5702104667` predates this guard. Only that SHA runs its own trusted legacy measurements and then the new candidate judge; that reviewed bootstrap cannot prove the new guard's trust until merged. Every later base must supply the guard; there is no generic fallback. Workflow changes still require review; the lead must separately require this check in branch protection.
 
-TLC is a pass row: exit zero plus the explicit invariant-success message. Model size is not a correctness floor. JDK 21+, `TLA_JAR` (v1.8.0, pinned SHA256), Bun, and ClickHouse on PATH are required. TLC uses a temporary `-metadir`; unit-test count must be at least main's passing count, so removed/skipped tests reduce it. Integration tests must execute without skips.
+Bun and ClickHouse on PATH are required. Unit-test count must be at least main's passing count, so removed/skipped tests reduce it. Integration tests must execute without skips.
 
 Throughput uses a trusted median-of-five benchmark on both source trees: >=15 MB/s and >=75% of main. A green main push measures the trusted main tree, then a separate main-only write job commits `max(existing floor, floor(0.8 * median * 100) / 100)`. It never lowers the floor, refuses nonfinite medians, and rejects a push if main advanced meanwhile. The token is read-only on PR runs. The bot's floor-only commit does not trigger another Actions run. The M1 floor remains 20 MB/s, report-only until R1.
 

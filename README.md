@@ -8,6 +8,8 @@ Sidecars around a self-hosted [CLIProxyAPI](https://github.com/router-for-me/CLI
 - **drain** — persists the proxy's per-request usage records (tokens, cache reads/writes, account, latency) to ClickHouse.
 - **ship** — ships Claude Code, Codex and T3 Code session JSONL from every machine into the same ClickHouse.
 
+Tokenlayer is telemetry only; it never refuses or slows Claude workers.
+
 No secrets live in this repo. See `config/cliproxyapi.conf.template`.
 
 Archaeology currently supports dry-run and throwaway validation only; no apply mode exists.

@@ -74,7 +74,7 @@ test('base judge rejects the reviewer row-deletion plus judge-edit probe', () =>
   try {
     cpSync('ratchet', join(dir, 'ratchet'), { recursive: true });
     const base = JSON.parse(readFileSync(join(dir, 'ratchet/rows.json'), 'utf8'));
-    const candidate = { ...base, rows: base.rows.filter((r: any) => r.id !== 'admit-null-window') };
+    const candidate = { ...base, rows: base.rows.filter((r: any) => r.id !== 'integration-tests-ran') };
     writeFileSync(join(dir, 'ratchet/rows.json'), JSON.stringify(candidate));
     writeFileSync(join(dir, 'ratchet/table.mjs'), 'process.exit(0);');
     writeFileSync(join(dir, 'ratchet/rows.json'), JSON.stringify(base));
@@ -82,7 +82,7 @@ test('base judge rejects the reviewer row-deletion plus judge-edit probe', () =>
     writeFileSync(join(dir, 'ratchet/rows.json'), JSON.stringify(candidate));
     const judge = spawnSync('node', [resolve('ratchet/table.mjs'), 'ratchet/rows.json'], { cwd: dir, encoding: 'utf8', env: { ...process.env, RATCHET_BASE_REF: 'HEAD', RATCHET_MEASURE_REF: 'HEAD', GITHUB_EVENT_PATH: '' } });
     expect(judge.status).toBe(1);
-    expect(judge.stderr).toContain('row removed or loosened: admit-null-window');
+    expect(judge.stderr).toContain('row removed or loosened: integration-tests-ran');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

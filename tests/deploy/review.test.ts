@@ -72,7 +72,7 @@ test('inventory applies the inclusive shipper mtime cutoff to plain and compress
   expect(inventoryBytes([{ kind: 'codex', dir }], sinceMs)).toBe(17);
   expect(inventoryBytes([{ kind: 'claude', dir }], sinceMs)).toBe(10);
 });
-test('representative hub compression admits the measured M4 inventory but refuses a real shortfall', async () => {
+test('representative hub compression fits the measured M4 inventory but refuses a real shortfall', async () => {
   const gib = 1024 ** 3, bytes = 108_000_000_000;
   let space = { free_space: String(62 * gib), keep_free_space: String(floor),
     compressed: String(Math.round(2.43 * gib)), uncompressed: String(Math.round(5.76 * gib)) };
