@@ -11,7 +11,7 @@
       "command": "bun test",
       "timeout_s": 240
     },
-    { "id": "unit-tests-count", "metric": "Bun passing test count", "kind": "unit", "runner": "ci", "direction": "min", "ceiling": 303, "command": "node ratchet/measure.mjs unit", "timeout_s": 240, "maxRegression": 0.25 },
+    { "id": "unit-tests-count", "metric": "Bun passing test count", "kind": "unit", "runner": "ci", "direction": "min", "ceiling": 303, "command": "node ratchet/measure.mjs unit", "timeout_s": 240, "maxRegression": 0 },
     {
       "id": "typecheck-pass",
       "metric": "TypeScript passes",
