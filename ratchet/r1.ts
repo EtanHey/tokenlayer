@@ -38,9 +38,12 @@ async function measure(ingestOnly = false) {
   if (!ingestOnly) {
     const { snapshot, serialize } = await source('usage/snapshot');
     out['payload-usage-bytes'] = Buffer.byteLength(serialize(snapshot(fixture('steer/credentials-live-redacted.json'), stamp)));
-    const admit = Bun.spawnSync(['bun', resolve('src/admit/main.ts'), '--kind', 'lead', '--active-leads', '0', '--now', new Date(stamp).toISOString(), '--file', resolve(import.meta.dir, '../tests/fixtures/admit/producer-five.json')]);
-    if (admit.exitCode !== 0 || !JSON.parse(admit.stdout.toString()).admit) throw Error('admit fixture failed');
-    out['payload-admit-bytes'] = admit.stdout.length;
+    const hasAdmit = existsSync(resolve('src/admit/main.ts'));
+    if (hasAdmit) {
+      const admit = Bun.spawnSync(['bun', resolve('src/admit/main.ts'), '--kind', 'lead', '--active-leads', '0', '--now', new Date(stamp).toISOString(), '--file', resolve(import.meta.dir, '../tests/fixtures/admit/producer-five.json')]);
+      if (admit.exitCode !== 0 || !JSON.parse(admit.stdout.toString()).admit) throw Error('admit fixture failed');
+      out['payload-admit-bytes'] = admit.stdout.length;
+    }
     const { tick } = await source('steer/steer');
     const status = await tick({ list: async () => fixture('steer/credentials-live-redacted.json').files, setPriority: async () => {} }, {
       now: stamp, log: () => {}, onSnapshot: (rows: unknown) => { out['payload-steer-bytes'] = Buffer.byteLength(JSON.stringify(rows) + '\n'); },
@@ -49,6 +52,7 @@ async function measure(ingestOnly = false) {
     const { mapUsageRecord } = await source('drain/record');
     out['payload-drain-bytes'] = Buffer.byteLength(JSON.stringify(mapUsageRecord(fixture('usage-queue.json')[0], { hub: 'synthetic' })) + '\n');
     for (const name of ['usage', 'admit', 'steer', 'drain', 'ship']) {
+      if (name === 'admit' && !hasAdmit) continue;
       const build = await Bun.build({ entrypoints: [resolve(`src/${name}/main.ts`)], target: 'bun' });
       if (!build.success || build.outputs.length !== 1) throw Error(`build failed: ${name}`);
       out[`bundle-${name}-bytes`] = build.outputs[0]!.size;
