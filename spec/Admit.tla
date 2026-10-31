@@ -1,29 +1,32 @@
 ----------------------------- MODULE Admit -----------------------------
 EXTENDS Naturals, FiniteSets
-CONSTANTS greenCap, brake60Cap, brake80Cap
+CONSTANTS greenCap, slowCap, stopCap
 VARIABLES accounts, fresh, paced, pending, leads, ordinary, workers
 vars == <<accounts, fresh, paced, pending, leads, ordinary, workers>>
 Accounts == {1, 2}
 Dispatchers == {1, 2}
-Readings == {"zero", "warm", "brake60", "brake80", "exhausted", "unknown", "rejected", "rolled"}
+Readings == {"zero", "warm", "slow", "stop", "exhausted", "unknown", "rejected", "rolled"}
 (* Raw observations for the independent safety oracle. Never call Usage/Headroom here. *)
 Raw(a) == [status |-> IF accounts[a] = "rejected" THEN "rejected"
                      ELSE IF accounts[a] = "unknown" THEN "unknown" ELSE "allowed",
            used_pct |-> CASE accounts[a] \in {"zero", "rolled"} -> 0
-                        [] accounts[a] = "warm" -> 59
-                        [] accounts[a] = "brake60" -> 60
-                        [] accounts[a] = "brake80" -> 80
+                        [] accounts[a] = "warm" -> 70
+                        [] accounts[a] = "slow" -> 50
+                        [] accounts[a] = "stop" -> 95
                         [] OTHER -> 100,
            rolled_over |-> accounts[a] = "rolled"]
 Usage(a) == CASE accounts[a] \in {"zero", "rolled"} -> 0
-                 [] accounts[a] = "warm" -> 59
-                 [] accounts[a] = "brake60" -> 60
-                 [] accounts[a] = "brake80" -> 80
+                 [] accounts[a] = "warm" -> 70
+                 [] accounts[a] = "slow" -> 50
+                 [] accounts[a] = "stop" -> 95
                  [] OTHER -> 100
-Headroom == {a \in Accounts : Usage(a) \in {0, 59, 60, 80}}
-Hot(n) == \E a \in Headroom : Usage(a) >= n
-Pacing == \E a \in Headroom : paced[a] /\ Usage(a) > 0
-Cap == IF Hot(80) THEN brake80Cap ELSE IF Hot(60) THEN brake60Cap ELSE greenCap
+Headroom == {a \in Accounts : Usage(a) \in {0, 50, 70, 95}}
+(* A reading abstracts an account's tightest present window. Best account wins. *)
+Level(a) == IF Usage(a) >= 95 THEN "stop"
+            ELSE IF accounts[a] = "slow" \/ (paced[a] /\ Usage(a) > 0) THEN "slow" ELSE "green"
+Best == IF \E a \in Headroom : Level(a) = "green" THEN "green"
+        ELSE IF \E a \in Headroom : Level(a) = "slow" THEN "slow" ELSE "stop"
+Cap == IF Best = "stop" THEN stopCap ELSE IF Best = "slow" THEN slowCap ELSE greenCap
 Init == /\ accounts \in [Accounts -> Readings]
         /\ fresh \in BOOLEAN
         /\ paced \in [Accounts -> BOOLEAN]
@@ -37,10 +40,10 @@ Request(d, kind) ==
 Admit(d) ==
   /\ pending[d] # "idle" /\ fresh /\ Headroom # {}
   /\ IF pending[d] = "worker"
-        THEN /\ ~Hot(60) /\ ~Pacing /\ workers = 0
+        THEN /\ Best = "green" /\ workers = 0
              /\ workers' = workers + 1
              /\ UNCHANGED <<leads, ordinary>>
-        ELSE /\ leads < Cap /\ (~Hot(80) \/ pending[d] = "essential")
+        ELSE /\ leads < Cap /\ (Best # "stop" \/ pending[d] = "essential")
              /\ leads' = leads + 1
              /\ ordinary' = ordinary + (IF pending[d] = "lead" THEN 1 ELSE 0)
              /\ UNCHANGED workers
@@ -66,7 +69,7 @@ NoBlindAdmit ==
     Raw(a).status = "allowed" /\
     (Raw(a).rolled_over \/ Raw(a).used_pct < 100)) => leads + workers = 0
 CanonLeads == leads <= greenCap
-Lead60 == Hot(60) => leads <= brake60Cap
-Lead80 == Hot(80) => leads <= brake80Cap /\ ordinary = 0
-WorkerBrake == (Hot(60) \/ Pacing) => workers = 0
+LeadSlow == Best = "slow" => leads <= slowCap
+LeadStop == Best = "stop" => leads <= stopCap /\ ordinary = 0
+WorkerBrake == Best # "green" => workers = 0
 =============================================================================
