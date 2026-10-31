@@ -8,12 +8,12 @@ const snapshot = (accounts: unknown[] = [account()]) => ({ generated_at: now, st
 const cases = [
   ...[4,5,9].map(n => ({ name: `green lead ${n}`, data: snapshot(), args: ['--kind','lead','--active-leads',String(n)], admit:n<5, level:'green' })),
   { name: '59', data: snapshot([account(59)]), args: [], admit: true, level: 'green' },
-  { name: '60', data: snapshot([account(60)]), args: [], admit: false, level: 'brake60' },
-  { name: '79', data: snapshot([account(79)]), args: [], admit: false, level: 'brake60' },
-  { name: '80', data: snapshot([account(80)]), args: [], admit: false, level: 'brake80' },
-  ...[1,2,4].map(n => ({ name: `60 lead ${n}`, data: snapshot([account(60)]), args: ['--kind','lead','--active-leads',String(n)], admit: n<2, level: 'brake60' })),
-  ...[0,1,2].map(n => ({ name: `80 essential ${n}`, data: snapshot([account(80)]), args: ['--kind','lead','--active-leads',String(n),'--essential'], admit: n<1, level: 'brake80' })),
-  { name: 'nonessential', data: snapshot([account(80)]), args: ['--kind','lead','--active-leads','0'], admit: false, level: 'brake80' },
+  { name: '60', data: snapshot([account(60)]), args: [], admit: true, level: 'green' },
+  { name: '79', data: snapshot([account(79)]), args: [], admit: true, level: 'green' },
+  { name: '80', data: snapshot([account(80)]), args: [], admit: true, level: 'green' },
+  ...[1,2,4].map(n => ({ name: `slow lead ${n}`, data: snapshot([account(50,100)]), args: ['--kind','lead','--active-leads',String(n)], admit: n<2, level: 'slow' })),
+  ...[0,1,2].map(n => ({ name: `stop essential ${n}`, data: snapshot([account(95)]), args: ['--kind','lead','--active-leads',String(n),'--essential'], admit: n<1, level: 'stop' })),
+  { name: 'nonessential', data: snapshot([account(95)]), args: ['--kind','lead','--active-leads','0'], admit: false, level: 'stop' },
   { name: 'lead count required', data: snapshot(), args: ['--kind','lead'], admit: false, level: 'no-headroom' },
   { name: 'stale', data: { ...snapshot(), stale:true }, args: [], admit:false, level:'no-headroom' },
   { name: 'old', data: { ...snapshot(), generated_at:'2026-10-29T11:56:59Z' }, args: [], admit:false, level:'no-headroom' },
@@ -25,14 +25,14 @@ const cases = [
   { name: 'weekly exhausted', data: snapshot([{ ...account(), weekly:{ used_pct:100 } }]), args: [], admit:false, level:'no-headroom' },
   { name: 'no accounts', data: snapshot([]), args: [], admit:false, level:'no-headroom' },
   { name: 'disabled ignored', data: snapshot([account(), { ...account(100), disabled:true, status:'rejected' }]), args: [], admit:true, level:'green' },
-  { name: 'worst account', data: snapshot([account(), account(80)]), args: [], admit:false, level:'brake80' },
-  { name: 'pacing edge', data: snapshot([account(40,150)]), args: [], admit:true, level:'green' },
-  { name: 'pacing warning', data: snapshot([account(40,149)]), args: [], admit:false, level:'brake60' },
-  { name: 'pacing lead', data: snapshot([account(40,149)]), args: ['--kind','lead','--active-leads','0'], admit:true, level:'green' },
+  { name: 'best account', data: snapshot([account(), account(96)]), args: [], admit:true, level:'green' },
+  { name: 'pacing edge', data: snapshot([account(50,150)]), args: [], admit:true, level:'green' },
+  { name: 'pacing warning', data: snapshot([account(50,149)]), args: [], admit:false, level:'slow' },
+  { name: 'pacing lead', data: snapshot([account(50,149)]), args: ['--kind','lead','--active-leads','0'], admit:true, level:'slow' },
   { name: 'healthy and weekly rejected lead', data: snapshot([account(15), { ...account(), weekly: { used_pct:99, status:'rejected' } }]), args: ['--kind','lead','--active-leads','0'], admit:true, level:'green' },
   { name: 'both rejected', data: snapshot([{ ...account(), status:'rejected' }, { ...account(), weekly:{used_pct:99,status:'rejected'} }]), args: [], admit:false, level:'no-headroom' },
-  ...[1,2].map(n => ({ name: `mixed 61 lead ${n}`, data: snapshot([account(61), {...account(),status:'rejected'}]), args:['--kind','lead','--active-leads',String(n)], admit:n<2, level:'brake60' })),
-  { name: 'mixed 61 worker', data: snapshot([account(61), {...account(),status:'rejected'}]), args:[], admit:false, level:'brake60' },
+  ...[1,2].map(n => ({ name: `mixed slow lead ${n}`, data: snapshot([account(50,100), {...account(),status:'rejected'}]), args:['--kind','lead','--active-leads',String(n)], admit:n<2, level:'slow' })),
+  { name: 'mixed slow worker', data: snapshot([account(50,100), {...account(),status:'rejected'}]), args:[], admit:false, level:'slow' },
   { name: 'unknown and healthy', data: snapshot([{...account(),status:'unknown'},account(15)]), args:[], admit:true, level:'green' },
   { name: 'five hour rejected and healthy', data: snapshot([{...account(),five_hour:{...account().five_hour,status:'rejected'}},account(15)]), args:[], admit:true, level:'green' },
   { name: 'malformed and healthy', data: snapshot([account(),{...account(),five_hour:{used_pct:'bad'}}]), args:[], admit:false, level:'no-headroom' },
@@ -46,10 +46,10 @@ for (const c of cases) test(c.name, () => {
     expect(p.exitCode).toBe(c.admit ? 0 : 1);
     expect(result).toMatchObject({ admit:c.admit, level:c.level });
     expect(typeof result.reason).toBe('string'); expect(Array.isArray(result.accounts)).toBe(true);
-    expect(result.pacing).toHaveProperty('warn');
+    expect(typeof result.pacing).toBe('object');
     for (const assessment of result.accounts) expect(assessment.label).toBe('a1b2c3d4a1b2c3d4');
-    if(c.name === 'pacing edge') expect(result.pacing).toEqual({used:40,elapsed_min:150,score:80,warn:false});
-    if(c.name === 'pacing warning') expect(result.pacing.warn).toBe(true);
+    if(c.name === 'pacing edge') expect(result.pacing).toEqual({five_hour:{used:50,elapsed_min:150,projected:100},weekly:{used:20,elapsed_min:null,projected:null}});
+    if(c.name === 'pacing warning') expect(result.pacing.five_hour.projected).toBeGreaterThan(100);
     expect(p.stderr.toString()).toBe('');
   } finally { rmSync(dir,{recursive:true}); }
 });

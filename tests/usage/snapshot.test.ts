@@ -38,3 +38,15 @@ test('labels share hub credential identity with steer and drain', async()=>{
  const {auth_index, ...withoutIndex} = c;
  expect(snapshot({files:[withoutIndex]},now).accounts[0]!.label).toBe(labelHash(c.id));
 });
+
+for (const present of ['5h','7d']) test(`only ${present} signals mark the other window absent and survive stale validation`, () => {
+  const data = snapshot({files:[{id:'one-window',provider:'claude',account_type:'oauth',quota:{signals:{
+    [`Anthropic-Ratelimit-Unified-${present}-Utilization`]:'0.12',
+  }}}]},now);
+  expect(data.accounts[0]![present === '5h' ? 'weekly' : 'five_hour']).toEqual({used_pct:null,resets_at:null,absent:true});
+  expect(staleSnapshot(data).accounts).toEqual(data.accounts);
+});
+test('partial present signals stay unknown rather than absent', () => {
+  const data = snapshot({files:[{id:'partial',provider:'claude',account_type:'oauth',quota:{signals:{'anthropic-ratelimit-unified-5h-status':'allowed'}}}]},now);
+  expect(data.accounts[0]!.five_hour).toEqual({used_pct:null,resets_at:null});
+});

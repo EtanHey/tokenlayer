@@ -10,14 +10,18 @@ test('policy and model config match fleet canon #5', () => {
   };
   expect<Record<string,number>>(policy.leads).toEqual({
     green: number(/at most (\d+) parallel Claude lead/),
-    brake60: number(/>=60% no new Claude workers and <=(\d+) active leads/),
-    brake80: number(/>=80% no Claude workers and <=(\d+) essential lead turn/),
+    slow: number(/no new Claude workers and <=(\d+) active leads/),
+    stop: number(/no Claude workers and <=(\d+) essential lead turn/),
   });
   expect<Record<string,number>>(policy.workerCaps).toEqual({judgment:number(/<=([0-9]+) `claude.judgment`/),
     cheap:number(/<=([0-9]+) `claude.subagent.cheap`/), mechanical:number(/<=([0-9]+) `claude.subagent.mechanical`/)});
   expect<number>(policy.judgmentSlots).toBe(number(/shared\s+(\d+)-slot/));
   expect<number>(policy.workerSharePct).toBe(number(/together <=(\d+)%/));
-  expect<number>(policy.weeklyPointsPerWindow).toBe(number(/Weekly budget: <=(\d+) weekly points per 5h window/));
+  expect<Record<string,number>>(policy.brake).toEqual({
+    stopUsedPct: number(/STOP at >=(\d+)%/),
+    projectionPct: number(/elapsed-minutes > (\d+)/),
+    minElapsedPct: number(/first (\d+)% of the window/),
+  });
   const config = readFileSync('spec/Admit.cfg','utf8');
   for (const [name,value] of Object.entries(policy.leads))
     expect(config).toContain(`${name}Cap = ${value}`);

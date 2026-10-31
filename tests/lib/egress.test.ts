@@ -117,6 +117,6 @@ test('stack review: every program prefix and non-secret TOKENLAYER setting survi
 
 for (const kind of ['lead', 'claude.judgment', 'claude.subagent.cheap', 'claude.subagent.mechanical']) test(`stack review: admit ${kind} retains byte-exact JSON under short settings`, async () => {
   const result = await run('admit', { TOKENLAYER_MACHINE: 'm1', TOKENLAYER_SHIP_RATE_MB: 'e', TOKENLAYER_HUB: '5' }, undefined, ['--kind', kind, '--active-leads', '0', '--file', '/dev/null']);
-  expect(result.out).toBe('{"admit":false,"reason":"invalid arguments or unavailable healthy telemetry","level":"no-headroom","pacing":{"used":null,"elapsed_min":null,"score":null,"warn":false},"accounts":[]}\n');
+  expect(result.out).toBe('{"admit":false,"reason":"invalid arguments or unavailable healthy telemetry","level":"no-headroom","pacing":{},"accounts":[]}\n');
   expect(JSON.parse(result.out).admit).toBe(false);
 });

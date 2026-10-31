@@ -1,17 +1,17 @@
 import { redactText, REDACTED } from '../lib/redact';
 import { CLAUDE_POLICY } from './policy';
 export type Kind = 'lead' | 'claude.judgment' | 'claude.subagent.cheap' | 'claude.subagent.mechanical';
-export type Level = 'green' | 'brake60' | 'brake80' | 'no-headroom';
+export type Level = 'green' | 'slow' | 'stop' | 'no-headroom';
 export type Options = { kind: Kind; activeLeads: number; essential: boolean; now: number };
 export function predicate(level: Level, options: Options): boolean {
   if (level === 'no-headroom') return false;
   if (options.kind !== 'lead') return level === 'green';
   return options.activeLeads < CLAUDE_POLICY.leads[level]
-    && (level !== 'brake80' || options.essential);
+    && (level !== 'stop' || options.essential);
 }
-const emptyPacing = { used: null, elapsed_min: null, score: null, warn: false };
+type Pacing = Partial<Record<'five_hour' | 'weekly', { used: number; elapsed_min: number | null; projected: number | null }>>;
 export function deny(reason: string) {
-  return { admit: false, reason, level: 'no-headroom', pacing: emptyPacing, accounts: [] };
+  return { admit: false, reason, level: 'no-headroom', pacing: {} as Pacing, accounts: [] };
 }
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error('invalid telemetry');
@@ -39,6 +39,10 @@ export function timestamp(value: unknown): number {
 }
 function windowReading(value: unknown) {
   const window = record(value);
+  if (window.absent !== undefined) {
+    if (window.absent !== true || window.used_pct !== null || window.resets_at !== null || window.rolled_over !== undefined) throw Error('invalid absent window');
+    return { absent: true } as const;
+  }
   if (window.rolled_over === true) {
     if (window.used_pct !== 0 || window.resets_at !== null) throw Error('invalid rollover');
     return { used: 0, reset: undefined, rolledOver: true };
@@ -64,21 +68,29 @@ export function evaluate(input: unknown, options: Options) {
     if (a.status !== 'allowed' || (five.status !== undefined && five.status !== 'allowed') || (weekly.status !== undefined && weekly.status !== 'allowed')) throw Error('unhealthy serving account');
     const fiveReading = windowReading(five), weeklyReading = windowReading(weekly);
     if (!fiveReading || !weeklyReading) return null;
-    const used = fiveReading.used;
-    if (weeklyReading.used >= 100 || used >= 100) return null;
-    const remaining = fiveReading.rolledOver || fiveReading.reset === undefined ? 0 : (fiveReading.reset - options.now) / 60000;
-    if (remaining < 0 || remaining >= 300) throw Error('invalid reset window');
-    const elapsed_min = fiveReading.rolledOver || fiveReading.reset === undefined ? null : 300 - remaining;
-    const score = fiveReading.rolledOver ? 0 : elapsed_min === null ? null : used * 300 / elapsed_min;
-    const warn = score === null || score > 80;
-    const level: Level = used >= 80 ? 'brake80' : used >= 60 || (warn && options.kind !== 'lead') ? 'brake60' : 'green';
-    return { label: redactText(a.label.length === 16 && /^[0-9a-f]{16}$/.test(a.label) ? a.label : REDACTED), level, pacing: { used, elapsed_min, score, warn } };
+    const pacing: Pacing = {};
+    let level: Level = 'green';
+    for (const [name, reading, minutes] of [['five_hour', fiveReading, 300], ['weekly', weeklyReading, 10080]] as const) {
+      if ('absent' in reading) continue;
+      const { used, reset, rolledOver } = reading;
+      if (used >= 100) return null;
+      const remaining = reset === undefined ? null : (reset - options.now) / 60000;
+      if (remaining !== null && (remaining < 0 || remaining >= minutes)) throw Error('invalid reset window');
+      const elapsed_min = remaining === null ? null : minutes - remaining;
+      const projected = rolledOver ? 0 : elapsed_min === null ? null : used * minutes / elapsed_min;
+      pacing[name] = { used, elapsed_min, projected };
+      const brake = CLAUDE_POLICY.brake;
+      if (used >= brake.stopUsedPct) level = 'stop';
+      else if (level === 'green' && elapsed_min !== null && elapsed_min >= minutes * brake.minElapsedPct / 100 && projected! > brake.projectionPct) level = 'slow';
+    }
+    if (!Object.keys(pacing).length) return null;
+    return { label: redactText(a.label.length === 16 && /^[0-9a-f]{16}$/.test(a.label) ? a.label : REDACTED), level, pacing };
   }).filter(a => a !== null);
   if (!accounts.length) return deny('no accounts with headroom');
-  const rank = { green:0, brake60:1, brake80:2, 'no-headroom':3 };
-  accounts.sort((a,b) => rank[b.level]-rank[a.level] || (b.pacing.score ?? Infinity)-(a.pacing.score ?? Infinity));
-  const worst = accounts[0];
-  if (!worst) return deny('no accounts with headroom');
-  const admit = predicate(worst.level, options);
-  return { admit, reason: admit ? 'within fleet limits' : 'fleet brake or lead cap', level:worst.level, pacing:worst.pacing, accounts };
+  const rank = { green:0, slow:1, stop:2, 'no-headroom':3 };
+  accounts.sort((a,b) => rank[a.level]-rank[b.level]);
+  const best = accounts[0];
+  if (!best) return deny('no accounts with headroom');
+  const admit = predicate(best.level, options);
+  return { admit, reason: admit ? 'within fleet limits' : 'fleet brake or lead cap', level:best.level, pacing:best.pacing, accounts };
 }

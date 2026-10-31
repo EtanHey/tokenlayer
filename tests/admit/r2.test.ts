@@ -56,7 +56,7 @@ test('two idle accounts regain headroom after their five-hour resets', () => {
     {used_pct:0,resets_at:null,rolled_over:true}, {used_pct:0,resets_at:null,rolled_over:true},
   ]);
   for (const kind of ['lead','claude.judgment','claude.subagent.cheap','claude.subagent.mechanical'])
-    expect(cli(data,now,kind)).toMatchObject({exit:0,result:{admit:true,level:'green',pacing:{used:0,elapsed_min:null,score:0,warn:false}}});
+    expect(cli(data,now,kind)).toMatchObject({exit:0,result:{admit:true,level:'green',pacing:{five_hour:{used:0,elapsed_min:null,projected:0}}}});
   expect(staleSnapshot(data).accounts).toEqual(data.accounts);
 });
 function producer(rejected = false) {
@@ -109,7 +109,7 @@ test('both windows can roll over at the boundary; unknown is never inferred as r
 for (const used of [60, 95])
 for (const kind of ['lead','claude.judgment','claude.subagent.cheap','claude.subagent.mechanical'])
 for (const source of ['fixture', 'producer'])
-test(`known ${used}% without reset brakes ${kind} via ${source}`, () => {
+test(`known ${used}% without reset with healthy sibling admits ${kind} via ${source}`, () => {
   const ms = Date.parse(now);
   const data = source === 'producer' ? usageSnapshot({files:[used,10].map((pct,i) => ({
     id:`partial-${i}`,provider:'claude',account_type:'oauth',status:'active',quota:{signals:{
@@ -122,16 +122,15 @@ test(`known ${used}% without reset brakes ${kind} via ${source}`, () => {
     {...account(),five_hour:{used_pct:used,resets_at:null}},
     {...account(),five_hour:{used_pct:10,resets_at:new Date(ms+7200000).toISOString()}},
   ]};
-  expect(cli(data,now,kind,4)).toMatchObject({exit:1,result:{admit:false,
-    level:used >= 80 ? 'brake80' : 'brake60',pacing:{used,score:null,elapsed_min:null,warn:true}}});
+  expect(cli(data,now,kind,4)).toMatchObject({exit:0,result:{admit:true,level:'green'}});
 });
 
-test('unknown pacing preserves utilization caps and permits an essential brake80 lead', () => {
+test('missing reset uses only the 95% stop and permits an essential stop lead', () => {
   for (const used of [20,60,95]) {
     const data = {...snapshot(),accounts:[{...account(),five_hour:{used_pct:used,resets_at:null}}]};
     const options = {kind:'lead' as const,activeLeads:0,essential:true,now:Date.parse(now)};
-    expect(evaluate(data,options)).toMatchObject({admit:true,level:used >= 80 ? 'brake80' : used >= 60 ? 'brake60' : 'green'});
-    expect(evaluate(data,{...options,essential:false}).admit).toBe(used < 80);
-    expect(evaluate(data,{...options,kind:'claude.judgment'})).toMatchObject({admit:false,level:used >= 80 ? 'brake80' : 'brake60'});
+    expect(evaluate(data,options)).toMatchObject({admit:true,level:used >= 95 ? 'stop' : 'green'});
+    expect(evaluate(data,{...options,essential:false}).admit).toBe(used < 95);
+    expect(evaluate(data,{...options,kind:'claude.judgment'})).toMatchObject({admit:used < 95,level:used >= 95 ? 'stop' : 'green'});
   }
 });

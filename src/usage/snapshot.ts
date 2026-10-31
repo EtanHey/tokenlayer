@@ -28,6 +28,9 @@ function signals(c: Credential) {
   return Object.fromEntries(Object.entries(c.quota?.signals ?? {}).map(([k,v]) => [k.toLowerCase(),v.trim().toLowerCase()]));
 }
 function reading(c: Credential, name: string, used: number | null, reset: number | null, now: number, rejected: boolean) {
+  const keys = Object.keys(signals(c));
+  if (keys.some(k => k.startsWith('anthropic-ratelimit-unified-')) && !keys.some(k => k.startsWith(`anthropic-ratelimit-unified-${name}-`)))
+    return { used_pct: null, resets_at: null, absent: true };
   const raw = signals(c)[`anthropic-ratelimit-unified-${name}-reset`];
   const previous = raw ? Number(raw) * 1000 : NaN;
   if (!rejected && Number.isFinite(previous) && previous <= now)
@@ -70,8 +73,9 @@ function date(value: unknown): string | null {
 function window(value: unknown) {
   const v = record(value);
   if (v.used_pct !== null && (typeof v.used_pct !== 'number' || !Number.isFinite(v.used_pct) || v.used_pct < 0 || v.used_pct > 100)) throw new Error('invalid snapshot percentage');
+  if (v.absent !== undefined && (v.absent !== true || v.used_pct !== null || v.resets_at !== null || v.rolled_over !== undefined)) throw new Error('invalid absent window');
   if (v.rolled_over !== undefined && (v.rolled_over !== true || v.used_pct !== 0 || v.resets_at !== null)) throw new Error('invalid rollover');
-  return { used_pct: v.used_pct, resets_at: date(v.resets_at), ...(v.rolled_over === true ? {rolled_over:true} : {}) };
+  return { used_pct: v.used_pct, resets_at: date(v.resets_at), ...(v.rolled_over === true ? {rolled_over:true} : {}), ...(v.absent === true ? {absent:true} : {}) };
 }
 export function staleSnapshot(input: unknown) {
   const previous = record(input);
