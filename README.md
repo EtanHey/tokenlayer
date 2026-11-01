@@ -70,8 +70,7 @@ Details live in the [steering](docs/steer.md), [usage snapshot](docs/usage-json.
 
 ## Rules
 
-- Use subscriptions only with their own CLI. Claude subscriptions are only for
-  Claude Code.
+- Claude subscriptions are used only by Claude Code.
 - Never enable cloaking or fingerprint modes.
 - Keep the hub tailnet-only. Use `tailscale serve`, never `tailscale funnel`.
 - Keep secrets outside the repo, in `~/.config/tokenlayer/*.env` with mode 600.
