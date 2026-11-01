@@ -1,47 +1,76 @@
 # tokenlayer
 
-Sidecars around a self-hosted [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) hub, following
-[Theo's hub guide](https://gist.github.com/t3dotgg/59a521d2ee8d70aaf90e280c175072af):
+tokenlayer is a set of small background services around a self-hosted
+[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) hub on Etan's M1 Pro.
+The hub handles model requests from coding tools on several Macs.
+tokenlayer records requests, session logs, and account usage in one place.
 
-- **steer** — soonest-reset-first routing without forking the proxy: reads each credential's captured
-  rate-limit reset times from the management API and moves the account that resets soonest to the top priority tier.
-- **drain** — persists the proxy's per-request usage records (tokens, cache reads/writes, account, latency) to ClickHouse.
-- **ship** — ships Claude Code, Codex and T3 Code session JSONL from every machine into the same ClickHouse.
+## What it does
 
-Tokenlayer is telemetry only; it never refuses or slows Claude workers.
+- `src/steer` gives priority to the available Claude account whose weekly limit
+  resets soonest. The 5-hour reset breaks ties.
+- `src/drain` saves a row per proxied request in ClickHouse `proxy_usage`, with the
+  model, token counts, cache reads and writes, account hash, latency, and auth type
+  (subscription or API key).
+- `src/ship` uploads Claude Code, Codex, T3 Code, and Antigravity session logs from
+  each Mac into ClickHouse `session_events`.
+- `src/usage` writes each Claude account's 5-hour and weekly usage to
+  `~/.config/tokenlayer/usage.json` for other tools to read.
 
-No secrets live in this repo. See `config/cliproxyapi.conf.template`.
+Usage tracking is telemetry only. It never blocks, slows, or pauses an agent.
 
-Archaeology currently supports dry-run and throwaway validation only; no apply mode exists.
-Its CLI requires `--existing EXPORT.tsv`, even for a dry-run. The export must describe what
-ClickHouse actually holds after `FINAL`, with columns `machine`, `session_id`, `path` (or `stream`),
-`generation`, `content_hash`, and `count`. Use the native stream owner for `session_id`, including
-rows without an inline id; retain subagent stream identity. A header-only export means the server
-is empty. Missing exports and malformed headers fail closed.
+## Is there a UI?
 
-Each `count` is per **(machine, stream, path, generation, content_hash)**. Never sum occurrences
-across paths or generations: coverage uses the maximum per stream/hash within one machine.
-Local live files are candidates, not evidence of server coverage: an uncheckpointed file older
-than 24 hours may have been skipped without shipper `--backfill`. Uncovered live lines are included
-in the import projection and deduplicated against archive copies. The library's optional export
-supports conservative fixture projections with zero assumed server coverage; any future apply
-must require a fresh server export and recheck the disk gate (at least 35 GiB real free after import).
+No. UI planned. There are no screenshots because there is no UI today.
+You read the data with SQL. The `tokenlayer.v_sessions_daily` view counts sessions
+per day, repo, and model. [Telemetry docs](docs/telemetry.md) explain the tables
+and how to run queries from a Mac.
 
-Antigravity JSONL capture: `TOKENLAYER_ANTIGRAVITY_CLI_DIR` defaults to
-`~/.gemini/antigravity-cli/brain`; `TOKENLAYER_T3_ANTIGRAVITY_DIR` defaults to
-`~/.t3/userdata/providers/antigravity`. Only `brain/<native-id>/.system_generated/logs/transcript.jsonl`
-layouts are shipped (T3 also requires `<provider>/antigravity-acp/`). Harnesses are `antigravity` and `t3`.
-The conversation directory supplies the native session id: the observed transcript has no id field.
-CLI cwd joins sibling `conversation_summaries.db` read-only on `conversation_id`, taking the first
-`file://` entry in JSON `workspace_uris`; T3 uses sibling `conversations/<native-id>.meta.cwd`.
-Missing metadata leaves cwd empty. The shared repo rules attribute it to `(other)`.
-`created_at` supplies event time; missing/invalid times inherit the previous valid timestamp,
-including across batches/restarts. Without an initial valid timestamp, that file fails closed.
-`input_tokens`, `output_tokens`, and `cache_read_tokens` map directly; other token columns stay zero.
-No model field was found in all 656 M4 transcripts, T3 `.meta` fields, or the summary table columns.
-Model stays empty and `v_sessions_daily` displays `(none)`; `.meta.mode_id` is not treated as a model.
-Opaque `raw_summary` protobuf blobs were not decoded, so actual-model attribution there is unverified.
-Raw bytes, replacement keys, checkpoints and egress remain on the existing archive path.
-Append-only behavior is unverified: prefix/identity changes retain revisions through generation logic;
-the daily view counts each native session once per day/repo/model/harness/machine, across revisions.
-Apply the schema before deployment to refresh `v_sessions_daily`. This capture does not ingest app SQLite payloads.
+## Example query
+
+Sessions per day by repo and model:
+
+```sql
+SELECT day, repo, model, sum(sessions) AS sessions
+FROM tokenlayer.v_sessions_daily
+WHERE day >= today()-30
+GROUP BY day, repo, model
+ORDER BY day DESC, sessions DESC
+```
+
+Example output with made-up numbers, repos, and models:
+
+```text
+day         repo          model            sessions
+2026-10-31  example-app   example-model-a   12
+2026-10-31  example-tool  example-model-b   4
+```
+
+Days are UTC. A session that uses several models counts once under each model.
+
+## How it runs
+
+The deploy scripts put ClickHouse and the usage recorder on the M1 Pro, alongside
+the hub. Each Mac runs a session uploader that sends logs to that database.
+The hub and database are reachable only through the tailnet, a private Tailscale
+network shared by these Macs.
+
+The LaunchAgent executables use these names for macOS Login Items:
+
+- `tokenlayer session uploader` on each Mac.
+- `tokenlayer database` on the M1 Pro.
+- `tokenlayer usage recorder` on the M1 Pro.
+
+## Setup
+
+Follow the [deploy guide](docs/deploy-d1.md) and use the
+[hub config template](config/cliproxyapi.conf.template).
+Details live in the [steering](docs/steer.md), [usage snapshot](docs/usage-json.md),
+[archaeology](docs/archaeology.md), and [Antigravity capture](docs/antigravity.md) docs.
+
+## Rules
+
+- Claude subscriptions are used only by Claude Code.
+- Never enable cloaking or fingerprint modes.
+- Keep the hub tailnet-only. Use `tailscale serve`, never `tailscale funnel`.
+- Keep secrets outside the repo, in `~/.config/tokenlayer/*.env` with mode 600.
