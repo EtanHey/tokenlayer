@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS tokenlayer.session_events
     cache_read_tokens     UInt64                 CODEC(T64, ZSTD(3)),
     cache_creation_tokens UInt64                 CODEC(T64, ZSTD(3)),
     reasoning_tokens      UInt64                 CODEC(T64, ZSTD(3)),
+    credits               Nullable(Float64)      DEFAULT NULL,
     raw                   String                 CODEC(ZSTD(6)),
     ingested_at           DateTime64(3, 'UTC')   DEFAULT now64(3) CODEC(Delta, ZSTD(3)),
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { writeOut, writeErr, installErrorHandlers } from '../lib/egress';
 installErrorHandlers();
-// tokenlayer-ship: tail Claude Code / Codex / Antigravity / T3 JSONL into ClickHouse session_events.
+// tokenlayer-ship: tail Claude Code / Codex / Antigravity / Kiro / T3 JSONL into ClickHouse session_events.
 // Usage:
 //   bun src/ship/main.ts                         # daemon: every TOKENLAYER_SHIP_INTERVAL_MS (default 10s)
 //   bun src/ship/main.ts --backfill [--since 2026-10-01] [--rate-mb 5]   # one pass over everything, then exit
@@ -9,6 +9,7 @@ installErrorHandlers();
 //   TOKENLAYER_MACHINE (required: m4 | m1), CLICKHOUSE_URL, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, CLICKHOUSE_DB,
 //   TOKENLAYER_CLAUDE_DIR (default ~/.claude/projects), TOKENLAYER_CODEX_DIR (default ~/.codex/sessions),
 //   TOKENLAYER_ANTIGRAVITY_CLI_DIR and TOKENLAYER_T3_ANTIGRAVITY_DIR (defaults documented in README),
+//   TOKENLAYER_KIRO_DIR (default ~/.kiro/sessions), TOKENLAYER_KIRO_T3_STATE (default ~/.t3/userdata/statev2.sqlite),
 //   TOKENLAYER_SHIP_STATE (default ~/.config/tokenlayer/ship-state.json), TOKENLAYER_SHIP_RATE_MB (default 5).
 // The daemon only picks up files without a checkpoint if they changed in the last day; run --backfill once for history.
 import { loadState } from "./state";
@@ -43,7 +44,9 @@ const rateMb = Number(flag("--rate-mb") ?? env.TOKENLAYER_SHIP_RATE_MB ?? 5);
 
 const opts: ShipOptions = {
   machine,
+  kiroT3StatePath: expandHome(env.TOKENLAYER_KIRO_T3_STATE ?? "~/.t3/userdata/statev2.sqlite"),
   roots: [
+    { kind: "kiro", dir: expandHome(env.TOKENLAYER_KIRO_DIR ?? "~/.kiro/sessions") },
     { kind: "claude", dir: expandHome(env.TOKENLAYER_CLAUDE_DIR ?? "~/.claude/projects") },
     { kind: "codex", dir: expandHome(env.TOKENLAYER_CODEX_DIR ?? "~/.codex/sessions") },
     { kind: "antigravity-cli", dir: expandHome(env.TOKENLAYER_ANTIGRAVITY_CLI_DIR ?? "~/.gemini/antigravity-cli/brain") },
