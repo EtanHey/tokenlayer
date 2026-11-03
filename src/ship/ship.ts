@@ -11,10 +11,13 @@ import { compressedHash, inspectZstd, readZstd, type ZstdSpawner } from "./zst";
 import { sanitizeOutput } from "../lib/egress";
 import { antigravityCwd, antigravitySession, isAntigravity, parseAntigravity } from "./antigravity";
 
+import { kiroMetadata, kiroSession, kiroT3Sessions, parseKiro } from "./kiro";
+
 export type ShipRoot = { kind: SourceKind; dir: string };
 
 export type ShipOptions = {
   zstd?: { spawn?: ZstdSpawner; fingerprint?: typeof compressedHash };
+  kiroT3StatePath?: string;
   machine: string;
   roots: ShipRoot[];
   clickhouse: ClickHouse;
@@ -110,6 +113,7 @@ function freshCheckpoint(path: string, kind: SourceKind, st: Stats, head = headL
 /** Ship each file independently, save acknowledged progress, then report aggregate failures. */
 export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
   const state: ShipState = loadState(opts.statePath);
+  let t3Kiro: Set<string> | undefined;
   // Separate write-ahead generation record retains revision lineage across progress checkpoint loss.
   const generationPath = `${opts.statePath}.generations`;
   const generations = loadState(generationPath);
@@ -132,8 +136,9 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
     for (const root of opts.roots) {
       for (const physical of listJsonl(root.dir, root.kind === "codex")) {
         const agy = isAntigravity(root.kind);
-        const session = agy ? antigravitySession(root.dir, physical, root.kind) : "";
-        if (agy && !session) continue;
+        const kiro = root.kind === "kiro";
+        const session = kiro ? kiroSession(root.dir, physical) : agy ? antigravitySession(root.dir, physical, root.kind) : "";
+        if ((agy || kiro) && !session) continue;
         const compressed = physical.endsWith(".zst");
         if (compressed && !Bun.which("zstd")) {
           if (!warnedMissingZstd) {
@@ -154,6 +159,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           const recorded = generations.files[path];
           const replay = !cp || (recorded && (recorded.generation !== cp.generation || recorded.offset > cp.offset));
           if (replay && recorded) cp = structuredClone(recorded);
+          const kiroHarness = kiro && ((t3Kiro ??= kiroT3Sessions(opts.kiroT3StatePath)).has(session) || cp?.parser.harness === "t3") ? "t3" : "kiro";
           if (!cp && !state.legacyReplay?.includes(path) && opts.sinceMs !== undefined && st.mtimeMs < opts.sinceMs) continue;
           if (compressed && cp?.compressed?.complete && cp.compressed.size === st.size && identity(st) === cp.identity && cp.mtimeMs === st.mtimeMs && cp.ctimeMs === st.ctimeMs && !replay) continue;
           const packedHash = compressed ? await (opts.zstd?.fingerprint ?? compressedHash)(physical) : undefined;
@@ -163,6 +169,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           const fresh = () => {
             const checkpoint = freshCheckpoint(path, root.kind, st, head());
             if (agy) Object.assign(checkpoint.parser, { sessionId: session, cwd: antigravityCwd(root.dir, path, session, root.kind), lastTsMs: 0 });
+            if (kiro) Object.assign(checkpoint.parser, { sessionId: session, ...kiroMetadata(path), harness: kiroHarness });
             if (decoded) checkpoint.generation = decoded.digest.slice(0, 16);
             return checkpoint;
           };
@@ -170,6 +177,12 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           if (cp && !recorded) {
             generations.files[path] = structuredClone(cp);
             saveState(generationPath, generations);
+          }
+          if (kiro && cp && cp.parser.harness !== kiroHarness) {
+            const generation = cp.generation;
+            cp = fresh();
+            cp.generation = generation;
+            result.resets++;
           }
           if (!cp) {
             if (st.size === 0) continue;
@@ -210,6 +223,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             }
           }
           if (!cp) cp = fresh();
+          if (kiro) Object.assign(cp.parser, kiroMetadata(path));
           cp.identity = identity(st);
           cp.inode = st.ino;
           cp.compressed = packedHash ? { size: st.size, fingerprint: packedHash, complete: false } : undefined;
@@ -241,7 +255,8 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
               content_hash: createHash("sha256").update(raw.subarray(l.offset - cp!.offset, l.offset - cp!.offset + l.bytes)).digest("hex"),
               line_bytes: l.bytes,
               [RAW_BYTES]: raw.subarray(l.offset - cp!.offset, l.offset - cp!.offset + l.bytes),
-              ...(agy ? parseAntigravity(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes), parser)
+              ...(kiro ? parseKiro(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes), parser)
+                : agy ? parseAntigravity(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes), parser)
                 : parseLine(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes))),
             }));
             // Deterministic token over the rows themselves: an identical retry is deduplicated server-side,

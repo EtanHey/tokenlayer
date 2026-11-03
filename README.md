@@ -12,7 +12,7 @@ tokenlayer records requests, session logs, and account usage in one place.
 - `src/drain` saves a row per proxied request in ClickHouse `proxy_usage`, with the
   model, token counts, cache reads and writes, account hash, latency, and auth type
   (subscription or API key).
-- `src/ship` uploads Claude Code, Codex, T3 Code, and Antigravity session logs from
+- `src/ship` uploads Claude Code, Codex, T3 Code, Antigravity, and Kiro session logs from
   each Mac into ClickHouse `session_events`.
 - `src/usage` writes each Claude account's 5-hour and weekly usage to
   `~/.config/tokenlayer/usage.json` for other tools to read.
@@ -66,7 +66,8 @@ The LaunchAgent executables use these names for macOS Login Items:
 Follow the [deploy guide](docs/deploy-d1.md) and use the
 [hub config template](config/cliproxyapi.conf.template).
 Details live in the [steering](docs/steer.md), [usage snapshot](docs/usage-json.md),
-[archaeology](docs/archaeology.md), and [Antigravity capture](docs/antigravity.md) docs.
+[archaeology](docs/archaeology.md), [Antigravity capture](docs/antigravity.md),
+and [Kiro capture and comparison](docs/kiro.md) docs.
 
 ## Rules
 
