@@ -19,13 +19,13 @@ WITH streams AS (
     GROUP BY day, provider
 ), kiro_turns AS (
     -- Raw archive revisions survive rewrites. A native turn must contribute once across revisions.
-    SELECT argMax(tuple(ts, credits), tuple(ingested_at, content_hash)) AS latest
+    SELECT argMax(tuple(ts, credits), tuple(ingested_at, byte_offset, content_hash)) AS latest
     FROM tokenlayer.session_events FINAL
     WHERE type = 'kiro:usage_summary' AND session_id != '' AND ts > toDateTime64(0, 3, 'UTC')
     GROUP BY machine, session_id, if(message_id = '', content_hash, message_id)
 ), kiro_daily AS (
     SELECT toDate(latest.1) AS day,
-           if(countIf(isNull(latest.2)) > 0, NULL, sumOrNull(latest.2)) AS credits_used
+           sumOrNull(latest.2) AS credits_used, countIf(isNull(latest.2)) AS unknown_kiro_turns
     FROM kiro_turns GROUP BY day
 ), codex_readings AS (
     -- Native Codex token_count logs carry rate_limits. Window size must match the column.
@@ -54,12 +54,13 @@ WITH streams AS (
                    WHERE startsWith(type, 'kiro:') AND ts > toDateTime64(0, 3, 'UTC')
 )
 SELECT day, provider, tokens, if(provider = 'kiro', credits_used, NULL) AS credits_used,
+       if(provider = 'kiro', unknown_kiro_turns, CAST(NULL, 'Nullable(UInt64)')) AS unknown_kiro_turns,
        if(provider = 'kiro', 50., NULL) AS allowance_credits,
        if(provider = 'kiro', credits_used * 2, NULL) AS daily_allowance_used_pct,
        peak_5h_used_pct, peak_weekly_used_pct,
        -- Kiro has no measured tokens. Other providers' rolling gauges do not measure UTC-day burn.
        CAST(NULL, 'Nullable(Float64)') AS tokens_per_1pct_allowance,
-       multiIf(provider = 'kiro', 'No token counters or balance logged. Credits cover observed completed turns, not full account usage. Monthly cycle start unknown.',
+       multiIf(provider = 'kiro', 'Known-credit subtotal. See unknown_kiro_turns for missing telemetry. No token counters or balance logged. Not full account usage. Monthly cycle start unknown.',
                provider = 'antigravity', 'Tokens only. No allowance percentage source.',
                'Quota percentages are observed daily peaks across accounts/limits, not daily burn. Tokens per allowance percent is unknown.') AS note
 FROM (SELECT day, arrayJoin(['kiro', 'codex', 'claude', 'antigravity']) AS provider FROM days) AS grid

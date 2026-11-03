@@ -5,7 +5,13 @@
 session directory. Sibling `session.json` supplies `workspacePaths[0]` and `modelId`.
 Model is the requested session model snapshot (e.g. `auto`), not verified actual
 per-request routing. Rows use their ISO `timestamp` and `payload.type` (prefixed
-`kiro:` in the archive). Raw bytes retain the existing archive contract.
+`kiro:` in the archive).
+
+Raw lines, including prompts, assistant replies and reasoning, agent notes and
+tool output, are archived verbatim in ClickHouse `session_events.raw`, like
+Claude/Codex. Kiro uses their shared `RAW_BYTES` serializer/archive path. That
+path does not redact stored raw lines; diagnostic/error output is redacted.
+This full-archive treatment was explicitly approved by orc for Kiro in review.
 
 Observed on M4, 2026-11-03: one native Auto `reply OK` turn used about 0.06749
 credits; one T3 Auto turn used about 0.08172. Both wrote the same native layout.
@@ -15,7 +21,9 @@ The T3 provider directory did not exist. `TOKENLAYER_KIRO_T3_STATE` defaults to
 `payload_json.nativeThreadRef.nativeId` identifies harness `t3`. Others use `kiro`.
 Late bindings replay with the same replacement keys. Existing T3 attribution
 survives removal of a binding. Missing DB/table means no known T3 bindings;
-a database read error fails that file while other ship roots still run.
+a database read error fails that file while other ship roots still run. Torn,
+missing or partial `session.json` metadata preserves the last known cwd/model;
+only non-empty replacement values update those fields.
 
 Only `payload.type=usage_summary` carries credits: sum
 `payload.promptTurnSummaries[].usage` where `.unit='credit'`; fractional values
@@ -30,7 +38,12 @@ join. The IDE store and old empty `sessions/cli/*.jsonl` are not ingested.
 
 After the lead applies the schema, query `tokenlayer.v_provider_usage_compare`.
 It returns each UTC day and all four providers. Kiro credits deduplicate native
-turns across retained revisions; the day's credits divided by 50 gives that
+turns across retained revisions. At equal ingestion time, the later byte offset
+wins over an earlier summary for the same turn. `credits_used` sums known turns;
+`unknown_kiro_turns` counts summaries without usable credit telemetry. A partial
+day keeps its known subtotal; an all-unknown day has NULL credits. Summing the raw
+`session_events.credits` column directly can double count retained revisions.
+The day's known credits divided by 50 gives that
 day's percentage of a monthly allowance. [Kiro billing](https://kiro.dev/docs/billing/)
 confirms Free=50 and renewal at the next billing cycle (checked 2026-11-03).
 Account reset boundary and full-account coverage remain unknown.

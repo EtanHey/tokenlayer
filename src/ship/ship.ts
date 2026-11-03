@@ -169,7 +169,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           const fresh = () => {
             const checkpoint = freshCheckpoint(path, root.kind, st, head());
             if (agy) Object.assign(checkpoint.parser, { sessionId: session, cwd: antigravityCwd(root.dir, path, session, root.kind), lastTsMs: 0 });
-            if (kiro) Object.assign(checkpoint.parser, { sessionId: session, ...kiroMetadata(path), harness: kiroHarness });
+            if (kiro) Object.assign(checkpoint.parser, { sessionId: session, ...kiroMetadata(path, cp?.parser), harness: kiroHarness });
             if (decoded) checkpoint.generation = decoded.digest.slice(0, 16);
             return checkpoint;
           };
@@ -223,7 +223,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             }
           }
           if (!cp) cp = fresh();
-          if (kiro) Object.assign(cp.parser, kiroMetadata(path));
+          if (kiro) Object.assign(cp.parser, kiroMetadata(path, cp.parser));
           cp.identity = identity(st);
           cp.inode = st.ino;
           cp.compressed = packedHash ? { size: st.size, fingerprint: packedHash, complete: false } : undefined;

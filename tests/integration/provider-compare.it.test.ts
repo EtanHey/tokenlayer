@@ -25,6 +25,12 @@ test("comparison keeps UTC-day credits separate from rolling quota gauges and de
       { provider: "codex", tokens: 35, credits_used: null, daily_allowance_used_pct: null, peak_5h_used_pct: 12, peak_weekly_used_pct: 30, tokens_per_1pct_allowance: null },
       { provider: "kiro", tokens: null, credits_used: 0.25, daily_allowance_used_pct: 0.5, peak_5h_used_pct: null, peak_weekly_used_pct: null, tokens_per_1pct_allowance: null },
     ]);
+    await put("kiro/unknown.jsonl", "kiro", {}, { ts: "2026-11-03 03:00:00.000", session_id: "cancelled", type: "kiro:usage_summary", message_id: "cancelled", credits: null });
+    await put("kiro/only-unknown.jsonl", "kiro", {}, { ts: "2026-11-04 03:00:00.000", session_id: "only-unknown", type: "kiro:usage_summary", message_id: "cancelled", credits: null });
+    expect(await ch.client.queryJSON("SELECT day, credits_used, daily_allowance_used_pct, unknown_kiro_turns FROM tokenlayer.v_provider_usage_compare WHERE provider = 'kiro' ORDER BY day")).toEqual([
+      { day: "2026-11-03", credits_used: 0.25, daily_allowance_used_pct: 0.5, unknown_kiro_turns: 1 },
+      { day: "2026-11-04", credits_used: null, daily_allowance_used_pct: null, unknown_kiro_turns: 1 },
+    ]);
     expect(await ch.client.queryJSON("SELECT count() AS n FROM tokenlayer.v_provider_usage_compare WHERE note = ''")).toEqual([{ n: 0 }]);
   } finally { await ch.stop(); }
 }, 40000);

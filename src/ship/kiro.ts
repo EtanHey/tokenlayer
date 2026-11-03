@@ -24,11 +24,11 @@ export function kiroSession(root: string, path: string): string {
   return /^[^/]+\/([^/]+)\/messages\.jsonl$/.exec(relative(root, path))?.[1] ?? "";
 }
 
-export function kiroMetadata(path: string) {
-  const meta = join(dirname(path), "session.json");
-  const o = existsSync(meta) ? obj(JSON.parse(readFileSync(meta, "utf8"))) : {};
+export function kiroMetadata(path: string, previous = { cwd: "", model: "" }) {
+  let o: Obj = {};
+  try { o = obj(JSON.parse(readFileSync(join(dirname(path), "session.json"), "utf8"))); } catch {}
   const paths = Array.isArray(o.workspacePaths) ? o.workspacePaths : [];
-  return { cwd: str(paths[0]), model: str(o.modelId) };
+  return { cwd: str(paths[0]) || previous.cwd, model: str(o.modelId) || previous.model };
 }
 
 /** The observed usage_summary is per turn; context usage percentages are not billing usage. */
