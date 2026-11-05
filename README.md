@@ -48,6 +48,34 @@ day         repo          model            sessions
 
 Days are UTC. A session that uses several models counts once under each model.
 
+## Restore a session
+
+The restore command is intended for either Mac with the same ClickHouse configuration.
+CLI execution has been verified on M1; M4 source files were only hashed read-only over SSH.
+
+```sh
+./bin/tokenlayer session restore <session_id> --to ~/session-restores
+# Disambiguate copies or rewrites with --machine m1 --path /original/file.jsonl --generation <id>
+```
+
+This reads `~/.config/tokenlayer/clickhouse.env` (or `TOKENLAYER_ENV_FILES` / process env).
+It discovers native ids and aliases, then reads **all** lines of one `(machine, path, generation)`
+from `tokenlayer.session_events FINAL`, ordered by byte offset. It decodes `hex(raw)` to preserve
+non-UTF-8 bytes and checks every source hash, byte length, LF terminator and contiguous offset.
+Missing sessions, multiple identities, gaps, overlaps, conflicts and unverifiable legacy rows fail.
+The query result is capped at 64 MiB (including hex encoding); oversized queries fail without an export.
+
+Each invocation creates a new private directory containing `session.jsonl` and `receipt.json`
+(mode 600; directory 700). The default parent is `~/.local/share/tokenlayer/restores`.
+Unredacted archive data stays in these files; stdout prints `file=`, SHA-256, counts and scope.
+Destinations inside Git worktrees must be gitignored before writing. Existing restores are untouched.
+
+The receipt certifies an **archived contiguous prefix**, with `sourceComplete: "unknown"`:
+there is no source EOF manifest, LF-only blank lines were skipped by the shipper, and unterminated
+source tails were never shipped. Internal missing bytes cause rejection; missing trailing bytes cannot
+be detected. A full original-file comparison is needed to claim full-file exactness. This command
+exports a snapshot; it does not install provider history, resume an agent, or modify T3/BrainLayer.
+
 ## How it runs
 
 The deploy scripts put ClickHouse and the usage recorder on the M1 Pro, alongside
