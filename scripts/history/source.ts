@@ -33,6 +33,7 @@ export async function verifySource(s: Source, roots: ShipRoot[], shouldStop = ()
     const before = signature(s.path), full = createHash('sha256'), prefix = createHash('sha256');
     const proc = s.path.endsWith('.zst') ? spawnZstd(s.path) : undefined;
     const stream = proc?.stdout ?? createReadStream(s.path);
+    let nonemptyLines = 0;
     let size = 0, lineBytes = 0, first: Buffer[] = [], headBytes = 0, last = -1, prefixLast = -1;
     const prefixEnds: number[] = [];
     try {
@@ -42,8 +43,10 @@ export async function verifySource(s: Source, roots: ShipRoot[], shouldStop = ()
             const chunk = Buffer.from(value);
             for (let i = 0; i < chunk.length; i++) {
                 const c = chunk[i];
+                const nonempty = lineBytes > 0;
                 lineBytes = c === 10 ? 0 : lineBytes + 1;
-                if (c === 10 && size + i < s.prefixBytes) {
+                if (c === 10 && nonempty) nonemptyLines++;
+                if (c === 10 && nonempty && size + i < s.prefixBytes) {
                     prefixEnds.push(size + i + 1);
                     if (prefixEnds.length > 4096)
                         throw Error('prefix metadata cap');
@@ -100,7 +103,7 @@ export async function verifySource(s: Source, roots: ShipRoot[], shouldStop = ()
     } }))
         throw Error('native Claude identity mismatch');
     return Object.assign(() => { if (signature(s.path) !== before)
-        throw Error('source mutated during import'); }, { prefixEnds });
+        throw Error('source mutated during import'); }, { prefixEnds, nonemptyLines });
 }
 /** Read live files without loadState's legacy-upgrade side effect. Seed only owned lineage. */
 export function seedLineage(source: Source, statePath: string, livePaths: string[]) {

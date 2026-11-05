@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, openSync, closeSync, unlinkSync, readFileSync, statSync, readdirSync, realpathSync, lstatSync, fsyncSync, writeSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, closeSync, unlinkSync, readFileSync, statSync, realpathSync, fsyncSync, writeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { ClickHouse } from '../../src/lib/clickhouse';
@@ -9,6 +9,7 @@ import { verifySessionSchema } from '../../src/lib/session-schema';
 import { logicalSessionPath, shipOnce, type ShipRoot } from '../../src/ship/ship';
 import { loadState, saveState } from '../../src/ship/state';
 import { EpochFull, GiB, StreamingHistoryClient, sqlString } from './stream';
+import { AuditLog, privateSize, STATE_CAP } from './journal';
 import { seedLineage, verifySource, type Manifest, type Source } from './source';
 export async function runImport(manifestPath: string, ch: ClickHouse, options: {
     machine: string;
@@ -19,6 +20,8 @@ export async function runImport(manifestPath: string, ch: ClickHouse, options: {
     shouldStop?: () => boolean;
     pilotOnly?: boolean;
     batchBytes?: number;
+    stateBytesCap?: number;
+    receiptBytesCap?: number;
 }) {
     if (statSync(manifestPath).size > 16 * 1024 ** 2)
         throw Error('manifest scratch cap');
@@ -47,24 +50,20 @@ export async function runImport(manifestPath: string, ch: ClickHouse, options: {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     if (realpathSync(dir) !== dir || (statSync(dir).mode & 0o077))
         throw Error('unsafe history manifest directory');
+    const run = randomUUID(), receipts = join(dir, 'receipts.ndjson');
+    const stateCap = options.stateBytesCap ?? STATE_CAP;
+    const receiptLog = new AuditLog(receipts, options.receiptBytesCap ?? 16 * 1024 ** 2);
     const lock = join(parent, 'writer.lock');
     const fd = openSync(lock, 'wx', 0o600);
     writeSync(fd, JSON.stringify({pid:process.pid, manifest:hash, started:new Date().toISOString()}));
     fsyncSync(fd); closeSync(fd);
-    const run = randomUUID(), receipts = join(dir, 'receipts.ndjson');
-    const receipt = (value: unknown) => {
-        const next = JSON.stringify({ at: new Date().toISOString(), run, manifest: hash, ...value as object }) + '\n';
-        if ((existsSync(receipts)?statSync(receipts).size:0)+Buffer.byteLength(next) > 16 * 1024 ** 2)
-            throw Error('receipt cap');
-        const fd=openSync(receipts,'a',0o600);
-        try {writeSync(fd,next);fsyncSync(fd);} finally {closeSync(fd);}
-    };
+    const receipt = (value: unknown) => receiptLog.receipt({ at: new Date().toISOString(), run, manifest: hash, ...value as object });
     const matrix = () => ch.queryJSON("SELECT machine,harness,toYYYYMM(ts) AS month,count() AS rows,min(ts) AS oldest FROM tokenlayer.session_events FINAL GROUP BY machine,harness,month ORDER BY machine,harness,month SETTINGS max_execution_time=30,max_result_rows=4096,result_overflow_mode='throw'");
-    const usage = () => readdirSync(dir).reduce((n, p) => {
-        const s=lstatSync(join(dir,p));
-        if(!s.isFile() || (s.mode&0o077)) throw Error('unsafe importer state file');
-        return n+s.size;
-    },0);
+    // Completed checkpoints and immutable audit are retained but are not active
+    // scratch. Bound the current source, pilot lineage and in-flight ledger only.
+    const usage = (state: string) => [...new Set([state, state + '.generations', state + '.tmp', state + '.generations.tmp',
+        join(dir, 'pilot.json'), join(dir, 'pilot.json.generations'), join(dir, 'ledger.ndjson'), join(dir, 'ledger.ndjson.next')])]
+        .reduce((n, path) => n + privateSize(path), 0);
     try {
         await verifySessionSchema(ch);
         receipt({ state: 'before', matrix: await matrix() });
@@ -72,30 +71,35 @@ export async function runImport(manifestPath: string, ch: ClickHouse, options: {
             const sourceDir = options.roots.filter(r => existsSync(r.dir));
             const check = await verifySource(s, sourceDir, stop);
             const state = join(dir, (pilot ? 'pilot' : sha256Hex(logicalSessionPath(s.path))) + '.json');
-            if(usage()>64*1024**2) throw Error('durable history state cap');
+            if ([state, state + '.generations', join(dir, 'pilot.json'), join(dir, 'pilot.json.generations')].reduce((n, p) => n + privateSize(p), 0) > stateCap)
+                throw Error('active checkpoint cap');
             seedLineage(s, state, [...options.liveStates, ...(!pilot ? [join(dir, 'pilot.json')] : [])]);
             for (let epoch = 1;; epoch++) {
-                const client = new StreamingHistoryClient(ch.config, { ledger: join(dir, 'ledger.ndjson'), manifest: hash, run, sessionId: s.sessionId, epochBytes, shouldStop: stop,
-                    verifySource: (extraBytes=0) => { check(); if (usage()+extraBytes > 64 * 1024 ** 2)
+                const client = new StreamingHistoryClient(ch.config, { ledger: join(dir, 'ledger.ndjson'), manifest: hash, run, sessionId: s.sessionId, epochBytes, shouldStop: stop, stateBytesCap: stateCap, stateBytesUsed: () => usage(state),
+                    verifySource: (extraBytes=0) => { check(); if (usage(state)+extraBytes > stateCap)
                         throw Error('durable history state cap'); } });
-                if(usage()>64*1024**2) throw Error('durable history state cap');
                 await client.reconcile();
+                if (usage(state) > stateCap) throw Error('durable history state cap');
+                // Reconcile durable intent first. Then discard only importer-owned
+                // write-ahead progress beyond the acknowledged checkpoint.
+                const acknowledged = loadState(state);
+                if (acknowledged.files[logicalSessionPath(s.path)]) saveState(`${state}.generations`, acknowledged);
                 await client.headroom(384 * 1024 ** 2);
                 const prior = loadState(state).files[logicalSessionPath(s.path)];
-                if (pilot && check.prefixEnds.length !== 32)
+                if (pilot && (check.prefixEnds.length !== 32 || check.prefixEnds.at(-1) !== s.prefixBytes))
                     throw Error('pilot prefix must pin exactly 32 records');
                 const remaining = pilot ? check.prefixEnds.filter(end => end > (prior?.offset ?? 0)).length : undefined;
                 let failure: unknown;
                 try {
                     await shipOnce({ machine: options.machine, roots: sourceDir, files: [s.path], statePath: state, clickhouse: client,
-                        maxLines: remaining, shouldStop: () => stop() || client.stopped, rateBytesPerSec: 0, batchBytes: options.batchBytes ?? 256 * 1024 });
+                        maxLines: remaining, batchLines: 4096, shouldStop: () => stop() || client.stopped, rateBytesPerSec: 0, batchBytes: options.batchBytes ?? 256 * 1024 });
                 }
                 catch (e) {
                     failure = e;
                 }
                 check();
                 const cp = loadState(state).files[logicalSessionPath(s.path)];
-                receipt({ state: failure ? 'stopped' : 'epoch', pilot, epoch, path: s.path, offset: cp?.offset ?? 0, charged: client.used, matrix: await matrix() });
+                receipt({ state: failure ? (client.lastFailure instanceof EpochFull ? 'epoch-rollover' : 'stopped') : 'epoch', pilot, epoch, path: s.path, offset: cp?.offset ?? 0, charged: client.used, matrix: await matrix() });
                 if (failure) {
                     if (!pilot && client.lastFailure instanceof EpochFull && client.used > 384 * 1024 ** 2) {
                         // Admission refused before HTTP. The shipper's write-ahead journal includes
@@ -113,8 +117,8 @@ export async function runImport(manifestPath: string, ch: ClickHouse, options: {
                 const [count] = await ch.queryJSON<{
                     n: string;
                 }>(`SELECT count() AS n FROM tokenlayer.session_events FINAL WHERE machine=${sqlString(options.machine)} AND path=${sqlString(logicalSessionPath(s.path))} AND generation=${sqlString(cp.generation)} AND byte_offset<${cp.offset}`);
-                if (pilot && Number(count?.n) !== 32)
-                    throw Error('pilot FINAL acceptance failed');
+                if (Number(count?.n) !== (pilot ? 32 : check.nonemptyLines))
+                    throw Error(pilot ? 'pilot FINAL acceptance failed' : 'source FINAL nonempty LF count failed');
                 return;
             }
         };

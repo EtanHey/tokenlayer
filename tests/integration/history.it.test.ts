@@ -186,7 +186,7 @@ test('autonomous epochs exceed the pilot and refresh after actual serialization 
         writeFileSync(f.manifest,JSON.stringify({machine:'m4',sources:[source,second]}));
         const dir = await runImport(f.manifest, local.client, { ...opts(f, local.client), epochBytes: 512 * 1024 ** 2, batchBytes: 256 * 1024 });
         const receipts = readFileSync(join(dir, 'receipts.ndjson'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
-        expect(receipts.some(r => !r.pilot && r.state === 'stopped')).toBe(true);
+        expect(receipts.some(r => !r.pilot && r.state === 'epoch-rollover')).toBe(true);
         expect(receipts.some(r => !r.pilot && r.epoch > 1 && r.state === 'epoch')).toBe(true);
         expect(await local.client.exec('SELECT count() FROM tokenlayer.session_events FINAL')).toBe('160\n');
         expect(receipts.at(-1).state).toBe('queue-complete');
