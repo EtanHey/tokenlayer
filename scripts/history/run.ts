@@ -9,7 +9,7 @@ import { verifySessionSchema } from '../../src/lib/session-schema';
 import { logicalSessionPath, shipOnce, type ShipRoot } from '../../src/ship/ship';
 import { loadState, saveState } from '../../src/ship/state';
 import { EpochFull, GiB, StreamingHistoryClient, sqlString } from './stream';
-import { AuditLog, privateSize, STATE_CAP } from './journal';
+import { AuditLog, localHeadroom, privateSize, STATE_CAP, type LocalSpace } from './journal';
 import { seedLineage, verifySource, type Manifest, type Source } from './source';
 export async function runImport(manifestPath: string, ch: ClickHouse, options: {
     machine: string;
@@ -22,6 +22,7 @@ export async function runImport(manifestPath: string, ch: ClickHouse, options: {
     batchBytes?: number;
     stateBytesCap?: number;
     receiptBytesCap?: number;
+    localSpace?: LocalSpace;
 }) {
     if (statSync(manifestPath).size > 16 * 1024 ** 2)
         throw Error('manifest scratch cap');
@@ -43,27 +44,41 @@ export async function runImport(manifestPath: string, ch: ClickHouse, options: {
     }
     if (options.liveStates.some(p => resolve(p).startsWith(parent + '/')))
         throw Error('history state overlaps live state');
+    localHeadroom(parent, 4096, options.localSpace);
     mkdirSync(parent, { recursive: true, mode: 0o700 });
     if (realpathSync(parent) !== parent || (statSync(parent).mode & 0o077))
         throw Error('history directory must be private and canonical');
     const dir = join(parent, hash);
+    localHeadroom(dir, 4096, options.localSpace);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     if (realpathSync(dir) !== dir || (statSync(dir).mode & 0o077))
         throw Error('unsafe history manifest directory');
     const run = randomUUID(), receipts = join(dir, 'receipts.ndjson');
     const stateCap = options.stateBytesCap ?? STATE_CAP;
-    const receiptLog = new AuditLog(receipts, options.receiptBytesCap ?? 16 * 1024 ** 2);
+    const receiptLog = new AuditLog(receipts, options.receiptBytesCap ?? 16 * 1024 ** 2, options.localSpace);
     const lock = join(parent, 'writer.lock');
+    localHeadroom(parent, 4096, options.localSpace);
     const fd = openSync(lock, 'wx', 0o600);
     writeSync(fd, JSON.stringify({pid:process.pid, manifest:hash, started:new Date().toISOString()}));
     fsyncSync(fd); closeSync(fd);
     const receipt = (value: unknown) => receiptLog.receipt({ at: new Date().toISOString(), run, manifest: hash, ...value as object });
-    const matrix = () => ch.queryJSON("SELECT machine,harness,toYYYYMM(ts) AS month,count() AS rows,min(ts) AS oldest FROM tokenlayer.session_events FINAL GROUP BY machine,harness,month ORDER BY machine,harness,month SETTINGS max_execution_time=30,max_result_rows=4096,result_overflow_mode='throw'");
+    const matrix = () => ch.queryJSON("SELECT machine,harness,toYYYYMM(ts) AS month,count() AS rows,min(ts) AS oldest FROM tokenlayer.session_events FINAL GROUP BY machine,harness,month ORDER BY machine,harness,month SETTINGS max_execution_time=30,max_threads=2,max_memory_usage=536870912,max_result_rows=4096,result_overflow_mode='throw'");
     // Completed checkpoints and immutable audit are retained but are not active
     // scratch. Bound the current source, pilot lineage and in-flight ledger only.
     const usage = (state: string) => [...new Set([state, state + '.generations', state + '.tmp', state + '.generations.tmp',
         join(dir, 'pilot.json'), join(dir, 'pilot.json.generations'), join(dir, 'ledger.ndjson'), join(dir, 'ledger.ndjson.next')])]
         .reduce((n, path) => n + privateSize(path), 0);
+    const writeState: typeof saveState = (path, value) => {
+        const bytes = Buffer.byteLength(JSON.stringify(value));
+        if (bytes > stateCap) throw Error('active checkpoint cap');
+        localHeadroom(dirname(path), bytes + 4096, options.localSpace);
+        saveState(path, value);
+    };
+    // Importer state is v3 only. Avoid loadState's legacy-upgrade writes outside the guarded writer.
+    const readState: typeof loadState = path => {
+        if (existsSync(path) && JSON.parse(readFileSync(path, 'utf8')).version !== 3) throw Error('legacy importer state needs reconciliation');
+        return loadState(path);
+    };
     try {
         await verifySessionSchema(ch);
         receipt({ state: 'before', matrix: await matrix() });
@@ -73,38 +88,39 @@ export async function runImport(manifestPath: string, ch: ClickHouse, options: {
             const state = join(dir, (pilot ? 'pilot' : sha256Hex(logicalSessionPath(s.path))) + '.json');
             if ([state, state + '.generations', join(dir, 'pilot.json'), join(dir, 'pilot.json.generations')].reduce((n, p) => n + privateSize(p), 0) > stateCap)
                 throw Error('active checkpoint cap');
-            seedLineage(s, state, [...options.liveStates, ...(!pilot ? [join(dir, 'pilot.json')] : [])]);
+            seedLineage(s, state, [...options.liveStates, ...(!pilot ? [join(dir, 'pilot.json')] : [])], writeState);
             for (let epoch = 1;; epoch++) {
-                const client = new StreamingHistoryClient(ch.config, { ledger: join(dir, 'ledger.ndjson'), manifest: hash, run, sessionId: s.sessionId, epochBytes, shouldStop: stop, stateBytesCap: stateCap, stateBytesUsed: () => usage(state),
+                const client = new StreamingHistoryClient(ch.config, { ledger: join(dir, 'ledger.ndjson'), manifest: hash, run, sessionId: s.sessionId, epochBytes, shouldStop: stop, stateBytesCap: stateCap, stateBytesUsed: () => usage(state), localSpace: options.localSpace,
                     verifySource: (extraBytes=0) => { check(); if (usage(state)+extraBytes > stateCap)
                         throw Error('durable history state cap'); } });
                 await client.reconcile();
                 if (usage(state) > stateCap) throw Error('durable history state cap');
                 // Reconcile durable intent first. Then discard only importer-owned
                 // write-ahead progress beyond the acknowledged checkpoint.
-                const acknowledged = loadState(state);
-                if (acknowledged.files[logicalSessionPath(s.path)]) saveState(`${state}.generations`, acknowledged);
+                const acknowledged = readState(state);
+                if (acknowledged.files[logicalSessionPath(s.path)]) writeState(`${state}.generations`, acknowledged);
                 await client.headroom(384 * 1024 ** 2);
-                const prior = loadState(state).files[logicalSessionPath(s.path)];
+                readState(`${state}.generations`);
+                const prior = readState(state).files[logicalSessionPath(s.path)];
                 if (pilot && (check.prefixEnds.length !== 32 || check.prefixEnds.at(-1) !== s.prefixBytes))
                     throw Error('pilot prefix must pin exactly 32 records');
                 const remaining = pilot ? check.prefixEnds.filter(end => end > (prior?.offset ?? 0)).length : undefined;
                 let failure: unknown;
                 try {
-                    await shipOnce({ machine: options.machine, roots: sourceDir, files: [s.path], statePath: state, clickhouse: client,
+                    await shipOnce({ machine: options.machine, roots: sourceDir, files: [s.path], statePath: state, writeState, clickhouse: client,
                         maxLines: remaining, batchLines: 4096, shouldStop: () => stop() || client.stopped, rateBytesPerSec: 0, batchBytes: options.batchBytes ?? 256 * 1024 });
                 }
                 catch (e) {
                     failure = e;
                 }
                 check();
-                const cp = loadState(state).files[logicalSessionPath(s.path)];
+                const cp = readState(state).files[logicalSessionPath(s.path)];
                 receipt({ state: failure ? (client.lastFailure instanceof EpochFull ? 'epoch-rollover' : 'stopped') : 'epoch', pilot, epoch, path: s.path, offset: cp?.offset ?? 0, charged: client.used, matrix: await matrix() });
                 if (failure) {
                     if (!pilot && client.lastFailure instanceof EpochFull && client.used > 384 * 1024 ** 2) {
                         // Admission refused before HTTP. The shipper's write-ahead journal includes
                         // that unallocated batch; resume the pinned input from owned acknowledged progress.
-                        saveState(`${state}.generations`, loadState(state));
+                        writeState(`${state}.generations`, readState(state));
                         continue;
                     }
                     throw failure;

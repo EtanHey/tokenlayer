@@ -1,6 +1,7 @@
 import { ClickHouse, encodeRow, type ClickHouseConfig } from '../../src/lib/clickhouse';
 import { sha256Hex } from '../../src/lib/hash';
-import { AuditLog } from './journal';
+import { AuditLog, localHeadroom, STATE_CAP, type LocalSpace } from './journal';
+import { dirname } from 'node:path';
 export const GiB = 1024 ** 3, RESERVE = 15 * GiB, MARGIN = 2 * GiB;
 const MiB = 1024 ** 2, BASE = 384 * MiB;
 export const sqlString = (s: string) => `'${s.replaceAll('\\', '\\\\').replaceAll("'", "\\'")}'`;
@@ -50,11 +51,12 @@ export class StreamingHistoryClient extends ClickHouse {
         run: string;
         epochBytes?: number;
         stateBytesCap?: number;
+        localSpace?: LocalSpace;
         stateBytesUsed?: () => number;
         sessionId: string;
         shouldStop?: () => boolean;
         verifySource?: (extraBytes?: number) => void;
-    }) { super(config); this.ledger = new AuditLog(options.ledger, options.stateBytesCap); }
+    }) { super(config); this.ledger = new AuditLog(options.ledger, options.stateBytesCap, options.localSpace); }
     record(intent: Intent, state: string) {
         const record: RecordState = { ...intent, state, manifest: this.options.manifest, run: this.options.run };
         this.ledger.append(record);
@@ -133,10 +135,24 @@ export class StreamingHistoryClient extends ClickHouse {
                 throw Error('unresolved native owner');
             const k = keys[0];
             const hashes = chunks([...new Set(keys.map(k => sqlString(k.content_hash)))]);
-            for (const owners of chunks(sessions.map(sqlString))) for (const group of hashes) {
+            // Fresh union for this batch only. Never multiply whole-table owner scans by hash chunks.
+            const paths = new Set<string>(); let pathBytes = 0;
+            for (const owners of chunks(sessions.map(sqlString))) {
+                const sql = `SELECT DISTINCT machine,path FROM tokenlayer.session_events FINAL
+          WHERE session_id IN (${owners.join(',')}) OR session_alias IN (${owners.join(',')}) OR position(path,${sqlString(this.options.sessionId)})>0
+          SETTINGS max_execution_time=20,max_threads=2,max_memory_usage=536870912,max_result_rows=4096,max_result_bytes=2097152,result_overflow_mode='throw'`;
+                if (Buffer.byteLength(sql) > 192 * 1024) throw Error('native SQL query exceeds bound');
+                const found = await this.queryJSON<{ machine: string; path: string }>(sql);
+                for (const p of found) {
+                    if (typeof p.machine !== 'string' || typeof p.path !== 'string') throw Error('unknown native owner path');
+                    const tuple = `(${sqlString(p.machine)},${sqlString(p.path)})`;
+                    if (!paths.has(tuple)) { paths.add(tuple); pathBytes += Buffer.byteLength(tuple) + 1; }
+                    if (paths.size > 4096 || pathBytes > 2 * MiB) throw Error('native owner union exceeds bound');
+                }
+            }
+            for (const owners of chunks([...paths])) for (const group of hashes) {
                 const overlap = await this.count(`SELECT count() AS n FROM tokenlayer.session_events FINAL
-        WHERE (machine,path) IN (SELECT DISTINCT machine,path FROM tokenlayer.session_events FINAL
-          WHERE session_id IN (${owners.join(',')}) OR session_alias IN (${owners.join(',')}) OR position(path,${sqlString(this.options.sessionId)})>0)
+        WHERE (machine,path) IN (${owners.join(',')})
         AND content_hash IN (${group.join(',')})
         AND NOT (machine=${sqlString(k.machine)} AND path=${sqlString(k.path)} AND generation=${sqlString(k.generation)}) SETTINGS max_execution_time=20`);
                 if (overlap !== 0) throw Error('unresolved native copy/generation overlap');
@@ -150,6 +166,8 @@ export class StreamingHistoryClient extends ClickHouse {
             // reserving enough space for intent, terminal/ambiguous and recovery records.
             const reserved = 4 * Buffer.byteLength(JSON.stringify({ ...intent, state: 'ambiguous', manifest: this.options.manifest, run: this.options.run })) + 1024;
             if (reserved > this.ledger.cap) throw Error('single history batch exceeds active cap');
+            // Bound all pending ledger/recovery, two checkpoint replacements and one receipt segment.
+            localHeadroom(dirname(this.options.ledger), reserved + 2 * STATE_CAP + 16 * MiB, this.options.localSpace);
             if (this.ledger.shared() || (this.options.stateBytesUsed?.() ?? this.ledger.size()) + reserved > this.ledger.cap) {
                 await this.reconcile();
                 if ((this.options.stateBytesUsed?.() ?? this.ledger.size()) + reserved > this.ledger.cap) this.ledger.rotate();

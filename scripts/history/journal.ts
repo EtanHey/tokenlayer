@@ -1,7 +1,25 @@
-import { closeSync, createReadStream, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync, writeSync } from 'node:fs';
+import { closeSync, createReadStream, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync, statfsSync, writeSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 export const STATE_CAP = 64 * 1024 ** 2;
+export const LOCAL_FLOOR = 20 * 1024 ** 3, PENDING_CAP = 4 * STATE_CAP + 16 * 1024 ** 2;
+export type LocalSpace = (directory: string) => { bsize: bigint; bavail: bigint };
+/** Actual unprivileged available blocks only: never count APFS purgeable space. */
+export function localHeadroom(directory: string, pending: number, read: LocalSpace = p => statfsSync(p, { bigint: true })) {
+    if (!Number.isSafeInteger(pending) || pending < 0 || pending > PENDING_CAP) throw Error('invalid local history pending allocation');
+    let sample;
+    for (let p = directory;; p = dirname(p)) {
+        try { sample = read(p); break; }
+        catch (e) {
+            if ((e as NodeJS.ErrnoException).code === 'ENOENT' && dirname(p) !== p) continue;
+            throw Error('unknown local history space');
+        }
+    }
+    if (!sample || typeof sample.bsize !== 'bigint' || typeof sample.bavail !== 'bigint' || sample.bsize <= 0n || sample.bavail < 0n)
+        throw Error('unknown local history space');
+    if (sample.bavail * sample.bsize < BigInt(LOCAL_FLOOR) + BigInt(pending))
+        throw Error('local history low space: preserve 20 GiB floor plus pending allocation');
+}
 export function privateSize(path: string) {
     let s;
     try { s = lstatSync(path); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return 0; throw e; }
@@ -11,7 +29,7 @@ export function privateSize(path: string) {
 const syncDir = (path: string) => { const fd = openSync(path, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } };
 /** Immutable audit segments plus an atomically replaced, bounded active file. Single writer only. */
 export class AuditLog {
-    constructor(readonly path: string, readonly cap = STATE_CAP) {
+    constructor(readonly path: string, readonly cap = STATE_CAP, readonly localSpace?: LocalSpace) {
         if (!Number.isSafeInteger(cap) || cap < 1024 || cap > STATE_CAP) throw Error('invalid active state cap');
     }
     size() { return privateSize(this.path); }
@@ -20,11 +38,12 @@ export class AuditLog {
         if (!this.size()) return;
         const next = this.path + '.next', audit = join(dirname(this.path), 'audit');
         privateSize(next);
+        const bytes = retain.map(r => JSON.stringify(r) + '\n').join('');
+        if (Buffer.byteLength(bytes) > this.cap) throw Error('unresolved history exceeds active cap');
+        localHeadroom(dirname(this.path), Buffer.byteLength(bytes) + 4096, this.localSpace);
         mkdirSync(audit, { recursive: true, mode: 0o700 });
         if (realpathSync(audit) !== audit || (lstatSync(audit).mode & 0o077)) throw Error('unsafe audit directory');
         syncDir(dirname(this.path)); // Persist a newly created audit directory before replacing active history.
-        const bytes = retain.map(r => JSON.stringify(r) + '\n').join('');
-        if (Buffer.byteLength(bytes) > this.cap) throw Error('unresolved history exceeds active cap');
         const fd = openSync(next, 'w', 0o600);
         try { writeSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
         // Link the old inode before replacing it. Never append to a linked active inode:
@@ -37,6 +56,7 @@ export class AuditLog {
     append(record: unknown) {
         const bytes = JSON.stringify(record) + '\n';
         if (this.shared() || this.size() + Buffer.byteLength(bytes) > this.cap) throw Error('active history log requires reconciliation/rotation');
+        localHeadroom(dirname(this.path), Buffer.byteLength(bytes) + 4096, this.localSpace);
         const fd = openSync(this.path, 'a', 0o600);
         try { writeSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
         syncDir(dirname(this.path));

@@ -106,7 +106,7 @@ export async function verifySource(s: Source, roots: ShipRoot[], shouldStop = ()
         throw Error('source mutated during import'); }, { prefixEnds, nonemptyLines });
 }
 /** Read live files without loadState's legacy-upgrade side effect. Seed only owned lineage. */
-export function seedLineage(source: Source, statePath: string, livePaths: string[]) {
+export function seedLineage(source: Source, statePath: string, livePaths: string[], writeState = saveState) {
     const path = logicalSessionPath(source.path);
     const checkpoints = livePaths.flatMap(p => [p, `${p}.generations`]).filter(existsSync).flatMap(p => {
         if (statSync(p).size > 32 * 1024 ** 2)
@@ -126,5 +126,5 @@ export function seedLineage(source: Source, statePath: string, livePaths: string
     }
     const cp = checkpoints.sort((a, b) => b.offset - a.offset)[0];
     if (cp)
-        saveState(`${statePath}.generations`, { version: 3, files: { [path]: cp } });
+        writeState(`${statePath}.generations`, { version: 3, files: { [path]: cp } });
 }

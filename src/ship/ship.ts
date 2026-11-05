@@ -22,6 +22,8 @@ export type ShipOptions = {
   roots: ShipRoot[];
   clickhouse: ClickHouse;
   statePath: string;
+  /** Optional guarded checkpoint writer; daemon defaults to the existing atomic writer. */
+  writeState?: typeof saveState;
   /** Physical paths inside roots; only these paths bypass the pickup cutoff. */
   files?: string[];
   /** Maximum records acknowledged in this pass; defaults to unlimited. */
@@ -122,6 +124,7 @@ function freshCheckpoint(path: string, kind: SourceKind, st: Stats, head = headL
 export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
   if (opts.maxLines !== undefined && (!Number.isSafeInteger(opts.maxLines) || opts.maxLines < 0)) throw Error("invalid maxLines");
   if (opts.batchLines !== undefined && (!Number.isSafeInteger(opts.batchLines) || opts.batchLines < 1)) throw Error("invalid batchLines");
+  const writeState = opts.writeState ?? saveState;
   const state: ShipState = loadState(opts.statePath);
   let t3Kiro: Set<string> | undefined;
   // Separate write-ahead generation record retains revision lineage across progress checkpoint loss.
@@ -137,7 +140,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
   const failures: unknown[] = [];
 
   const save = () => {
-    saveState(opts.statePath, state);
+    writeState(opts.statePath, state);
     lastSave = performance.now();
     dirty = false;
   };
@@ -191,7 +194,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           // Bootstrap the journal for checkpoints created before this version, including unchanged files.
           if (cp && !recorded) {
             generations.files[path] = structuredClone(cp);
-            saveState(generationPath, generations);
+            writeState(generationPath, generations);
           }
           if (kiro && cp && cp.parser.harness !== kiroHarness) {
             const generation = cp.generation;
@@ -304,7 +307,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             if (!protectedPrefix || protectedPrefix.generation !== cp.generation || nextOffset >= protectedPrefix.offset) {
               generations.files[path] = { ...cp, offset: nextOffset, fingerprint, parser };
             }
-            saveState(generationPath, generations);
+            writeState(generationPath, generations);
             await opts.clickhouse.insert("session_events", rows, token);
 
             const shippedBytes = nextOffset - cp.offset;
