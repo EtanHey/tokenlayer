@@ -1,6 +1,6 @@
 import { expect, test, spyOn } from 'bun:test';
-import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, statSync, unlinkSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import { historyFixtureDirectories } from '../fixtures/history-temp';
 import { join } from 'node:path';
 import { ClickHouse } from '../../src/lib/clickhouse';
 import { applySchema } from '../../src/lib/schema';
@@ -13,8 +13,9 @@ import { StreamingHistoryClient, RESERVE, MARGIN, GiB } from '../../scripts/hist
 import { checkSpace } from '../../scripts/deploy/backfill';
 import { runImport } from '../../scripts/history/run';
 import type { Manifest, Source } from '../../scripts/history/source';
+const tempDirectory = historyFixtureDirectories('history-it-');
 const fixture = () => {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'history-it-'))), roots = join(dir, 'roots'), history = join(dir, 'history');
+    const dir = tempDirectory(), roots = join(dir, 'roots'), history = join(dir, 'history');
     mkdirSync(roots);
     mkdirSync(history, { mode: 0o700 });
     const id = '00000000-0000-4000-8000-000000000001', path = join(roots, `rollout-${id}.jsonl`);

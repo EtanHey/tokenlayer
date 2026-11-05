@@ -1,6 +1,6 @@
 import { expect, test, spyOn } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { historyFixtureDirectories } from '../fixtures/history-temp';
 import { join } from 'node:path';
 import { ClickHouse } from '../../src/lib/clickhouse';
 import { applySchema } from '../../src/lib/schema';
@@ -8,7 +8,7 @@ import { startLocalClickHouse } from '../../src/lib/local-clickhouse';
 import { sha256Hex } from '../../src/lib/hash';
 import { runImport } from '../../scripts/history/run';
 import { StreamingHistoryClient, RESERVE } from '../../scripts/history/stream';
-const dir = () => realpathSync(mkdtempSync(join(tmpdir(), 'history-n4n9-')));
+const dir = historyFixtureDirectories('history-n4n9-');
 const row = (i: number) => ({ machine: 'm4', path: '/native/source', generation: 'g', byte_offset: i * 10,
     content_hash: sha256Hex(String(i)), line_bytes: 10, session_id: `owner-${String(i).padStart(80, '0')}`, session_alias: '', ts: '2026-02-07 00:00:00.000', raw: '{}\n' });
 const fixture = () => {

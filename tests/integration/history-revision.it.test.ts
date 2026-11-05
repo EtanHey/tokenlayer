@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, readdirSync, statSync, realpathSync, unlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { historyFixtureDirectories } from '../fixtures/history-temp';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { applySchema } from '../../src/lib/schema';
@@ -9,8 +9,9 @@ import { RESERVE } from '../../scripts/history/stream';
 import { runImport } from '../../scripts/history/run';
 import type { Source } from '../../scripts/history/source';
 const hash = (b: Buffer | string) => createHash('sha256').update(b).digest('hex');
+const tempDirectory = historyFixtureDirectories('history-r1-');
 function fixture() {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'history-r1-'))), roots = join(dir, 'roots'), history = join(dir, 'history');
+    const dir = tempDirectory(), roots = join(dir, 'roots'), history = join(dir, 'history');
     mkdirSync(roots); mkdirSync(history, { mode: 0o700 });
     const source = (n: number, count: number, pad = 0, blanks = false) => {
         const id = `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, path = join(roots, `rollout-${id}.jsonl`);
