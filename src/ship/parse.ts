@@ -1,8 +1,8 @@
 import { repoFromCwd } from "../lib/repo";
 import { parseTimestampMs, toClickHouseTime } from "../lib/time";
 
-export type SourceKind = "claude" | "codex" | "antigravity-cli" | "t3-antigravity";
-export type Harness = "claude" | "codex" | "t3" | "antigravity";
+export type SourceKind = "claude" | "codex" | "antigravity-cli" | "t3-antigravity" | "kiro";
+export type Harness = "claude" | "codex" | "t3" | "antigravity" | "kiro";
 
 /** V3 checkpoint shape. Antigravity uses native metadata and timestamp carry-forward. */
 export type FileState = {
@@ -60,6 +60,7 @@ function tryParse(line: string): Obj | null {
  * `session_meta.payload.originator: "T3 Code"`. Returns null while the head has no deciding line.
  */
 export function detectHarness(kind: SourceKind, headLines: string[]): Harness | null {
+  if (kind === "kiro") return "kiro";
   if (kind === "antigravity-cli") return "antigravity";
   if (kind === "t3-antigravity") return "t3";
   for (const line of headLines) {

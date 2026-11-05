@@ -27,7 +27,7 @@ test('small bundles allow only 1%; missing baseline and malformed policies fail 
   for (const growth of [-1, NaN, Infinity]) expect(() => parseRows({ schema: 1, rows: [{ ...row, growth }] })).toThrow();
 });
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 test('CLI enforces synthetic payload, bundle, read_rows, disk, parts and insert-batch regressions', () => {
@@ -89,6 +89,24 @@ test('deterministic query policy is tight; CI timing is report-only and M1 twins
 
 import { clickhouseBinary, startLocalClickHouse } from '../src/lib/local-clickhouse';
 import { queryMetrics } from './r1';
+(clickhouseBinary() ? test : test.skip)('R1 receipt without admit retains every other measurement', () => {
+  mkdirSync('.local', { recursive: true });
+  const dir = mkdtempSync(resolve('.local/r1-without-admit-'));
+  const runId = dir.split('/').pop()!;
+  cpSync('src', join(dir, 'src'), { recursive: true, filter: path => path !== join('src', 'admit') });
+  cpSync('schema', join(dir, 'schema'), { recursive: true });
+  const result = spawnSync('bun', [resolve('ratchet/r1.ts'), 'payload-usage-bytes'], {
+    cwd: dir, encoding: 'utf8', timeout: 120000, env: { ...process.env, RATCHET_RUN_ID: runId },
+  });
+  expect({ status: result.status, error: result.status ? result.stderr : '' }).toEqual({ status: 0, error: '' });
+  const receipt = JSON.parse(readFileSync(resolve('.local', `r1-${runId}.json`), 'utf8'));
+  for (const row of rows.filter(r => r.command.startsWith('bun ratchet/r1.ts ') && !r.id.includes('admit'))) {
+    expect(Number.isFinite(receipt[row.command.split(' ').pop()!])).toBe(true);
+  }
+  expect(receipt['payload-admit-bytes']).toBeUndefined();
+  expect(receipt['bundle-admit-bytes']).toBeUndefined();
+}, 125000);
+
 (clickhouseBinary() ? test : test.skip)('full-scan rewrite fails the declared sessions-between read_rows gate', async () => {
   const local = await startLocalClickHouse({ queryLog: true });
   try {
