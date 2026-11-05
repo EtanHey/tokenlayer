@@ -50,7 +50,10 @@ const canonical = (v: any): string => v && typeof v === "object" && !Array.isArr
     return n;
   }
   expect(matched(true)).toBe(822); expect(matched(false)).toBe(1);
-  for(const rs of bySource) {
+  for(const [index,rs] of bySource.entries()) {
+    const earliest=Math.min(...sources[index].upstreamUninspected.map((x:any)=>x.line));
+    expect(rs.filter(x=>x.coordinate.originalLFLine>earliest).length).toBeGreaterThan(0);
+    expect(rs.filter(x=>x.coordinate.originalLFLine>earliest).every(x=>x.context.continuity==="UNKNOWN_AFTER_UNINSPECTED_RECORD")).toBe(true);
     const sample=rs.find(x=>x.coordinate.inputLFLine===12)!;
     expect(sample.coordinate.originalLFLine).toBe(17);
     expect(sample.coordinate.recordHash).toBe("UNKNOWN");

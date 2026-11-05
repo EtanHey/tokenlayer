@@ -69,6 +69,8 @@ export async function project(manifestPath: string, outputPath: string) {
       const coordinateScan = { peak: 0, sha256: undefined as string | undefined, stable: undefined as boolean | undefined };
       const coordinateRecords = s.coordinatesPath ? records(s.coordinatesPath, coordinateScan) : undefined;
       closeCoordinates = () => { coordinateRecords?.return(undefined); };
+      const earliestGap = Math.min(...(s.upstreamUninspected ?? []).map((r: any) => r.line));
+      let previousLine = 0, previousOffset = 0, previousBytes = 0, previousTerminated = true;
       const c = context(), scan: { sha256?: string; stable?: boolean; peak: number } = { peak: 0 };
       for (const r of records(s.path, scan)) {
         source.rows++;
@@ -89,10 +91,27 @@ export async function project(manifestPath: string, outputPath: string) {
           let v: any;
           try { v = mapped.done || !mapped.value.raw ? {} : JSON.parse(mapped.value.raw.toString("utf8")); } catch { v = {}; }
           if (!Number.isSafeInteger(v.originalLFLine) || v.originalLFLine < 1 ||
-            !Number.isSafeInteger(v.decodedOffset) || v.decodedOffset < 0 || v.recordHash !== r.sha256 || v.recordBytes !== r.bytes) {
+            !Number.isSafeInteger(v.decodedOffset) || v.decodedOffset < v.originalLFLine - 1 ||
+            !pin(v.recordHash) || v.recordHash !== r.sha256 || v.recordBytes !== r.bytes ||
+            v.originalLFLine <= previousLine || (v.originalLFLine === 1 && v.decodedOffset !== 0) ||
+            (previousLine > 0 && (!previousTerminated ||
+              v.decodedOffset < previousOffset + previousBytes + v.originalLFLine - previousLine - 1 ||
+              (v.originalLFLine === previousLine + 1 && v.decodedOffset !== previousOffset + previousBytes)))) {
             status = "UNINSPECTED_COORDINATE_MISMATCH";
             coordinate.originalLFLine = coordinate.decodedOffset = "UNKNOWN";
-          } else Object.assign(coordinate, { originalLFLine: v.originalLFLine, decodedOffset: v.decodedOffset });
+            source.unresolved.push("COORDINATE_INTEGRITY_MISMATCH");
+          } else {
+            Object.assign(coordinate, { originalLFLine: v.originalLFLine, decodedOffset: v.decodedOffset });
+            previousLine = v.originalLFLine; previousOffset = v.decodedOffset;
+            previousBytes = r.bytes; previousTerminated = r.terminated;
+          }
+        }
+        if (witness && status === "PROJECTED") {
+          if (coordinate.originalLFLine <= previousLine || (s.upstreamUninspected ?? []).some((r: any) => r.line === coordinate.originalLFLine)) {
+            source.unresolved.push("COORDINATE_INTEGRITY_MISMATCH"); status = "UNINSPECTED_COORDINATE_MISMATCH";
+          }
+          previousLine = coordinate.originalLFLine;
+          if (coordinate.originalLFLine > earliestGap) c.continuity = "UNKNOWN_AFTER_UNINSPECTED_RECORD";
         }
         const row: any = { status, provenance, coordinate };
         if (status === "PROJECTED") {
@@ -132,8 +151,11 @@ export async function project(manifestPath: string, outputPath: string) {
     }
     receipt.status = receipt.uninspected || receipt.sources.some((s: any) => s.unresolved.length) ? "UNRESOLVED" : "SCOPED_PROJECTION_COMPLETE";
     receipt.complete = receipt.status === "SCOPED_PROJECTION_COMPLETE";
+    const invalid = receipt.sources.some((s: any) => s.unresolved.some((x: string) => /MISMATCH/.test(x)));
+    receipt.consumption = invalid ? "NONE" : receipt.complete ? "SCOPED_METADATA" : "PARTIAL_METADATA_ONLY";
+    if (invalid) receipt.status = "INVALID_NON_CONSUMABLE";
   } catch {
-    receipt.status = "UNRESOLVED"; receipt.errors.push("PROJECTION_INTERRUPTED_OR_INPUT_UNREADABLE");
+    receipt.status = "INVALID_NON_CONSUMABLE"; receipt.consumption = "NONE"; receipt.errors.push("PROJECTION_INTERRUPTED_OR_INPUT_UNREADABLE");
   } finally {
     closeCoordinates();
     receipt.outputs = { metadataSha256: metadataHash.digest("hex"), candidatesSha256: candidatesHash.digest("hex") };

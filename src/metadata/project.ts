@@ -13,9 +13,10 @@ export function field(o: Obj, k: string): Obj {
 }
 const counterNames = ["input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens",
   "reasoning_output_tokens", "total_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "cache_creation"];
-function numericTree(v: any, depth = 0): boolean {
+function numericTree(v: any, depth = 0, key = ""): boolean {
   return depth <= 8 && (v === null || (typeof v === "number" && Number.isSafeInteger(v)) ||
-    (typeof v === "object" && !Array.isArray(v) && Object.values(v).every(x => numericTree(x, depth + 1))));
+    (typeof v === "string" && ["service_tier", "inference_geo", "speed"].includes(key) && v.length <= 16384) ||
+    (typeof v === "object" && !Array.isArray(v) && Object.entries(v).every(([k, x]) => numericTree(x, depth + 1, k))));
 }
 /** Preserve native objects, never derive totals/deltas or add subset counters. */
 export function usage(o: Obj, key: string, expected = counterNames): Obj {
@@ -39,11 +40,14 @@ export function projectRecord(o: Obj, c: Context, provider: string, witness: boo
     birth: field(p, witness ? "meta_timestamp" : "timestamp"),
     metadata: pick(p, ["cwd", "originator", "source", "cli_version", "model", "service_tier", "id", "session_id", "forkedFromId"]), coordinate,
   } : undefined;
-  if (!c.owner && coordinate.originalLFLine === 1 && header) c.owner = header;
-  if (!c.owner && coordinate.originalLFLine === 1 && provider === "claude" && own(o, "sessionId"))
-    c.owner = { id: field(o, "sessionId"), forkParent: field(o, "parentSessionId"), birth: field(o, "timestamp"), coordinate };
+  if (!c.owner && provider === "codex" && coordinate.originalLFLine === 1 && header)
+    c.owner = { ...header, basis: "original_line_1_header" };
+  if (!c.owner && provider === "claude" && typeof o.sessionId === "string" && o.sessionId.length &&
+    ["user", "assistant", "system", "progress", "queue-operation"].includes(type))
+    c.owner = { id: field(o, "sessionId"), forkParent: field(o, "parentSessionId"), birth: field(o, "timestamp"),
+      basis: "first_session_record", coordinate };
   let embeddedHeader;
-  if (header && c.owner !== header) embeddedHeader = header;
+  if (header && c.owner?.coordinate !== coordinate) embeddedHeader = header;
   if (event === "task_started") { c.task = field(p, "turn_id"); c.response = undefined; }
   if (type === "turn_context") { c.turn = field(p, "turn_id"); c.model = pick(p, ["model", "cwd", "service_tier", "effort"]); }
   if (type === "response_item" && (["function_call", "custom_tool_call"].includes(event) || p.role === "assistant")) {
@@ -63,7 +67,7 @@ export function projectRecord(o: Obj, c: Context, provider: string, witness: boo
     item_id: field(p, witness ? "item_id" : "id"), message: field(msg, "id"), turn_attribution: field(obj(p.turn_attribution), "turn_id"),
     uuid: field(o, "uuid"), parentUuid: field(o, "parentUuid"), requestId: field(o, "requestId") };
   const responseRef = witness ? field(o, "response_ref") : c.response ?? unknown();
-  const stableKeys = Object.entries({ ...refs, response_ref: responseRef }).flatMap(([kind, v]) =>
+  const stableKeys = Object.entries({ ...refs, ...(witness ? { response_ref: responseRef } : {}) }).flatMap(([kind, v]) =>
     v.presence === "value" && typeof v.value === "string" && v.value.length ? [{ kind, key: hash(`${provider}:${kind}:${v.value}`) }] : []);
   return { type: field(o, "type"), event: witness ? field(o, "event") : field(p, "type"),
     clocks: { ...pick(o, ["timestamp", "created_at", "updated_at"]), payload: pick(p, ["timestamp", "created_at"]),

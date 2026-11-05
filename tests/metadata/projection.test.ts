@@ -73,7 +73,8 @@ test("missing scope/pins fails closed; private fresh outputs and pin mismatch st
   writeFileSync(r.source.path, "changed input\n");
   const bad=await project(r.manifest,r.out+"3");
   expect(bad.complete).toBe(false);
-  expect(bad.status).toBe("UNRESOLVED");
+  expect(bad.status).toBe("INVALID_NON_CONSUMABLE");
+  expect(bad.consumption).toBe("NONE");
 });
 test("same stable refs produce candidates but never subtract usage or union owners", async () => {
   const row={type:"event_msg",payload:{type:"token_count",response_id:"same",info:{last_token_usage:{output_tokens:4}}}};
@@ -104,4 +105,60 @@ test("unsupported usage content stays hash-only and prevents scoped completion",
   expect(r.rows[1].usage.last_token_usage.presence).toBe("UNRESOLVED");
   expect(JSON.stringify(r.rows)).not.toContain("DO_NOT_EXPORT");
   expect(r.receipt.complete).toBe(false);
+});
+
+test("witness continuity changes before projecting the first row after an upstream gap", async () => {
+  const r = await run([{type:"session_meta",line:1,declared_session:"c"},
+    {type:"event_msg",line:4,event:"token_count"}, {type:"event_msg",line:8,event:"token_count"}],
+    {format:"witness",admission:"witness",witnessReceiptHash:"a".repeat(64),
+      upstreamUninspected:[{line:6,bytes:13000000,sha256:"b".repeat(64)}]});
+  expect(r.rows.slice(0,3).map(x=>x.context.continuity)).toEqual([
+    "OBSERVED","OBSERVED","UNKNOWN_AFTER_UNINSPECTED_RECORD"]);
+});
+test("Claude first actual session record owns with an explicit coordinate basis and realistic usage", async () => {
+  const usage={input_tokens:0,output_tokens:8,cache_read_input_tokens:null,cache_creation_input_tokens:11,
+    cache_creation:{ephemeral_5m_input_tokens:7,ephemeral_1h_input_tokens:4},
+    service_tier:"standard",server_tool_use:{web_search_requests:0,web_fetch_requests:2}};
+  const r=await run([{type:"summary"},{type:"assistant",sessionId:"c",message:{usage}},
+    {type:"assistant",sessionId:"copied",message:{usage:{output_tokens:1}}}],{provider:"claude"});
+  expect(r.rows[0].context.owner.status).toBe("UNKNOWN");
+  expect(r.rows[1].context.owner).toMatchObject({id:{value:"c"},basis:"first_session_record",coordinate:{originalLFLine:2}});
+  expect(r.rows[2].context.owner.id.value).toBe("c");
+  const u=r.rows[1].usage.claude_usage;
+  expect(u.value).toEqual(usage);
+  expect(u.fields.service_tier).toEqual({presence:"value",value:"standard"});
+  expect(u.fields.input_tokens.presence).toBe("zero");
+  expect(u.fields.cache_read_input_tokens.presence).toBe("null");
+  expect(u.fields.total_tokens.presence).toBe("absent");
+  expect(u.fields.cache_creation.fields.ephemeral_5m_input_tokens.value).toBe(7);
+  expect(u.fields.cache_creation.fields.ephemeral_1h_input_tokens.value).toBe(4);
+});
+test("derived response context does not inflate stable candidates on non-usage rows", async () => {
+  const r=await run([header,{type:"response_item",payload:{type:"function_call",id:"call"}},
+    {type:"event_msg",payload:{type:"notice"}},{type:"event_msg",payload:{type:"notice"}}]);
+  expect(r.rows[3].responseRef.value).toBe("call");
+  expect(r.receipt.candidates).toBe(0);
+});
+test("mapped coordinates fail closed on duplicates, reversal, overlap, impossible offset and invalid hashes/lengths", async () => {
+  const r=await run([header,header]);
+  const raw=JSON.stringify(header)+"\n", bytes=Buffer.byteLength(raw);
+  const a={originalLFLine:1,decodedOffset:0,recordHash:sha(raw),recordBytes:bytes};
+  const b={...a,originalLFLine:2,decodedOffset:bytes};
+  const cases=[[a,{...b,originalLFLine:1}], [b,a], [a,{...b,decodedOffset:bytes-1}],
+    [a,{...b,decodedOffset:bytes+1}], [{...a,decodedOffset:1},b],
+    [a,{...b,recordHash:"abc"}], [a,{...b,recordBytes:bytes+1}]];
+  for (const [i,mapping] of cases.entries()) {
+    const path=join(r.out,`coordinates-${i}`), text=mapping.map(x=>JSON.stringify(x)+"\n").join("");
+    writeFileSync(path,text);
+    writeFileSync(r.manifest,JSON.stringify({version:1,scope:"bad-map",sources:[{...r.source,
+      coordinatesPath:path,coordinatesSha256:sha(text)}]}));
+    const bad=await project(r.manifest,r.out+`bad-${i}`);
+    expect(bad.complete).toBe(false);
+    expect(bad.consumption).toBe("NONE");
+  }
+});
+test("native usage scalar service tier retains numeric counter objects", async () => {
+  const usage={output_tokens:2,service_tier:"standard",server_tool_use:{web_search_requests:0}};
+  const r=await run([{type:"assistant",sessionId:"c",message:{usage}}],{provider:"claude"});
+  expect(r.rows[0].usage.claude_usage.value).toEqual(usage);
 });
