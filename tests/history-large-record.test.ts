@@ -54,13 +54,29 @@ for (const compressed of [false, true]) {
         const raw = Buffer.concat([header, blob(65536), blob(65537)]), f = fixture(raw, compressed);
         await expect(verifySource(f.source, f.roots, undefined, cap)).resolves.toBeFunction();
     });
-    test(`default reader refuses large records (${compressed ? 'zstd' : 'plain'})`, async () => {
-        const f = fixture(blob(2 * MiB), compressed);
-        const read = async () => {
-            if (compressed) { await inspectZstd(f.source.path, 0); for await (const _ of readZstd(f.source.path, 0, 65536)) {} }
-            else readCompleteLines(f.source.path, 0, 65536);
+    test(`unset reader accepts 2 MiB; explicit 1 MiB refuses / 16 MiB accepts (${compressed ? 'zstd' : 'plain'})`, async () => {
+        const raw = blob(2 * MiB), f = fixture(raw, compressed);
+        const read = async (limit?: number) => {
+            if (compressed) {
+                const inspected = await inspectZstd(f.source.path, raw.length, undefined, limit);
+                expect(inspected.digest).toBe(hash(raw)); expect(inspected.prefix.digest('hex')).toBe(hash(raw));
+                const batches = [];
+                for await (const b of readZstd(f.source.path, 0, 65536, undefined, inspected.blocks, limit)) batches.push(b.raw);
+                expect(hash(Buffer.concat(batches))).toBe(hash(raw));
+            } else expect(readCompleteLines(f.source.path, 0, 65536, limit).raw).toEqual(raw);
         };
-        await expect(read()).rejects.toThrow('record exceeds 1 MiB');
+        await read();
+        await expect(read(MiB)).rejects.toThrow('record exceeds 1 MiB');
+        await read(cap);
+        const incomplete = fixture(raw.subarray(0, -1), compressed);
+        if (compressed) {
+            expect((await inspectZstd(incomplete.source.path, 0)).size).toBe(raw.length - 1);
+            for await (const b of readZstd(incomplete.source.path, 0, 65536)) expect(b.raw.length).toBe(0);
+        } else expect(readCompleteLines(incomplete.source.path, 0, 65536).raw.length).toBe(0);
+        if (compressed) {
+            const tail = async () => { for await (const _ of readZstd(f.source.path, 0, 65536, undefined, undefined, MiB)) {} };
+            await expect(tail()).rejects.toThrow('record exceeds 1 MiB');
+        }
     });
 }
 test('genuine corrupt zstd remains a decoder error', async () => {
@@ -70,8 +86,8 @@ test('genuine corrupt zstd remains a decoder error', async () => {
 test('primary record cap survives decoder cleanup failure; genuine exit remains distinct', async () => {
     const spawn = (() => ({ stdout: new ReadableStream({ start(c) { c.enqueue(Buffer.alloc(2 * MiB, 120)); c.close(); } }),
         exited: Promise.resolve(9), kill() { throw Error('synthetic cleanup failure'); } })) as any;
-    await expect(inspectZstd('synthetic', 0, spawn)).rejects.toThrow('record exceeds 1 MiB');
-    const read = async () => { for await (const _ of readZstd('synthetic', 0, 65536, spawn)) {} };
+    await expect(inspectZstd('synthetic', 0, spawn, MiB)).rejects.toThrow('record exceeds 1 MiB');
+    const read = async () => { for await (const _ of readZstd('synthetic', 0, 65536, spawn, undefined, MiB)) {} };
     await expect(read()).rejects.toThrow('record exceeds 1 MiB');
     const corrupt = (() => ({ stdout: new ReadableStream({ start(c) { c.enqueue(header); c.close(); } }),
         exited: Promise.resolve(9), kill() {} })) as any;
@@ -100,5 +116,22 @@ test('invalid record limits fail closed rather than increasing the history ceili
     for (const value of [0, -1, NaN, Infinity, 1.5, cap + 1]) {
         await expect(verifySource(f.source, f.roots, undefined, value)).rejects.toThrow('record limit');
         expect(() => readCompleteLines(f.source.path, 0, 65536, value)).toThrow('record limit');
+    }
+});
+
+test('unset compressed readers preserve legacy LF-inclusive inspection and carry-only tail bounds', async () => {
+    for (const [bytes, lf] of [[64 * MiB, true], [64 * MiB + 1, true], [64 * MiB + 1, false]] as const) {
+        const raw = Buffer.alloc(bytes, 120); if (lf) raw[raw.length - 1] = 10;
+        const f = fixture(raw, true);
+        if (bytes === 64 * MiB) expect((await inspectZstd(f.source.path, 0)).size).toBe(bytes);
+        else await expect(inspectZstd(f.source.path, 0)).rejects.toThrow('decoded line exceeds 64 MiB limit');
+        // Baseline tail checks remaining carry after yielding, rather than an LF-inclusive record cap.
+        const tail = async () => {
+            let seen = 0;
+            for await (const b of readZstd(f.source.path, 0, 65536)) seen += b.raw.length;
+            return seen;
+        };
+        if (lf) expect(await tail()).toBe(bytes);
+        else await expect(tail()).rejects.toThrow('decoded line exceeds 64 MiB limit');
     }
 });

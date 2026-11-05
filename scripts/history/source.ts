@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, sep } from 'node:path';
-import { recordLimit, DEFAULT_RECORD_BYTES } from '../../src/ship/record-limit';
+import { recordLimit, HISTORY_DEFAULT_RECORD_BYTES } from '../../src/ship/record-limit';
 import { spawnZstd } from '../../src/ship/zst';
 import { logicalSessionPath, ownsSessionPath, type ShipRoot } from '../../src/ship/ship';
 import { antigravitySession, isAntigravity } from '../../src/ship/antigravity';
@@ -22,7 +22,7 @@ export type Manifest = {
 };
 export const signature = (path: string) => { const s = statSync(path); return `${s.dev}:${s.ino}:${s.birthtimeMs}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`; };
 /** Verify immutable original-path input in bounded chunks; no decoded payload touches disk. */
-export async function verifySource(s: Source, roots: ShipRoot[], shouldStop = () => false, maxRecordBytes = DEFAULT_RECORD_BYTES) {
+export async function verifySource(s: Source, roots: ShipRoot[], shouldStop = () => false, maxRecordBytes = HISTORY_DEFAULT_RECORD_BYTES) {
     recordLimit(maxRecordBytes);
     if (!s.sessionId || !roots.some(r => r.kind === s.kind && s.path.startsWith(realpathSync(r.dir) + sep)) || realpathSync(s.path) !== s.path || !ownsSessionPath(s.path, s.kind === 'codex'))
         throw Error('source ownership/path unresolved');
@@ -56,7 +56,7 @@ export async function verifySource(s: Source, roots: ShipRoot[], shouldStop = ()
                         throw Error('prefix metadata cap');
                 }
                 if (lineBytes > maxRecordBytes)
-                    throw Error(`history record exceeds ${maxRecordBytes / DEFAULT_RECORD_BYTES} MiB`);
+                    throw Error(`history record exceeds ${maxRecordBytes / HISTORY_DEFAULT_RECORD_BYTES} MiB`);
             }
             full.update(chunk);
             if (size < s.prefixBytes) {

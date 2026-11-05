@@ -96,9 +96,22 @@ test('serialization exact sizes, unchanged 128 MiB cap, 4096 rows, local pending
         await covered.insert('session_events', [row], 'covered-token');
         expect(covered.used).toBe(384 * MiB + 5 * (encodeRow(row).length + 1));
         expect(readFileSync(join(dir, 'covered'), 'utf8')).not.toContain('"raw"');
-        // Real daemon path, without history option, refuses a large first record before insert.
-        const root = join(dir, 'roots'); mkdirSync(root); writeFileSync(join(root, 'fixture.jsonl'), JSON.stringify({ blob: 'x'.repeat(2 * MiB) }) + '\n');
-        await expect(shipOnce({ machine: 'm4', roots: [{ kind: 'codex', dir: root }], clickhouse: local.client, statePath: join(dir, 'daemon'), rateBytesPerSec: 0 })).rejects.toThrow();
-        expect(await local.client.exec('SELECT count() FROM tokenlayer.session_events FINAL')).toBe('0\n');
+        // Real daemon path keeps baseline acceptance and the original token formula without importer options.
+        const root = join(dir, 'roots'); mkdirSync(root);
+        const rawLine = Buffer.from(JSON.stringify({ blob: 'x'.repeat(2 * MiB) }) + '\n');
+        for (const compressed of [false, true]) {
+            const path = join(root, `fixture-${compressed}.jsonl`);
+            const physical = path + (compressed ? '.zst' : '');
+            writeFileSync(physical, compressed ? Bun.zstdCompressSync(rawLine) : rawLine);
+            const st = statSync(physical), generation = compressed ? sha256Hex(rawLine).slice(0, 16) : sha256Hex(`${st.dev}:${st.ino}:${st.birthtimeMs}`).slice(0, 16);
+            const client = new ClickHouse(local.client.config), insert = client.insert.bind(client);
+            client.insert = async (table, rows, token) => {
+                expect(token).toBe(sha256Hex(`m4\0${path}\0${generation}\0${0}\0${rawLine.length}\0${sha256Hex(JSON.stringify(rows))}`));
+                await insert(table, rows, token);
+            };
+            await shipOnce({ machine: 'm4', roots: [{ kind: 'codex', dir: root }], files: [physical], clickhouse: client, statePath: join(dir, `daemon-${compressed}`), rateBytesPerSec: 0 });
+            expect(await local.client.exec(`SELECT hex(SHA256(raw)) FROM tokenlayer.session_events FINAL WHERE path='${path}'`)).toBe(sha256Hex(rawLine).toUpperCase() + '\n');
+        }
+        expect(await local.client.exec('SELECT count() FROM tokenlayer.session_events FINAL')).toBe('2\n');
     } finally { await local.stop(); }
 }, 60000);

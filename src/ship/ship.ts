@@ -38,7 +38,7 @@ export type ShipOptions = {
   rateBytesPerSec?: number;
   /** Approximate bytes per insert batch. */
   batchBytes?: number;
-  /** Importer-only opt-in; daemon callers retain the 1 MiB record default. */
+  /** Explicit importer bound; unset callers retain legacy plain/zstd reader bounds. */
   maxRecordBytes?: number;
   /** Importer preflight before token stringify; no daemon setting exposes this. */
   maxBatchJsonBytes?: number;
@@ -130,7 +130,8 @@ function freshCheckpoint(path: string, kind: SourceKind, st: Stats, head = headL
 export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
   if (opts.maxLines !== undefined && (!Number.isSafeInteger(opts.maxLines) || opts.maxLines < 0)) throw Error("invalid maxLines");
   if (opts.batchLines !== undefined && (!Number.isSafeInteger(opts.batchLines) || opts.batchLines < 1)) throw Error("invalid batchLines");
-  const maxRecordBytes = recordLimit(opts.maxRecordBytes);
+  const maxRecordBytes = opts.maxRecordBytes;
+  if (maxRecordBytes !== undefined) recordLimit(maxRecordBytes);
   if (opts.maxBatchJsonBytes !== undefined && (!Number.isSafeInteger(opts.maxBatchJsonBytes) || opts.maxBatchJsonBytes < 1 || opts.maxBatchJsonBytes > MAX_SERIALIZED_BATCH_BYTES)) throw Error("invalid maxBatchJsonBytes");
   const writeState = opts.writeState ?? saveState;
   const state: ShipState = loadState(opts.statePath);
