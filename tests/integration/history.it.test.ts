@@ -212,3 +212,41 @@ test('fresh compressed native pilot uses decoded generation, original path and r
         expect(await local.client.exec('SELECT count() FROM tokenlayer.session_events FINAL')).toBe('32\n');
     } finally {await local.stop();}
 },60000);
+
+test('large native first record: real import preserves raw, identity, offsets and replay in plain and zstd', async () => {
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE });
+    try {
+        await applySchema(local.client);
+        for (const [kind, compressed] of [['claude', false], ['codex', false], ['codex', true]] as const) {
+            const f = fixture(), id = `00000000-0000-4000-8000-00000000000${kind === 'claude' ? 2 : compressed ? 4 : 3}`;
+            const suffix = kind === 'claude' ? `","sessionId":"${id}"}\n` : `","payload":{"id":"${id}"}}\n`;
+            const start = kind === 'claude' ? '{"padding":"' : '{"type":"session_meta","padding":"';
+            const header = start + 'x'.repeat(84726 - Buffer.byteLength(start + suffix)) + suffix;
+            const raw = Buffer.from(header + '{}\n'.repeat(31));
+            unlinkSync(f.path);
+            const path = join(f.roots, (kind === 'claude' ? 'agent-synthetic' : `rollout-${id}`) + '.jsonl');
+            const physical = compressed ? Buffer.from(Bun.zstdCompressSync(raw)) : raw;
+            const source: Source = { ...f.source, kind, sessionId: id, path: path + (compressed ? '.zst' : ''), physicalSha256: sha256Hex(physical), decodedSha256: sha256Hex(raw), decodedBytes: raw.length, prefixBytes: raw.length, prefixSha256: sha256Hex(raw) };
+            writeFileSync(source.path, physical);
+            writeFileSync(f.manifest, JSON.stringify({ machine: 'm4', sources: [source] }));
+            const options = { ...opts(f, local.client), roots: [{ kind, dir: f.roots }], pilotOnly: true };
+            await runImport(f.manifest, local.client, options);
+            const sqlPath = `'${path}'`; // Synthetic canonical scratch paths contain no quotes.
+            const before = await local.client.exec(`SELECT machine,path,generation,byte_offset,content_hash,raw FROM tokenlayer.session_events FINAL WHERE path=${sqlPath} ORDER BY byte_offset`);
+            const rows = await local.client.queryJSON<{ byte_offset: string; session_id: string; raw: string; content_hash: string; line_bytes: number }>(`SELECT byte_offset,session_id,raw,content_hash,line_bytes FROM tokenlayer.session_events FINAL WHERE path=${sqlPath} ORDER BY byte_offset`);
+            expect(rows.length).toBe(32);
+            expect(rows[0].raw).toBe(header);
+            expect(rows[0].session_id).toBe(id);
+            expect(Number(rows[0].line_bytes)).toBe(84726);
+            expect(rows[0].content_hash).toBe(sha256Hex(Buffer.from(header)));
+            expect(rows.slice(1).map(r => Number(r.byte_offset))).toEqual(Array.from({ length: 31 }, (_, i) => 84726 + 3 * i));
+            const st = statSync(source.path);
+            const generation = compressed ? source.decodedSha256.slice(0, 16) : sha256Hex(Buffer.from(`${st.dev}:${st.ino}:${st.birthtimeMs}`)).slice(0, 16);
+            expect(await local.client.exec(`SELECT DISTINCT generation FROM tokenlayer.session_events FINAL WHERE path=${sqlPath}`)).toBe(generation + '\n');
+            await runImport(f.manifest, local.client, { ...options, batchBytes: 1000 });
+            expect(await local.client.exec(`SELECT machine,path,generation,byte_offset,content_hash,raw FROM tokenlayer.session_events FINAL WHERE path=${sqlPath} ORDER BY byte_offset`)).toBe(before);
+        }
+        expect(await local.client.exec('SELECT count() FROM tokenlayer.session_events FINAL')).toBe('96\n');
+        expect(await local.client.exec('SELECT count() FROM tokenlayer.proxy_usage')).toBe('0\n');
+    } finally { await local.stop(); }
+}, 60000);

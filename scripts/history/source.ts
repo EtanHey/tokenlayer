@@ -35,6 +35,7 @@ export async function verifySource(s: Source, roots: ShipRoot[], shouldStop = ()
     const stream = proc?.stdout ?? createReadStream(s.path);
     let nonemptyLines = 0;
     let size = 0, lineBytes = 0, first: Buffer[] = [], headBytes = 0, last = -1, prefixLast = -1;
+    let firstEnd: number | undefined;
     const prefixEnds: number[] = [];
     try {
         for await (const value of stream) {
@@ -60,9 +61,14 @@ export async function verifySource(s: Source, roots: ShipRoot[], shouldStop = ()
                 prefix.update(part);
                 prefixLast = part.at(-1)!;
             }
-            if (headBytes < 65536) {
-                const part = chunk.subarray(0, 65536 - headBytes);
-                first.push(part);
+            // Preserve the short-header window, but never truncate the first record.
+            // The record guard above bounds retained bytes to at most 1 MiB + LF.
+            const lf = firstEnd === undefined ? chunk.indexOf(10) : -1;
+            if (lf >= 0) firstEnd = size + lf + 1;
+            const headLimit = Math.max(65536, firstEnd ?? size + chunk.length);
+            if (headBytes < headLimit) {
+                const part = chunk.subarray(0, headLimit - headBytes);
+                first.push(Buffer.from(part));
                 headBytes += part.length;
             }
             size += chunk.length;
