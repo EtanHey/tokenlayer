@@ -10,7 +10,7 @@ export type ClickHouseConfig = {
 // JSONEachRow accepts String bytes without requiring UTF-8. Keep source bytes out of JS decoding.
 export const RAW_BYTES = Symbol("source line bytes");
 const shortEscapes: Record<string, string> = { '"': '\\"', "\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t" };
-function encodeRow(row: unknown): Buffer {
+export function encodeRow(row: unknown): Buffer {
   const bytes = (row as { [RAW_BYTES]?: Buffer })[RAW_BYTES];
   if (!bytes) return Buffer.from(JSON.stringify(row));
   const fields = Object.entries(row as Record<string, unknown>).map(([key, value]) => {
