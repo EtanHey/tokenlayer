@@ -77,3 +77,28 @@ test('primary record cap survives decoder cleanup failure; genuine exit remains 
         exited: Promise.resolve(9), kill() {} })) as any;
     await expect(inspectZstd('synthetic', 0, corrupt)).rejects.toThrow('zstd decode failed');
 });
+test('synthetic M4 image-message shape at LF813 / decoded offset2575582 preserves the complete blob', async () => {
+    const lengths = [23, 279518, 8, 23, 634742, 8, 23, 599638, 8, 23, 459778, 8, 305];
+    const images = new Set([1, 4, 7, 10]);
+    const content = lengths.map((n, i) => images.has(i) ? { type: 'input_image', image_url: 'A'.repeat(n) } : { type: 'input_text', text: 'x'.repeat(n) });
+    const big = Buffer.from(JSON.stringify({ timestamp: '2026-04-09T14:55:02.000Z', ordinal: 813, type: 'response_item', payload: { type: 'message', role: 'user', content } }) + '\n');
+    const offset = 2575582, rest = offset - header.length;
+    const small = Array.from({ length: 811 }, (_, i) => Buffer.from('{}' + ' '.repeat(Math.floor(rest / 811) + (i < rest % 811 ? 1 : 0) - 3) + '\n'));
+    const prefix = Buffer.concat([header, ...small]); expect(prefix.length).toBe(offset);
+    for (const compressed of [false, true]) {
+        const f = fixture(Buffer.concat([prefix, big]), compressed);
+        const check = await verifySource(f.source, f.roots, undefined, cap); expect(check.nonemptyLines).toBe(813);
+        await expect(verifySource(f.source, f.roots)).rejects.toThrow('record exceeds 1 MiB');
+        const batches = compressed ? readZstd(f.source.path, offset, 65536, undefined, undefined, cap) : [readCompleteLines(f.source.path, offset, 65536, cap)];
+        let count = 0;
+        for await (const b of batches) { expect(b.lines).toHaveLength(1); expect(b.lines[0].offset).toBe(offset); expect(hash(b.raw)).toBe(hash(big)); count++; }
+        expect(count).toBe(1);
+    }
+});
+test('invalid record limits fail closed rather than increasing the history ceiling', async () => {
+    const f = fixture(header, false);
+    for (const value of [0, -1, NaN, Infinity, 1.5, cap + 1]) {
+        await expect(verifySource(f.source, f.roots, undefined, value)).rejects.toThrow('record limit');
+        expect(() => readCompleteLines(f.source.path, 0, 65536, value)).toThrow('record limit');
+    }
+});

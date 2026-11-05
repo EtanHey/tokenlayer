@@ -130,6 +130,8 @@ function freshCheckpoint(path: string, kind: SourceKind, st: Stats, head = headL
 export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
   if (opts.maxLines !== undefined && (!Number.isSafeInteger(opts.maxLines) || opts.maxLines < 0)) throw Error("invalid maxLines");
   if (opts.batchLines !== undefined && (!Number.isSafeInteger(opts.batchLines) || opts.batchLines < 1)) throw Error("invalid batchLines");
+  const maxRecordBytes = recordLimit(opts.maxRecordBytes);
+  if (opts.maxBatchJsonBytes !== undefined && (!Number.isSafeInteger(opts.maxBatchJsonBytes) || opts.maxBatchJsonBytes < 1 || opts.maxBatchJsonBytes > MAX_SERIALIZED_BATCH_BYTES)) throw Error("invalid maxBatchJsonBytes");
   const writeState = opts.writeState ?? saveState;
   const state: ShipState = loadState(opts.statePath);
   let t3Kiro: Set<string> | undefined;
@@ -137,8 +139,6 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
   const generationPath = `${opts.statePath}.generations`;
   const generations = loadState(generationPath);
   const rate = opts.rateBytesPerSec ?? 5 * 1024 * 1024;
-  const maxRecordBytes = recordLimit(opts.maxRecordBytes);
-  if (opts.maxBatchJsonBytes !== undefined && (!Number.isSafeInteger(opts.maxBatchJsonBytes) || opts.maxBatchJsonBytes < 1 || opts.maxBatchJsonBytes > MAX_SERIALIZED_BATCH_BYTES)) throw Error("invalid maxBatchJsonBytes");
   const batchBytes = opts.batchBytes ?? 4 * 1024 * 1024;
   const saveEveryMs = opts.saveEveryMs ?? 5000;
   const result: ShipResult = { files: 0, lines: 0, bytes: 0, resets: 0 };
