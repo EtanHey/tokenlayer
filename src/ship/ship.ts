@@ -22,6 +22,12 @@ export type ShipOptions = {
   roots: ShipRoot[];
   clickhouse: ClickHouse;
   statePath: string;
+  /** Physical paths inside roots; only these paths bypass the pickup cutoff. */
+  files?: string[];
+  /** Maximum records acknowledged in this pass; defaults to unlimited. */
+  maxLines?: number;
+  /** Stop admission before every insert; already acknowledged progress is saved. */
+  shouldStop?: () => boolean;
   /** Files without a checkpoint whose mtime is older than this are skipped. */
   sinceMs?: number;
   /** Throughput cap in bytes/s across the whole run; 0 disables it. */
@@ -112,6 +118,7 @@ function freshCheckpoint(path: string, kind: SourceKind, st: Stats, head = headL
 
 /** Ship each file independently, save acknowledged progress, then report aggregate failures. */
 export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
+  if (opts.maxLines !== undefined && (!Number.isSafeInteger(opts.maxLines) || opts.maxLines < 0)) throw Error("invalid maxLines");
   const state: ShipState = loadState(opts.statePath);
   let t3Kiro: Set<string> | undefined;
   // Separate write-ahead generation record retains revision lineage across progress checkpoint loss.
@@ -135,6 +142,11 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
   try {
     for (const root of opts.roots) {
       for (const physical of listJsonl(root.dir, root.kind === "codex")) {
+        if (opts.shouldStop?.() || result.lines >= (opts.maxLines ?? Infinity)) {
+          if (failures.length) throw new AggregateError(failures, "ship failed for some files");
+          return result;
+        }
+        if (opts.files && !opts.files.includes(physical)) continue;
         const agy = isAntigravity(root.kind);
         const kiro = root.kind === "kiro";
         const session = kiro ? kiroSession(root.dir, physical) : agy ? antigravitySession(root.dir, physical, root.kind) : "";
@@ -160,7 +172,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           const replay = !cp || (recorded && (recorded.generation !== cp.generation || recorded.offset > cp.offset));
           if (replay && recorded) cp = structuredClone(recorded);
           const kiroHarness = kiro && ((t3Kiro ??= kiroT3Sessions(opts.kiroT3StatePath)).has(session) || cp?.parser.harness === "t3") ? "t3" : "kiro";
-          if (!cp && !state.legacyReplay?.includes(path) && opts.sinceMs !== undefined && st.mtimeMs < opts.sinceMs) continue;
+          if (!cp && !opts.files?.includes(physical) && !state.legacyReplay?.includes(path) && opts.sinceMs !== undefined && st.mtimeMs < opts.sinceMs) continue;
           if (compressed && cp?.compressed?.complete && cp.compressed.size === st.size && identity(st) === cp.identity && cp.mtimeMs === st.mtimeMs && cp.ctimeMs === st.ctimeMs && !replay) continue;
           const packedHash = compressed ? await (opts.zstd?.fingerprint ?? compressedHash)(physical) : undefined;
           const decoded = compressed ? await inspectZstd(physical, cp?.offset ?? 0, opts.zstd?.spawn) : undefined;
@@ -242,7 +254,11 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             }
           }
           const batches = compressed ? readZstd(physical, cp.offset, batchBytes, opts.zstd?.spawn, decoded?.blocks) : plainBatches(cp.offset);
-          for await (const { lines, nextOffset, raw } of batches) {
+          for await (const chunk of batches) {
+            if (opts.shouldStop?.() || result.lines >= (opts.maxLines ?? Infinity)) break;
+            const lines = chunk.lines.slice(0, (opts.maxLines ?? Infinity) - result.lines);
+            const nextOffset = lines.length < chunk.lines.length ? lines.at(-1)!.offset + lines.at(-1)!.bytes : chunk.nextOffset;
+            const raw = chunk.raw.subarray(0, nextOffset - cp.offset);
             // A fresh checkpoint starts at offset 0, so lines[0] is the file's first line.
 
             const parser = structuredClone(cp.parser);
@@ -267,6 +283,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             const fingerprint = nextHash.copy().digest("hex");
             // Replay progress may trail the verified archive prefix. Never discard its
             // fingerprint: a crash here must still detect rewrites of the archived suffix.
+            if (opts.shouldStop?.()) break;
             const protectedPrefix = generations.files[path];
             if (!protectedPrefix || protectedPrefix.generation !== cp.generation || nextOffset >= protectedPrefix.offset) {
               generations.files[path] = { ...cp, offset: nextOffset, fingerprint, parser };
@@ -295,7 +312,8 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             if (identity(after) !== identity(st) || after.mtimeMs !== st.mtimeMs || after.ctimeMs !== st.ctimeMs) break;
           }
           if (cp.compressed) {
-            cp.compressed.complete = true;
+            cp.compressed.complete = opts.maxLines === undefined && opts.shouldStop === undefined
+              ? true : cp.offset === size;
             dirty = true;
           }
           if (shippedFromFile) result.files++;
