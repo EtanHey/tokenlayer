@@ -3,7 +3,7 @@
 Run `bun src/metadata/main.ts pinned-input.json /existing/private-parent/fresh-output`.
 The CLI reads only explicitly pinned local LF records. It has no ClickHouse, native ingester,
 pricing, Drive, archive decoder, service or checkpoint connection. Exit 0 means only the declared
-projection scope completed; exit 2 retains an UNRESOLVED manifest, exit 1 rejects setup.
+projection scope completed; exit 2 retains an UNRESOLVED or INVALID_NON_CONSUMABLE manifest; exit 1 rejects setup/final publication.
 No full-history/source acceptance follows from any exit code.
 
 Input is a <=1MiB JSON manifest, version 1, nonempty `scope`, and 1..128 `sources`.
@@ -40,8 +40,12 @@ object per exact raw LF record, in the same order:
 
 The subset's input hash is its export hash; original member and physical representation pins
 are declared provenance from the admission contract, not independently reread sources. Mapping
-hash, count, raw-record bytes/hash and coordinate shape must verify. Start with the actual
+hash, count, exact raw-record bytes/SHA256 and coordinate shape must verify. Original line and decoded
+offset must strictly increase; adjacent original lines require exact offset adjacency. Skipped lines
+require at least one LF byte each; duplicate/reversed/overlapping coordinates fail closed. Codex requires the actual
 original line-1 header to establish owner; a subset without it stays UNKNOWN/UNRESOLVED.
+Claude uses the first actual user/assistant/system/progress/queue-operation record with a nonempty
+string sessionId, with basis `first_session_record` and its coordinate; no filename-derived owner.
 `NOT_APPLICABLE` is valid for absent local container fields; uncertainty must use `UNKNOWN`.
 Origin needs actual evidence distinct from custody; cwd alone never assigns an origin machine.
 The manifest joins exactly one physical/member identity per source. Split mixed-member exports.
@@ -52,14 +56,28 @@ receipt, then pins the small decoded packet as `inputSha256`. Original `line` re
 from packet line, output ordinal and decoded packet offset. Raw offset/hash/bytes and original
 field presence remain UNKNOWN/UNRESOLVED where the old packet lost them. Optional
 `upstreamUninspected: [{line,bytes,sha256}]` carries receipt-only oversize gaps. These rows are
-not inspected by this CLI, and their hashes are attributed to that receipt.
+not inspected by this CLI, and their hashes are attributed to that receipt. Before projecting any witness
+row after the earliest upstream gap, carried context continuity becomes UNKNOWN; original LF lines,
+packet lines and output ordinals remain separate. Full-source continuity is UNKNOWN for witness rows.
 
 Outputs in a new 0700 directory: `metadata.ndjson`, `candidates.ndjson`, `manifest.json`, and a
 private on-disk candidate index, all 0600. Repository outputs must be gitignored before the
 first write. Existing output directories are refused. Outputs should remain private, outside
 repos by preference. The manifest pins both NDJSON hashes and retains scoped counts/status.
-Only manifest status authorizes consumption; earlier rows remain provisional until final hash
-and source-stability checks finish. Interrupted processes can leave rows without a manifest;
+Consumers must JSON-validate the final manifest and verify both NDJSON hashes. Earlier rows remain
+provisional until final hashes and source-stability checks finish. The final manifest is fsynced to a
+private temporary file, then atomically renamed after both NDJSON files are fsynced.
+
+- Exit 0, `SCOPED_PROJECTION_COMPLETE`, consumption `SCOPED_METADATA`: declared metadata scope only.
+- Exit 2, `UNRESOLVED`, consumption `PARTIAL_METADATA_ONLY`, no errors: hash-verified partial metadata
+  may be consumed under the lead ruling. Preserve each row's gaps, fullSourceContinuity and coordinates
+  and each source/member's unresolved list, continuity and gap-coordinate reference. Missing data stays
+  UNKNOWN. This never authorizes whole-corpus totals, provider shares, source acceptance or subtraction.
+- Exit 2, `INVALID_NON_CONSUMABLE`, consumption `NONE`: hash/stability/pin or coordinate mismatch,
+  interrupted/unreadable input, or output-cap failure. Never consume even as partial metadata.
+- Exit 1, missing or malformed manifest, interrupted process, or output hash mismatch: never consume.
+
+The source acceptance HOLD remains in every state. Interrupted processes can leave rows without a manifest;
 those outputs are never complete. Errors do not print raw source content.
 
 The scanner reads 64KiB chunks and retains at most 1MiB of raw bytes per LF record (temporary
@@ -74,13 +92,33 @@ usage subtraction, delta derivation, TTL inference, pricing, or added reasoning 
 
 Presence records distinguish absent, null, explicit zero and value. Numeric/null usage objects
 are preserved verbatim as parsed objects, including unknown native numeric fields, with recursive
-presence. Unsupported usage shapes are hashed/UNRESOLVED, never emitted as tool/chat content.
+presence. Native usage scalar strings `service_tier`, `inference_geo` and `speed` are also retained
+through field presence without suppressing numeric counters; numeric `server_tool_use` stays native.
+Other unsupported usage shapes are hashed/UNRESOLVED, never emitted as tool/chat content.
 Raw field values retain native names. Derived preceding-response references carry their source
-coordinate and basis, separately from literal refs. They do not prove inherited/live classification.
-First physical header ownership is immutable; later headers are emitted separately. Actual native
+coordinate and basis, separately from literal refs. In raw mode derived carried responseRef is excluded
+from stable candidate keys; literal refs remain candidates. Witness response_ref stays extract evidence. They do not prove inherited/live classification.
+Codex original-line-1 header ownership is immutable; later headers are emitted separately. Actual native
 clocks, task/turn context, model/client/tier/cwd and stable refs are metadata only. Missing fields
 remain missing; a packet-supplied null is never promoted to proved raw null.
 
 Synthetic suite: `bun test tests/metadata`. Optional private witness check:
 `TOKENLAYER_METADATA_WITNESS=/private/witness bun test tests/metadata/witness.test.ts`.
 This verifies existing packets only, with no native originals, production DB or Drive reads.
+
+Output limits: manifest `maxOutputRows` defaults to 10,000 (1..1,000,000, including upstream receipts).
+Preflight reserves 64KiB per capped row for both NDJSON files and the manifest, plus 16KiB per row
+and 1MiB for scratch SQLite. These are hard budgets, not average-output forecasts; a large encoded
+row can exhaust the byte budget sooner. Each encoded write is <=8MiB. Physical free blocks on the
+actual output volume must cover the entire budget plus a 20GiB floor and 24MiB pending reserve.
+Every file write and scratch insert/commit rechecks the floor with bounded pending bytes; no
+purgeable-space estimate is used. External writers can still consume space concurrently; any I/O
+failure invalidates output. SQLite is scratch only: synchronous OFF, journal OFF, fixed page-count
+cap, <=256 output rows per transaction, 1MiB cache. No production database settings change.
+Safe reason codes identify setup/runtime failures without paths or raw payloads.
+
+Actual export path remains blocked: no admitted-raw exporter exists. The minimum next adapter is
+a separately reviewed bounded compressed-member -> exact decoded LF + coordinate pin builder that
+verifies physical compressed SHA256 through decoder success and decoded member SHA256. It must
+not infer that link from supplied pins alone. Design and callback custody: R1 implementation receipt
+at root docs.local/full-history/metadata-projection/REVISION-R1.md. It is not implemented here.

@@ -162,3 +162,21 @@ test("native usage scalar service tier retains numeric counter objects", async (
   const r=await run([{type:"assistant",sessionId:"c",message:{usage}}],{provider:"claude"});
   expect(r.rows[0].usage.claude_usage.value).toEqual(usage);
 });
+test("partial metadata carries row and member gaps with explicit unknown full-source continuity", async () => {
+  const r=await run([header]);
+  expect(r.receipt.consumption).toBe("PARTIAL_METADATA_ONLY");
+  expect(r.rows[0].gaps).toContain("originMachine");
+  expect(r.rows[0].fullSourceContinuity).toBe("UNKNOWN");
+  expect(r.receipt.sources[0].continuity).toBe("UNKNOWN");
+  expect(r.receipt.sources[0].gapCoordinates).toBe("metadata.ndjson:coordinate");
+});
+test("a valid mapped subset with skipped original LF lines is partial with unknown continuity", async () => {
+  const r=await run([header,header],{originMachine:"test",originProof:"synthetic",containerDriveId:"NOT_APPLICABLE",containerHash:"NOT_APPLICABLE"});
+  const raw=JSON.stringify(header)+"\n", coordinatesPath=join(r.out,"gap-coordinates");
+  const text=[{originalLFLine:1,decodedOffset:0},{originalLFLine:3,decodedOffset:Buffer.byteLength(raw)+2}]
+    .map(x=>JSON.stringify({...x,recordHash:sha(raw),recordBytes:Buffer.byteLength(raw)})+"\n").join("");
+  writeFileSync(coordinatesPath,text);
+  writeFileSync(r.manifest,JSON.stringify({version:1,scope:"subset-gap",sources:[{...r.source,coordinatesPath,coordinatesSha256:sha(text)}]}));
+  const result=await project(r.manifest,r.out+"gap");
+  expect(result.status).toBe("UNRESOLVED"); expect(result.consumption).toBe("PARTIAL_METADATA_ONLY");
+});

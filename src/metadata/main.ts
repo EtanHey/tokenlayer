@@ -9,7 +9,7 @@ if (import.meta.main) {
   } else {
     try {
       const r = await project(manifest, out);
-      writeOut(JSON.stringify({ status: r.status, complete: r.complete, records: r.records,
+      writeOut(JSON.stringify({ status: r.status, complete: r.complete, consumption: r.consumption, errors: r.errors, records: r.records,
         projected: r.projected, uninspected: r.uninspected, candidates: r.candidates }));
       process.exitCode = r.complete ? 0 : 2;
     } catch (error) { writeErr(`REJECTED:${reason(error)}; no consumable output claimed`); process.exitCode = 1; }

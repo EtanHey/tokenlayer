@@ -121,6 +121,10 @@ export async function project(manifestPath: string, outputPath: string) {
             coordinate.originalLFLine = coordinate.decodedOffset = "UNKNOWN";
             source.unresolved.push("COORDINATE_INTEGRITY_MISMATCH");
           } else {
+            if (v.originalLFLine > previousLine + 1) {
+              c.continuity = "UNKNOWN_AFTER_UNINSPECTED_RECORD";
+              source.unresolved.push("ORIGINAL_LF_GAPS_UNINSPECTED");
+            }
             Object.assign(coordinate, { originalLFLine: v.originalLFLine, decodedOffset: v.decodedOffset });
             previousLine = v.originalLFLine; previousOffset = v.decodedOffset;
             previousBytes = r.bytes; previousTerminated = r.terminated;
@@ -133,10 +137,16 @@ export async function project(manifestPath: string, outputPath: string) {
           previousLine = coordinate.originalLFLine;
           if (coordinate.originalLFLine > earliestGap) c.continuity = "UNKNOWN_AFTER_UNINSPECTED_RECORD";
         }
-        const row: any = { status, provenance, coordinate };
+        const gaps = required.filter(k => s[k] === "UNKNOWN");
+        if (witness) gaps.push("RAW_FIELDS_AND_COORDINATES_NOT_RECOVERABLE_FROM_EXTRACT");
+        if (c.continuity !== "OBSERVED") gaps.push("CONTEXT_CONTINUITY_UNKNOWN");
+        const row: any = { status, provenance, coordinate, gaps };
         if (status === "PROJECTED") {
           Object.assign(row, projectRecord(obj(o), c, s.provider, witness, coordinate));
-          if (unresolved(row) && !source.unresolved.includes("UNSUPPORTED_METADATA_VALUE")) source.unresolved.push("UNSUPPORTED_METADATA_VALUE");
+          if (unresolved(row)) {
+            gaps.push("UNSUPPORTED_METADATA_VALUE");
+            if (!source.unresolved.includes("UNSUPPORTED_METADATA_VALUE")) source.unresolved.push("UNSUPPORTED_METADATA_VALUE");
+          }
           for (const ref of row.stableKeys) {
             const key = `${s.provider}:${ref.kind}:${ref.key}`, first: any = get.get(key);
             if (first) {
@@ -146,8 +156,10 @@ export async function project(manifestPath: string, outputPath: string) {
             } else { budget.check(); put.run(key, JSON.stringify(coordinate)); }
           }
           if ((!c.owner || c.owner.id.presence !== "value" || !c.owner.id.value) && !source.unresolved.includes("OWNING_HEADER_UNKNOWN")) source.unresolved.push("OWNING_HEADER_UNKNOWN");
+          if (!c.owner || c.owner.id.presence !== "value" || !c.owner.id.value) gaps.push("OWNING_HEADER_UNKNOWN");
           source.projected++; receipt.projected++;
-        } else { c.continuity = "UNKNOWN_AFTER_UNINSPECTED_RECORD"; source.uninspected++; receipt.uninspected++; }
+        } else { gaps.push(status); c.continuity = "UNKNOWN_AFTER_UNINSPECTED_RECORD"; source.uninspected++; receipt.uninspected++; }
+        row.fullSourceContinuity = gaps.length || c.continuity !== "OBSERVED" ? "UNKNOWN" : "OBSERVED";
         emit(row);
       }
       if (coordinateRecords) {
@@ -164,10 +176,13 @@ export async function project(manifestPath: string, outputPath: string) {
       for (const r of s.upstreamUninspected ?? []) {
         emit({ status: "UNINSPECTED_UPSTREAM_RECEIPT", provenance, coordinate: { originalLFLine: r.line,
           decodedOffset: "UNKNOWN", outputOrdinal: receipt.records + 1, recordHash: r.sha256,
-          originalRecordBytes: r.bytes, witnessReceiptHash: s.witnessReceiptHash }, basis: "UPSTREAM_HASHED_RECEIPT_ONLY" });
+          originalRecordBytes: r.bytes, witnessReceiptHash: s.witnessReceiptHash },
+          gaps: ["UNINSPECTED_UPSTREAM_RECEIPT"], fullSourceContinuity: "UNKNOWN", basis: "UPSTREAM_HASHED_RECEIPT_ONLY" });
         source.uninspected++; receipt.uninspected++;
       }
       source.unresolved = [...new Set(source.unresolved)];
+      source.continuity = source.unresolved.length || source.uninspected || c.continuity !== "OBSERVED" ? "UNKNOWN" : "OBSERVED";
+      source.gapCoordinates = "metadata.ndjson:coordinate";
     }
     if (batchRows) commit(); else db.exec("COMMIT");
     receipt.status = receipt.uninspected || receipt.sources.some((s: any) => s.unresolved.length) ? "UNRESOLVED" : "SCOPED_PROJECTION_COMPLETE";
