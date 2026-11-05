@@ -34,6 +34,8 @@ export type ShipOptions = {
   rateBytesPerSec?: number;
   /** Approximate bytes per insert batch. */
   batchBytes?: number;
+  /** Optional per-batch record bound, independent of the byte window. */
+  batchLines?: number;
   /** Persist the checkpoint at most this often (and always at the end). */
   saveEveryMs?: number;
   log?: (msg: string) => void;
@@ -119,6 +121,7 @@ function freshCheckpoint(path: string, kind: SourceKind, st: Stats, head = headL
 /** Ship each file independently, save acknowledged progress, then report aggregate failures. */
 export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
   if (opts.maxLines !== undefined && (!Number.isSafeInteger(opts.maxLines) || opts.maxLines < 0)) throw Error("invalid maxLines");
+  if (opts.batchLines !== undefined && (!Number.isSafeInteger(opts.batchLines) || opts.batchLines < 1)) throw Error("invalid batchLines");
   const state: ShipState = loadState(opts.statePath);
   let t3Kiro: Set<string> | undefined;
   // Separate write-ahead generation record retains revision lineage across progress checkpoint loss.
@@ -254,7 +257,20 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             }
           }
           const batches = compressed ? readZstd(physical, cp.offset, batchBytes, opts.zstd?.spawn, decoded?.blocks) : plainBatches(cp.offset);
-          for await (const chunk of batches) {
+          async function* boundedBatches() {
+            for await (const chunk of batches) {
+              if (opts.batchLines === undefined || chunk.lines.length <= opts.batchLines) { yield chunk; continue; }
+              const base = chunk.nextOffset - chunk.raw.length;
+              let start = base;
+              for (let i = 0; i < chunk.lines.length; i += opts.batchLines) {
+                const lines = chunk.lines.slice(i, i + opts.batchLines);
+                const nextOffset = i + opts.batchLines < chunk.lines.length ? lines.at(-1)!.offset + lines.at(-1)!.bytes : chunk.nextOffset;
+                yield { lines, nextOffset, raw: chunk.raw.subarray(start - base, nextOffset - base) };
+                start = nextOffset;
+              }
+            }
+          }
+          for await (const chunk of boundedBatches()) {
             if (opts.shouldStop?.() || result.lines >= (opts.maxLines ?? Infinity)) break;
             const lines = chunk.lines.slice(0, (opts.maxLines ?? Infinity) - result.lines);
             const nextOffset = lines.length < chunk.lines.length ? lines.at(-1)!.offset + lines.at(-1)!.bytes : chunk.nextOffset;
