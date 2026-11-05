@@ -26,6 +26,11 @@ test('XML rendering escapes paths and rejects unresolved placeholders', () => {
   expect(render('<x>__HOME__</x>', { HOME: '/a&b/<c>' })).toBe('<x>/a&amp;b/&lt;c&gt;</x>');
   expect(() => render('__UNKNOWN__', {})).toThrow();
 });
+test('ClickHouse config renders the 15 GiB daemon reserve', () => {
+  const template = readFileSync('config/clickhouse.xml.template', 'utf8');
+  const xml = render(template, { HOME: '/Users/synthetic' });
+  expect(xml).toContain(`<keep_free_space_bytes>${15 * 1024 ** 3}</keep_free_space_bytes>`);
+});
 test('backfill uses a UTC cutoff and bounded rate; invalid inputs fail', () => {
   expect(backfillArgs(90, 2, new Date('2026-10-30T12:00:00Z'))).toEqual(['--backfill', '--since', '2026-08-01', '--rate-mb', '2']);
   for (const [days, rate] of [[0, 2], [90, 0], [NaN, 2], [90, Infinity]]) expect(() => backfillArgs(days, rate)).toThrow();
