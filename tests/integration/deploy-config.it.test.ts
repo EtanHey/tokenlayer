@@ -42,6 +42,6 @@ test('deploy config serves authenticated queries, refuses default, hides auth in
     const listeners = spawnSync('lsof', ['-nP', '-a', '-p', String(proc.pid), '-iTCP', '-sTCP:LISTEN', '-Fn'], { encoding: 'utf8' });
     expect(listeners.status).toBe(0);
     expect(listeners.stdout.split('\n').filter(line => line.startsWith('n')).sort()).toEqual([`n127.0.0.1:${http}`, `n127.0.0.1:${tcp}`].sort());
-    expect(await ch.queryJSON('SELECT keep_free_space FROM system.disks WHERE name=\'default\'')).toEqual([{ keep_free_space: 35 * 1024 ** 3 }]);
+    expect(await ch.queryJSON('SELECT keep_free_space FROM system.disks WHERE name=\'default\'')).toEqual([{ keep_free_space: 15 * 1024 ** 3 }]);
   } finally { proc.kill('SIGKILL'); await proc.exited; }
 }, 40000);

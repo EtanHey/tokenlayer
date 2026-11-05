@@ -78,8 +78,9 @@ and the existing mode-600 `~/.config/tokenlayer/hub.env` with `CLIPROXY_MGMT_KEY
    which passes. A zero reserve still requires 35 GiB after projection.
    Every `BackfillClient.insert` batch rechecks the hub volume with the same formula on serialized batch bytes,
    failing closed before the insert on a real shortfall or unknown disk data. This hard backstop covers source growth,
-   older checkpoint replays, and concurrent writes. ClickHouse's default disk also reserves `keep_free_space_bytes=37580963840` (35 GiB),
-   including daemon/drain writes. This measures M1 disk space even when backfill runs on M4.
+   older checkpoint replays, and concurrent writes. ClickHouse's default disk reserves `keep_free_space_bytes=16106127360` (15 GiB),
+   including daemon/drain writes, matching the reviewed M1 hot reload so future hub setup preserves that reserve.
+   The manual-backfill post-import floor remains a separate conservative 35 GiB. This measures M1 disk space even when backfill runs on M4.
    It uses `backfill-state.json` separately from the daemon's `ship-state.json`
    and retains both `.generations` sidecars. Stable source identity plus the replacement key and FINAL make replay
    safe; losing both progress and lineage, or copying source files to new inodes, can add archive histories.
