@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
+import { recordGuard, DEFAULT_RECORD_BYTES } from "./record-limit";
 import { splitLines, type ReadResult } from "./tail";
 
 /** Backpressure throughout; neither compressed nor decoded files are buffered whole. */
@@ -22,6 +23,7 @@ async function* decode(path: string, spawn = spawnZstd, blocks?: string[], recor
     parts = []; size = 0;
     return raw;
   };
+  let failed = false;
   try {
     for await (const chunk of proc.stdout) {
       for (let start = 0; start < chunk.length;) {
@@ -34,9 +36,10 @@ async function* decode(path: string, spawn = spawnZstd, blocks?: string[], recor
     if (await proc.exited !== 0) throw new Error("zstd decode failed (corrupt, truncated or unreadable stream)");
     if (size) yield checked();
     if (blocks && !record && index !== blocks.length) throw new Error("zstd stream shortened after validation");
-  } finally {
-    proc.kill();
-    await proc.exited;
+  } catch (error) { failed = true; throw error; }
+  finally {
+    try { proc.kill(); await proc.exited; }
+    catch (error) { if (!failed) throw error; }
   }
 }
 
@@ -47,20 +50,14 @@ export async function compressedHash(path: string) {
 }
 
 /** Validate the entire frame before any insert/checkpoint; verify the old decoded prefix. */
-export async function inspectZstd(path: string, prefixEnd: number, spawn = spawnZstd) {
+export async function inspectZstd(path: string, prefixEnd: number, spawn = spawnZstd, maxRecordBytes = DEFAULT_RECORD_BYTES) {
+  const guard = recordGuard(maxRecordBytes);
   const blocks: string[] = [];
   const prefix = createHash("sha256"), full = createHash("sha256");
   const head: Buffer[] = [];
-  let size = 0, headSize = 0, lineBytes = 0;
+  let size = 0, headSize = 0;
   for await (const chunk of decode(path, spawn, blocks, true)) {
-    for (let start = 0; start < chunk.length;) {
-      const nl = chunk.indexOf(10, start);
-      const end = nl < 0 ? chunk.length : nl + 1;
-      lineBytes += end - start;
-      if (lineBytes > 64 * 1024 * 1024) throw new Error("decoded line exceeds 64 MiB limit");
-      if (nl >= 0) lineBytes = 0;
-      start = end;
-    }
+    guard(chunk);
     full.update(chunk);
     if (size < prefixEnd) prefix.update(chunk.subarray(0, prefixEnd - size));
     if (headSize < 64 * 1024) {
@@ -72,12 +69,14 @@ export async function inspectZstd(path: string, prefixEnd: number, spawn = spawn
   return { blocks, size, prefix, digest: full.digest("hex"), head: Buffer.concat(head).toString("utf8").split("\n").slice(0, -1) };
 }
 
-/** Bounded by one batch plus one line (64 MiB hard limit); offsets are decoded bytes. */
-export async function* readZstd(path: string, offset: number, budget: number, spawn = spawnZstd, blocks?: string[]): AsyncGenerator<ReadResult> {
+/** Bounded by one batch plus one bounded record and a 256 KiB decoder block; offsets are decoded bytes. */
+export async function* readZstd(path: string, offset: number, budget: number, spawn = spawnZstd, blocks?: string[], maxRecordBytes = DEFAULT_RECORD_BYTES): AsyncGenerator<ReadResult> {
+  const guard = recordGuard(maxRecordBytes);
   let skipped = 0, size = 0;
   let parts: Buffer[] = [];
   const target = Math.min(Math.max(1, budget), 64 * 1024 * 1024);
   for await (const chunk of decode(path, spawn, blocks)) {
+    guard(chunk);
     const skip = Math.min(Math.max(0, offset - skipped), chunk.length);
     skipped += chunk.length;
     const part = chunk.subarray(skip);
@@ -91,7 +90,6 @@ export async function* readZstd(path: string, offset: number, budget: number, sp
       const tail = part.subarray(end);
       parts = [tail]; size = tail.length;
     }
-    if (size > 64 * 1024 * 1024) throw new Error("decoded line exceeds 64 MiB limit");
   }
   const carry = Buffer.concat(parts, size);
   const end = carry.lastIndexOf(10) + 1;

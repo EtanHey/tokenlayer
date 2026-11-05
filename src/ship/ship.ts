@@ -6,6 +6,8 @@ import { RAW_BYTES, type ClickHouse } from "../lib/clickhouse";
 import { sha256Hex } from "../lib/hash";
 import { detectHarness, newFileState, parseLine, type Harness, type SourceKind } from "./parse";
 import { loadState, saveState, type FileCheckpoint, type ShipState } from "./state";
+import { boundedRowsBytes, MAX_SERIALIZED_BATCH_BYTES } from "../lib/row-size";
+import { recordLimit } from "./record-limit";
 import { readCompleteLines } from "./tail";
 import { compressedHash, inspectZstd, readZstd, type ZstdSpawner } from "./zst";
 import { sanitizeOutput } from "../lib/egress";
@@ -36,6 +38,10 @@ export type ShipOptions = {
   rateBytesPerSec?: number;
   /** Approximate bytes per insert batch. */
   batchBytes?: number;
+  /** Importer-only opt-in; daemon callers retain the 1 MiB record default. */
+  maxRecordBytes?: number;
+  /** Importer preflight before token stringify; no daemon setting exposes this. */
+  maxBatchJsonBytes?: number;
   /** Optional per-batch record bound, independent of the byte window. */
   batchLines?: number;
   /** Persist the checkpoint at most this often (and always at the end). */
@@ -131,6 +137,8 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
   const generationPath = `${opts.statePath}.generations`;
   const generations = loadState(generationPath);
   const rate = opts.rateBytesPerSec ?? 5 * 1024 * 1024;
+  const maxRecordBytes = recordLimit(opts.maxRecordBytes);
+  if (opts.maxBatchJsonBytes !== undefined && (!Number.isSafeInteger(opts.maxBatchJsonBytes) || opts.maxBatchJsonBytes < 1 || opts.maxBatchJsonBytes > MAX_SERIALIZED_BATCH_BYTES)) throw Error("invalid maxBatchJsonBytes");
   const batchBytes = opts.batchBytes ?? 4 * 1024 * 1024;
   const saveEveryMs = opts.saveEveryMs ?? 5000;
   const result: ShipResult = { files: 0, lines: 0, bytes: 0, resets: 0 };
@@ -181,7 +189,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           if (!cp && !opts.files?.includes(physical) && !state.legacyReplay?.includes(path) && opts.sinceMs !== undefined && st.mtimeMs < opts.sinceMs) continue;
           if (compressed && cp?.compressed?.complete && cp.compressed.size === st.size && identity(st) === cp.identity && cp.mtimeMs === st.mtimeMs && cp.ctimeMs === st.ctimeMs && !replay) continue;
           const packedHash = compressed ? await (opts.zstd?.fingerprint ?? compressedHash)(physical) : undefined;
-          const decoded = compressed ? await inspectZstd(physical, cp?.offset ?? 0, opts.zstd?.spawn) : undefined;
+          const decoded = compressed ? await inspectZstd(physical, cp?.offset ?? 0, opts.zstd?.spawn, maxRecordBytes) : undefined;
           const size = decoded?.size ?? st.size;
           const head = () => decoded?.head ?? headLines(path);
           const fresh = () => {
@@ -253,13 +261,13 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           let shippedFromFile = false;
           async function* plainBatches(offset: number) {
             for (;;) {
-              const chunk = readCompleteLines(path, offset, batchBytes);
+              const chunk = readCompleteLines(path, offset, batchBytes, maxRecordBytes);
               if (!chunk.raw.length) break;
               yield chunk;
               offset = chunk.nextOffset;
             }
           }
-          const batches = compressed ? readZstd(physical, cp.offset, batchBytes, opts.zstd?.spawn, decoded?.blocks) : plainBatches(cp.offset);
+          const batches = compressed ? readZstd(physical, cp.offset, batchBytes, opts.zstd?.spawn, decoded?.blocks, maxRecordBytes) : plainBatches(cp.offset);
           async function* boundedBatches() {
             for await (const chunk of batches) {
               if (opts.batchLines === undefined || chunk.lines.length <= opts.batchLines) { yield chunk; continue; }
@@ -296,6 +304,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             }));
             // Deterministic token over the rows themselves: an identical retry is deduplicated server-side,
             // while changed rows for the same range (rewrite, late harness decision) are a new insert.
+            if (opts.maxBatchJsonBytes !== undefined) boundedRowsBytes(rows, opts.maxBatchJsonBytes);
             const token = sha256Hex(`${opts.machine}\0${path}\0${cp.generation}\0${cp.offset}\0${nextOffset}\0${sha256Hex(JSON.stringify(rows))}`);
             // Hash the exact source buffer used by the parser, before yielding to the insert.
             const nextHash = hash.copy().update(raw);

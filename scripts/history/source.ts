@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, sep } from 'node:path';
+import { recordLimit, DEFAULT_RECORD_BYTES } from '../../src/ship/record-limit';
 import { spawnZstd } from '../../src/ship/zst';
 import { logicalSessionPath, ownsSessionPath, type ShipRoot } from '../../src/ship/ship';
 import { antigravitySession, isAntigravity } from '../../src/ship/antigravity';
@@ -21,7 +22,8 @@ export type Manifest = {
 };
 export const signature = (path: string) => { const s = statSync(path); return `${s.dev}:${s.ino}:${s.birthtimeMs}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`; };
 /** Verify immutable original-path input in bounded chunks; no decoded payload touches disk. */
-export async function verifySource(s: Source, roots: ShipRoot[], shouldStop = () => false) {
+export async function verifySource(s: Source, roots: ShipRoot[], shouldStop = () => false, maxRecordBytes = DEFAULT_RECORD_BYTES) {
+    recordLimit(maxRecordBytes);
     if (!s.sessionId || !roots.some(r => r.kind === s.kind && s.path.startsWith(realpathSync(r.dir) + sep)) || realpathSync(s.path) !== s.path || !ownsSessionPath(s.path, s.kind === 'codex'))
         throw Error('source ownership/path unresolved');
     if (![s.physicalSha256, s.decodedSha256, s.prefixSha256].every(h => /^[a-f0-9]{64}$/.test(h)) ||
@@ -37,6 +39,7 @@ export async function verifySource(s: Source, roots: ShipRoot[], shouldStop = ()
     let size = 0, lineBytes = 0, first: Buffer[] = [], headBytes = 0, last = -1, prefixLast = -1;
     let firstEnd: number | undefined;
     const prefixEnds: number[] = [];
+    let failed = false;
     try {
         for await (const value of stream) {
             if (shouldStop())
@@ -52,8 +55,8 @@ export async function verifySource(s: Source, roots: ShipRoot[], shouldStop = ()
                     if (prefixEnds.length > 4096)
                         throw Error('prefix metadata cap');
                 }
-                if (lineBytes > 1024 ** 2)
-                    throw Error('history record exceeds 1 MiB');
+                if (lineBytes > maxRecordBytes)
+                    throw Error(`history record exceeds ${maxRecordBytes / DEFAULT_RECORD_BYTES} MiB`);
             }
             full.update(chunk);
             if (size < s.prefixBytes) {
@@ -62,7 +65,7 @@ export async function verifySource(s: Source, roots: ShipRoot[], shouldStop = ()
                 prefixLast = part.at(-1)!;
             }
             // Preserve the short-header window, but never truncate the first record.
-            // The record guard above bounds retained bytes to at most 1 MiB + LF.
+            // The record guard above bounds retained bytes to at most maxRecordBytes + LF.
             const lf = firstEnd === undefined ? chunk.indexOf(10) : -1;
             if (lf >= 0) firstEnd = size + lf + 1;
             const headLimit = Math.max(65536, firstEnd ?? size + chunk.length);
@@ -77,10 +80,11 @@ export async function verifySource(s: Source, roots: ShipRoot[], shouldStop = ()
         if (proc && await proc.exited !== 0)
             throw Error('source decode failed');
     }
+    catch (error) { failed = true; throw error; }
     finally {
         if (proc) {
-            proc.kill();
-            await proc.exited;
+            try { proc.kill(); await proc.exited; }
+            catch (error) { if (!failed) throw error; }
         }
     }
     const physical = createHash('sha256');
