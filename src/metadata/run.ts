@@ -34,7 +34,7 @@ function readManifest(path: string) {
   }
   return { m, manifestHash: hash(bytes) };
 }
-function privateOutput(path: string) {
+export function privateOutput(path: string) {
   // Resolve existing parent first: symlink aliases must not bypass the repository check.
   const out = join(realpathSync(dirname(resolve(path))), resolve(path).split("/").at(-1)!);
   const root = Bun.spawnSync(["git", "-C", dirname(out), "rev-parse", "--show-toplevel"]);
