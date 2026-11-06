@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync, symlinkSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync, symlinkSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Budget, FLOOR_BYTES, PENDING_BYTES, physicalFree } from "../../src/metadata/output";
@@ -63,10 +63,21 @@ test("duplicate upstream gap coordinates reject setup", async () => {
   await expect(project(r.manifest,r.out)).rejects.toThrow("OMISSION_RECEIPT_INVALID");
 });
 test("unsafe repository outputs and symlink aliases are rejected before writing", async () => {
-  const r=input(), parent=join(r.dir,"alias"); symlinkSync(resolve("src"),parent);
-  for(const out of [resolve("src",`metadata-denied-${Date.now()}`),join(parent,"denied")]) {
-    await expect(project(r.manifest,out)).rejects.toThrow(); expect(existsSync(out)).toBe(false);
-  }
+  const r=input(), repo=join(r.dir,"repo"), src=join(repo,"src"), parent=join(r.dir,"alias");
+  try {
+    // Own the Git boundary: an archive under ignored .local must not inherit its host's policy.
+    mkdirSync(src,{recursive:true});
+    writeFileSync(join(repo,".gitignore"),"/out\n");
+    writeFileSync(join(src,"tracked.txt"),"synthetic fixture\n");
+    expect(Bun.spawnSync(["git","init",repo]).exitCode).toBe(0);
+    expect(Bun.spawnSync(["git","-C",repo,"add",".gitignore","src/tracked.txt"]).exitCode).toBe(0);
+    symlinkSync(src,parent);
+    for(const out of [join(src,"denied"),join(parent,"denied")]) {
+      await expect(project(r.manifest,out)).rejects.toThrow("OUTPUT_NOT_IGNORED"); expect(existsSync(out)).toBe(false);
+    }
+    const allowed=await project(r.manifest,join(repo,"out"));
+    expect(allowed.consumption).toBe("SCOPED_METADATA");
+  } finally { rmSync(r.dir,{recursive:true,force:true}); }
 });
 test("unreadable input is a non-consumable error and CLI setup errors use safe reason codes", async () => {
   const r=input(); r.save([{...r.source,path:join(r.dir,"missing")}]);
