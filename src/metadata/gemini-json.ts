@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import { isAbsolute, normalize } from "node:path";
 
 export const GEMINI_LIMITS = Object.freeze({ bytes: 2 * 1024 * 1024, depth: 64, tokens: 100_000, messages: 10_000, milliseconds: 1000 });
-export type GeminiLimits = typeof GEMINI_LIMITS;
+export type GeminiLimits = { readonly [K in keyof typeof GEMINI_LIMITS]: number };
 type Kind = "object" | "array" | "string" | "number" | "null" | "boolean";
 type Node = { start: number; end: number; kind: Kind; fields?: Map<string, Node>; items?: Node[] };
 export type GeminiField = { presence: "absent" | "null" | "zero" | "value" | "UNRESOLVED"; value?: string | number | null; sourceSha256?: string };
