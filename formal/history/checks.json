@@ -1,0 +1,24 @@
+{
+  "safety": [
+    "IntentBeforeDispatch", "CheckpointAfterAck", "PartialPendingStops", "PartialPendingCustody",
+    "RecoveryDoesNotCheckpoint", "StopBeforeDispatch", "AcceptanceRequiresFinal"
+  ],
+  "mutants": {
+    "no-intent": "IntentBeforeDispatch",
+    "early-checkpoint": "CheckpointAfterAck",
+    "partial-ack": "PartialPendingCustody",
+    "partial-continue": "PartialPendingStops",
+    "recovery-commit": "RecoveryDoesNotCheckpoint",
+    "ignore-stop": "StopBeforeDispatch",
+    "accept-mismatch": "AcceptanceRequiresFinal"
+  },
+  "current_source": {"StopBeforeDispatch": "EXPECTED_VIOLATION"},
+  "proposal_only": {"RecheckStop": true},
+  "progress": {"baseline": "EventuallyAccepted", "stall": "EventuallyAccepted"},
+  "reach": [
+    "write-ahead", "intent", "dispatch", "apply", "response", "ack", "checkpoint",
+    "crash", "restart", "zero-reconcile", "full-reconcile", "partial-stop",
+    "reset", "fresh-overlap", "covered-skip", "ambiguous", "stop", "accept", "final-refusal",
+    "await-reconcile-after-stop-check", "terminal-await-stop", "partial-effects"
+  ]
+}
