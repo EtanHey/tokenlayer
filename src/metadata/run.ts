@@ -28,13 +28,13 @@ function readManifest(path: string) {
     if (s.coordinatesPath && (!pin(s.coordinatesSha256) || s.format !== "raw")) throw new ProjectionError("COORDINATE_PIN_INVALID");
     if (s.format === "raw" && !s.coordinatesPath && (s.physicalRepresentationHash !== s.inputSha256 || s.memberHash !== s.inputSha256))
       throw new ProjectionError("RAW_MEMBER_ADAPTER_REQUIRED");
-    if (s.upstreamUninspected !== undefined && (!Array.isArray(s.upstreamUninspected) ||
+    if (s.upstreamUninspected !== undefined && (s.format === "raw" || !Array.isArray(s.upstreamUninspected) ||
       s.upstreamUninspected.some((r: any) => !Number.isSafeInteger(r.line) || r.line < 1 || !pin(r.sha256) ||
         !Number.isSafeInteger(r.bytes) || r.bytes < 1) || new Set(s.upstreamUninspected.map((r: any) => r.line)).size !== s.upstreamUninspected.length)) throw new ProjectionError("OMISSION_RECEIPT_INVALID");
   }
   return { m, manifestHash: hash(bytes) };
 }
-function privateOutput(path: string) {
+export function privateOutput(path: string) {
   // Resolve existing parent first: symlink aliases must not bypass the repository check.
   const out = join(realpathSync(dirname(resolve(path))), resolve(path).split("/").at(-1)!);
   const root = Bun.spawnSync(["git", "-C", dirname(out), "rev-parse", "--show-toplevel"]);

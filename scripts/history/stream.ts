@@ -1,4 +1,5 @@
-import { ClickHouse, encodeRow, type ClickHouseConfig } from '../../src/lib/clickhouse';
+import { ClickHouse, type ClickHouseConfig } from '../../src/lib/clickhouse';
+import { boundedRowsBytes } from '../../src/lib/row-size';
 import { sha256Hex } from '../../src/lib/hash';
 import { AuditLog, localHeadroom, STATE_CAP, type LocalSpace } from './journal';
 import { dirname } from 'node:path';
@@ -114,12 +115,11 @@ export class StreamingHistoryClient extends ClickHouse {
             if (this.options.shouldStop?.())
                 throw Error('history stopped before insert');
             this.options.verifySource?.();
-            // Preflight bounds before encoding; ship's source verifier caps each record at 1 MiB.
-            if (input.length > 4096 || Buffer.byteLength(JSON.stringify(input)) > 16 * MiB)
-                throw Error('history batch exceeds serialization bound');
-            const bytes = input.reduce<number>((n, r) => n + encodeRow(r).length + 1, 0);
-            if (bytes > 128 * MiB)
-                throw Error('history payload cap exceeded');
+            // Bound token JSON and exact byte-preserving JSONEachRow independently,
+            // before any encoding allocation, ledger append or HTTP dispatch.
+            if (input.length > 4096) throw Error('history batch exceeds serialization bound');
+            boundedRowsBytes(input);
+            const bytes = boundedRowsBytes(input, 128 * MiB, true);
             const charge = 5 * bytes;
             if (this.used + charge > (this.options.epochBytes ?? GiB))
                 throw new EpochFull('history epoch exhausted');

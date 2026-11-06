@@ -47,10 +47,10 @@ jobs:
         run: bun run test:property
       - name: Bootstrap judge content guard regression
         run: python3 scripts/test-ratchet-bootstrap.py
-      - name: Baseline Git context and closed repair regressions
+      - name: Baseline Git context and trusted workflow regressions
         run: |
           bun test ./ratchet/baseline-context.test.ts
-          python3 scripts/test-ratchet-context-repair.py
+          python3 scripts/test-ratchet-trusted-workflow.py
       - name: Ratchet (trusted base versus this PR)
         id: ratchet
         env:
@@ -63,15 +63,6 @@ jobs:
           trusted=$(mktemp -d "$PWD/.local/trusted-XXXXXX")
           git archive "$RATCHET_BASE_REF" ratchet scripts/bench-redact.ts src/lib/local-clickhouse.ts tests/fixtures src/lib/clickhouse.ts src/lib/redact.ts | tar -x -C "$trusted"
           if test -f "$trusted/ratchet/guard.mjs"; then
-            # Closed setup-only bridge: pin before executing candidate-supplied bytes.
-            python3 -I - <<'PY_REPAIR'
-          import hashlib
-          from pathlib import Path
-          p = Path('scripts/repair-ratchet-context.py')
-          if hashlib.sha256(p.read_bytes()).hexdigest() != '2c0f36c7ae000ba35efdb4bc889cf376f41a2aaf282a4d8ef04c3db47115e1d2':
-              raise SystemExit('unreviewed baseline context repair')
-          PY_REPAIR
-            python3 -I scripts/repair-ratchet-context.py "$trusted"
             node "$trusted/ratchet/table.mjs" ratchet/rows.json
           else
             # Permit changed rows, but require the complete reviewed judge import closure.
