@@ -145,10 +145,15 @@ function redactTails(text: string): string {
   });
 }
 
-export function redactText(text: string): string {
+/** Shape/assignment redaction for a locally verified file-receipt path only. */
+export function redactVerifiedFilePath(text: string): string {
   let out = redactAssignments(text);
   for (const [re, replacement] of RULES) out = out.replace(re, replacement);
-  return redactTails(out);
+  return out;
+}
+
+export function redactText(text: string): string {
+  return redactTails(redactVerifiedFilePath(text));
 }
 
 export function redactDeep(value: unknown, opts: { extraKeys?: readonly string[] } = {}): unknown {

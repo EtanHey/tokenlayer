@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { ClickHouse } from "../lib/clickhouse";
 import { expandHome, loadEnvFiles } from "../lib/env";
-import { writeErr, writeOut } from "../lib/egress";
+import { writeErr, writeOut, writeVerifiedRestoreReceipt } from "../lib/egress";
 import { RestoreError, restoreSession, type Selection } from "./restore";
 
 const usage = "tokenlayer session restore <session_id> [--to <dir>] [--machine <name>] [--path <source-path>] [--generation <id>]";
@@ -20,9 +20,7 @@ try {
   }
   const env = loadEnvFiles((process.env.TOKENLAYER_ENV_FILES ?? "~/.config/tokenlayer/clickhouse.env").split(":"));
   const receipt = await restoreSession(ClickHouse.fromEnv(env), id, options);
-  // Named plain-text fields retain path/hash exemptions in the existing egress sanitizer.
-  // Source identity remains only in the private receipt.
-  writeOut(`file=${receipt.file}\nsha256=${receipt.sha256}\nbytes=${receipt.bytes}\nrows=${receipt.rows}\nscope=${receipt.scope}\nsourceComplete=${receipt.sourceComplete}`);
+  writeVerifiedRestoreReceipt(receipt);
 } catch (error) {
   writeErr(`tokenlayer: ${error instanceof RestoreError ? error.message : "restore failed; payload and server diagnostics suppressed"}`);
   process.exitCode = 1;
