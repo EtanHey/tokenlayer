@@ -52,8 +52,16 @@ export function main(path) {
   mkdirSync(scratchRoot, { recursive: true });
   const scratch = mkdtempSync(join(scratchRoot, 'tokenlayer-ratchet-'));
   try {
-    const archive = git(['archive', measureRef]);
+    const measuredCommit = git(['rev-parse', '--verify', `${measureRef}^{commit}`], { encoding: 'utf8' }).trim();
+    const sourceRepo = git(['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+    const archive = git(['archive', measuredCommit]);
     if (spawnSync('tar', ['-x', '-C', scratch], { input: archive }).status !== 0) throw Error('extract base failed');
+    // An archive under ignored .local must not discover the candidate's Git context.
+    // Load the exact measured index without checkout, filters, or source-byte edits.
+    git(['init', '--quiet', '--template=', scratch]);
+    git(['-C', scratch, '-c', 'maintenance.auto=false', 'fetch', '--quiet', '--no-tags', '--depth=1', sourceRepo, measuredCommit]);
+    git(['-C', scratch, 'read-tree', measuredCommit]);
+    git(['-C', scratch, 'update-ref', 'HEAD', measuredCommit]);
     const policy = git(['show', `${baseRef}:${path}`], { encoding: 'utf8' });
     const baseRows = parseRows(JSON.parse(policy));
     checkRows(baseRows, rows, process.env.GITHUB_EVENT_PATH ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')) : {});
