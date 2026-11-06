@@ -3,6 +3,13 @@ import * as fs from "node:fs";
 import { isAbsolute, normalize } from "node:path";
 
 export const GEMINI_LIMITS = Object.freeze({ bytes: 2 * 1024 * 1024, depth: 64, tokens: 100_000, messages: 10_000, milliseconds: 1000 });
+export const GEMINI_LARGE_DOCUMENT_PROFILE = "large-document-16mib-v1";
+const largeDocumentLimits = Object.freeze({ ...GEMINI_LIMITS, bytes: 16 * 1024 * 1024 });
+/** Closed opt-in; never infer a profile from a path, size or parser refusal. */
+export function geminiProfileLimits(profile: unknown): GeminiLimits {
+  if (profile !== GEMINI_LARGE_DOCUMENT_PROFILE) return fail("PROFILE_INVALID");
+  return largeDocumentLimits;
+}
 export type GeminiLimits = { readonly [K in keyof typeof GEMINI_LIMITS]: number };
 type Kind = "object" | "array" | "string" | "number" | "null" | "boolean";
 type Node = { start: number; end: number; kind: Kind; fields?: Map<string, Node>; items?: Node[] };
@@ -14,10 +21,10 @@ const fail = (label: string): never => { throw new Error(`GEMINI_${label}`); };
 export function geminiStatPin(s: fs.BigIntStats): GeminiStatPin {
   return { dev: String(s.dev), ino: String(s.ino), size: String(s.size), birthtimeNs: String(s.birthtimeNs), mtimeNs: String(s.mtimeNs), ctimeNs: String(s.ctimeNs) };
 }
-function budget(options: Partial<GeminiLimits>) {
-  const limits = { ...GEMINI_LIMITS, ...options }, started = performance.now();
+function budget(options: Partial<GeminiLimits>, ceiling: GeminiLimits = GEMINI_LIMITS) {
+  const limits = { ...ceiling, ...options }, started = performance.now();
   for (const k of Object.keys(GEMINI_LIMITS) as (keyof GeminiLimits)[])
-    if (!Number.isSafeInteger(limits[k]) || limits[k] < 1 || limits[k] > GEMINI_LIMITS[k]) fail("LIMIT_CONFIG");
+    if (!Number.isSafeInteger(limits[k]) || limits[k] < 1 || limits[k] > ceiling[k]) fail("LIMIT_CONFIG");
   return { limits, check: () => { if (performance.now() - started >= limits.milliseconds) fail("TIME_LIMIT"); } };
 }
 /** JSON byte scanner. Never reserialize; reject decoded duplicate keys, including body keys. */
@@ -70,6 +77,11 @@ function scan(raw: Buffer, b: ReturnType<typeof budget>): Node {
     node.end = at; return node;
   };
   const root = value(0); ws(); if (at !== raw.length) fail("JSON_INVALID"); return root;
+}
+/** Reuse decoded-key rejection for the small export manifest, including escaped profile keys. */
+export function assertGeminiJsonUniqueKeys(raw: Buffer): void {
+  const b = budget({}); if (raw.length > b.limits.bytes) fail("BYTE_LIMIT");
+  scan(raw, b); b.check();
 }
 /** Accept exact nonnegative safe integers, including exact decimal/exponent forms, without rounding. */
 function integer(lexeme: string): number | undefined {
@@ -140,9 +152,17 @@ export type GeminiProjection = ReturnType<typeof project>;
 export function projectGeminiJson(raw: Buffer, limits: Partial<GeminiLimits> = {}): GeminiProjection {
   return project(raw, budget(limits));
 }
+export function projectGeminiJsonWithProfile(raw: Buffer, profile: typeof GEMINI_LARGE_DOCUMENT_PROFILE, limits: Partial<GeminiLimits> = {}): GeminiProjection {
+  return project(raw, budget(limits, geminiProfileLimits(profile)));
+}
 /** Exact pinned immutable revision. No enumeration, output writes, follow-on source or producer call. */
 export function readGeminiJson(path: string, pin: GeminiFilePin, limits: Partial<GeminiLimits> = {}): GeminiProjection {
-  const b = budget(limits);
+  return readPinned(path, pin, budget(limits));
+}
+export function readGeminiJsonWithProfile(path: string, pin: GeminiFilePin, profile: typeof GEMINI_LARGE_DOCUMENT_PROFILE, limits: Partial<GeminiLimits> = {}): GeminiProjection {
+  return readPinned(path, pin, budget(limits, geminiProfileLimits(profile)));
+}
+function readPinned(path: string, pin: GeminiFilePin, b: ReturnType<typeof budget>): GeminiProjection {
   if (!Number.isSafeInteger(pin.documentBytes) || pin.documentBytes < 1 || pin.documentBytes > b.limits.bytes) fail("SIZE_PIN");
   if (!/^[a-f0-9]{64}$/.test(pin.documentHash)) fail("HASH_PIN");
   let fd: number | undefined;
