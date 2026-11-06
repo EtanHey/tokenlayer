@@ -13,6 +13,7 @@ import { loadState, saveState } from '../../src/ship/state';
 import { EpochFull, GiB, StreamingHistoryClient, sqlString } from './stream';
 import { AuditLog, localHeadroom, privateSize, STATE_CAP, type LocalSpace } from './journal';
 import { seedLineage, verifySource, type Manifest, type Source } from './source';
+import { failureDetails, secondaryFailure } from './diagnostic-bundle';
 export async function runImport(manifestPath: string, ch: ClickHouse, options: {
     machine: string;
     roots: ShipRoot[];
@@ -66,8 +67,11 @@ export async function runImport(manifestPath: string, ch: ClickHouse, options: {
     const lock = join(parent, 'writer.lock');
     localHeadroom(parent, 4096, options.localSpace);
     const fd = openSync(lock, 'wx', 0o600);
-    writeSync(fd, JSON.stringify({pid:process.pid, manifest:hash, started:new Date().toISOString()}));
-    fsyncSync(fd); closeSync(fd);
+    let lockFd: number | undefined = fd;
+    let terminal: { error: unknown } | undefined;
+    const recordFailure = (error: unknown, stage: string) => {
+        terminal = { error: terminal ? secondaryFailure(terminal.error, stage, error) : error };
+    };
     const receipt = (value: unknown) => receiptLog.receipt({ at: new Date().toISOString(), run, manifest: hash, ...value as object });
     const matrix = () => ch.queryJSON("SELECT machine,harness,toYYYYMM(ts) AS month,count() AS rows,min(ts) AS oldest FROM tokenlayer.session_events FINAL GROUP BY machine,harness,month ORDER BY machine,harness,month SETTINGS max_execution_time=30,max_threads=2,max_memory_usage=536870912,max_result_rows=4096,result_overflow_mode='throw'");
     // Completed checkpoints and immutable audit are retained but are not active
@@ -87,6 +91,10 @@ export async function runImport(manifestPath: string, ch: ClickHouse, options: {
         return loadState(path);
     };
     try {
+        writeSync(fd, JSON.stringify({pid:process.pid, manifest:hash, started:new Date().toISOString()}));
+        fsyncSync(fd);
+        lockFd = undefined; // Never retry a close that may already have closed the descriptor.
+        closeSync(fd);
         await verifySessionSchema(ch);
         receipt({ state: 'before', matrix: await matrix() });
         const execute = async (s: Source, pilot: boolean) => {
@@ -112,18 +120,26 @@ export async function runImport(manifestPath: string, ch: ClickHouse, options: {
                 if (pilot && (check.prefixEnds.length !== 32 || check.prefixEnds.at(-1) !== s.prefixBytes))
                     throw Error('pilot prefix must pin exactly 32 records');
                 const remaining = pilot ? check.prefixEnds.filter(end => end > (prior?.offset ?? 0)).length : undefined;
-                let failure: unknown;
+                let failed = false, failure: unknown;
                 try {
                     await shipOnce({ machine: options.machine, roots: sourceDir, files: [s.path], statePath: state, writeState, clickhouse: client,
                         maxLines: remaining, batchLines: 4096, maxRecordBytes, maxBatchJsonBytes: MAX_SERIALIZED_BATCH_BYTES, shouldStop: () => stop() || client.stopped, rateBytesPerSec: 0, batchBytes });
                 }
                 catch (e) {
+                    failed = true;
                     failure = e;
                 }
-                check();
-                const cp = readState(state).files[logicalSessionPath(s.path)];
-                receipt({ state: failure ? (client.lastFailure instanceof EpochFull ? 'epoch-rollover' : 'stopped') : 'epoch', pilot, epoch, path: s.path, offset: cp?.offset ?? 0, charged: client.used, matrix: await matrix() });
-                if (failure) {
+                let cp;
+                try {
+                    check();
+                    cp = readState(state).files[logicalSessionPath(s.path)];
+                    receipt({ state: failed ? (client.lastFailure instanceof EpochFull ? 'epoch-rollover' : 'stopped') : 'epoch', pilot, epoch, path: s.path, offset: cp?.offset ?? 0, charged: client.used, matrix: await matrix() });
+                } catch (diagnostic) {
+                    // Diagnostics must succeed before rollover or acceptance can continue.
+                    if (failed) throw secondaryFailure(failure, 'epoch diagnostics', diagnostic);
+                    throw diagnostic;
+                }
+                if (failed) {
                     if (!pilot && client.lastFailure instanceof EpochFull && client.used > 384 * 1024 ** 2) {
                         // Admission refused before HTTP. The shipper's write-ahead journal includes
                         // that unallocated batch; resume the pinned input from owned acknowledged progress.
@@ -156,12 +172,23 @@ export async function runImport(manifestPath: string, ch: ClickHouse, options: {
         receipt({ state: options.pilotOnly ? 'pilot-only' : 'queue-complete', matrix: await matrix() });
     }
     catch (e) {
-        receipt({ state: 'stopped', reason: e instanceof AggregateError ? e.errors.map((x: Error) => x.message) : String(e) });
-        throw e;
+        recordFailure(e, 'import');
+        const diagnostic = failureDetails(e);
+        if (diagnostic.failures.length)
+            recordFailure(new AggregateError(diagnostic.failures, 'history diagnostic rendering failed'), 'diagnostic rendering');
+        try {
+            receipt({ state: 'stopped', reason: diagnostic.text });
+        } catch (diagnostic) { recordFailure(diagnostic, 'stop receipt'); }
     }
     finally {
-        unlinkSync(lock);
+        if (lockFd !== undefined) {
+            try { closeSync(lockFd); }
+            catch (cleanup) { recordFailure(cleanup, 'writer lock close'); }
+        }
+        try { unlinkSync(lock); }
+        catch (cleanup) { recordFailure(cleanup, 'writer lock removal'); }
     }
+    if (terminal) throw terminal.error;
     return dir;
 }
 if (import.meta.main) {
