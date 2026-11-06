@@ -121,4 +121,47 @@ Actual export path remains blocked: no admitted-raw exporter exists. The minimum
 a separately reviewed bounded compressed-member -> exact decoded LF + coordinate pin builder that
 verifies physical compressed SHA256 through decoder success and decoded member SHA256. It must
 not infer that link from supplied pins alone. Design and callback custody: R1 implementation receipt
-at root docs.local/full-history/metadata-projection/REVISION-R1.md. It is not implemented here.
+at root docs.local/full-history/metadata-projection/REVISION-R1.md. The builder below implements
+that narrow compression link pending lead review; the admitted-raw exporter remains missing.
+
+## Bounded compressed-member pin builder (review required before actual use)
+
+`bun src/metadata/build-member-pin.ts <builder-input.json> <fresh-private-output-dir>`
+or `await buildMemberPin(manifestPath, outputPath)`. This local-only adapter reads one
+explicit physical member. It supplies no admission decision, enumeration, Drive read,
+native queue access, retained-row exporter or actual-export authorization.
+
+Builder input requires `version:1`, `scope`, `admission` (`admitted` or `synthetic`),
+`sourcePath`, `admissionReceiptPath`, `admissionReceiptSha256`, and these three objects:
+
+- `identity`: provider (`codex`/`claude`), custodyMachine, originMachine, originProof,
+  containerDriveId, containerHash, memberPath, memberHash (decoded SHA256),
+  physicalRepresentationHash (compressed SHA256). Unknown provenance stays `UNKNOWN`.
+- `physicalIdentity`: numeric dev, ino, size, mtimeMs, ctimeMs from the admitted file.
+- `coordinates`: firstLFLine=1, decodedOffset=0, decodedBytes, records. Only a full
+  decoded physical member is supported; no subset/archive/tar reconstruction.
+
+The explicit pinned receipt must contain `version:1`,
+`kind:"tokenlayer-member-admission"`, and matching scope, admission, identity,
+physicalIdentity and coordinates. Hash equality verifies receipt custody, not the
+authority or truth of an admission decision. The lead/exporter supplies that receipt;
+there is no automatic admission. Synthetic receipts are only for synthetic fixtures.
+
+`limits` requires compressedBytes (1..16GiB), decodedBytes (1..64GiB), ratio (>0..1M),
+rows (1..1M), millis (1..600000), outputBytes (1..128GiB). These are ceilings, not
+allocation targets. Physical preflight also reserves 20GiB + 24MiB pending + the
+entire outputBytes cap; every write rechecks physical blocks plus pending/write bytes.
+Budgets include decoded bytes, sidecar and final manifest. Inputs/receipts are nofollow,
+regular, stable files; manifest/receipt reads are bounded to 1MiB. The compressed
+descriptor is opened once, hashed and fed to real `zstd -dc -q` with backpressure.
+Decoded records are streamed and hashed without JSON parsing, including oversize rows.
+Non-LF terminal bytes, failed decode, wrong pins, instability or any cap invalidate
+the run. Decoder stderr is drained/discarded with a 64KiB cap and never echoed.
+
+Only atomically published `manifest.json` completes the builder. It is also the
+projector input, linking input/receipt hashes, physical identity, successful decode,
+decoded SHA256 and exact identity sidecar SHA256; raw admission stays explicit.
+`decoded.ndjson`, `coordinates.ndjson` and `.pending` files alone are provisional.
+Consumers must verify the final manifest and both file hashes before projection.
+Files are 0600 in a fresh 0700 directory; in-repo output must already be gitignored.
+There is no source acceptance or export-green claim: `rawHistoryAcceptance` stays HOLD.
