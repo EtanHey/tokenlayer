@@ -25,16 +25,18 @@ for (const failure of ["source_changed", "read_error", "needs_fetch", "second_re
   const bytes = Buffer.from('{"sessionId":"session","type":"user"}\n');
   const row: Inventory = { machine: "m4", source_kind: "live", container: "", member_path: "/live/session.jsonl", session_id: "session", harness: "claude", bytes: String(bytes.length), lines: "1", first_ts: "2026-01-01", last_ts: "2026-01-01", cwd: "/Users/etanheyman/Gits/example", sha256: sha256(bytes), mtime: "" };
   const entries = manifest([row, { ...row, source_kind: "archive_dir", member_path: "copy.jsonl" }], [], { m4: ["/live"] });
-  let liveReads = 0;
+  let liveReads = 0, archiveReads = 0;
   const report = await dryRun(entries, { read: async e => {
-    if (e.source_kind !== "live") return (async function* () { yield bytes; })();
+    if (e.source_kind !== "live") { archiveReads++; throw Error("held archive read"); }
     liveReads++;
     if (failure === "read_error" || failure === "second_read_error" && liveReads === 2) throw Error("fixture read failed");
     if (failure === "needs_fetch") return null;
     return (async function* () { yield failure === "source_changed" ? Buffer.concat([bytes, bytes]) : bytes; })();
   } });
   expect(report.import_rows).toBe(0); expect(report.sample).toEqual([]);
-  expect(report.skip_shipper).toBe(1);
+  expect(report.skip_shipper).toBe(0); expect(archiveReads).toBe(0);
+  expect(report.needs_fetch).toBe(failure === "needs_fetch" ? 2 : 1);
+  expect(entries[1]).toMatchObject({ machine: "m4", member_path: "copy.jsonl", sha256: sha256(bytes), origin: "unknown", status: "needs_fetch_or_export" });
   expect(report).toMatchObject({ blocked_live: 1 });
 });
 
@@ -49,7 +51,8 @@ test("SHOULD-1 appended-after-inventory CLI is blocked with zero archive imports
   writeFileSync(roots, JSON.stringify({ m4: [dir] })); writeFileSync(existing, "machine\tsession_id\tpath\tgeneration\tcontent_hash\tcount\n");
   const cli = Bun.spawnSync([process.execPath, "src/archaeology/main.ts", "--inventory", inventory, "--roots", roots, "--existing", existing, "--out", out], { env: { ...process.env, USER: "fixture" } });
   expect(cli.exitCode).toBe(2);
-  expect(JSON.parse(readFileSync(join(out, "dry-run.json"), "utf8"))).toMatchObject({ source_changed: 1, blocked_live: 1, import_rows: 0, skip_shipper: 1 });
+  expect(JSON.parse(readFileSync(join(out, "dry-run.json"), "utf8"))).toMatchObject({ source_changed: 1, blocked_live: 1, import_rows: 0, skip_shipper: 0, needs_fetch: 1 });
+  expect(readFileSync(copy).equals(bytes)).toBe(true);
 });
 
 test("MUST-1 plain sibling remains the shipper owner when both encodings exist", async () => {
@@ -59,9 +62,11 @@ test("MUST-1 plain sibling remains the shipper owner when both encodings exist",
   writeFileSync(path, bytes); writeFileSync(path + ".zst", Bun.zstdCompressSync(bytes));
   const row: Inventory = { machine: "m4", source_kind: "live", container: "", member_path: path, session_id: "child", harness: "codex", bytes: String(bytes.length), lines: "1", first_ts: "2026-01-01", last_ts: "2026-01-01", cwd: "/Users/etanheyman/Gits/example", sha256: sha256(bytes), mtime: "" };
   const entries = manifest([row, { ...row, member_path: path + ".zst" }], [], { m4: [dir] });
-  const report = await dryRun(entries, { read: async () => (async function* () { yield bytes; })() });
+  let reads=0;
+  const report = await dryRun(entries, { read: async () => { reads++; return (async function* () { yield bytes; })(); } });
   expect(report.import_rows).toBe(0);
   expect(report.needs_shipper_backfill).toBe(1);
-  expect(report.skip_shipper).toBe(1);
+  expect(report.skip_shipper).toBe(0); expect(report.needs_fetch).toBe(1); expect(reads).toBe(2);
+  expect(entries.find(e=>e.member_path===path+".zst")).toMatchObject({ origin:"unknown", status:"needs_fetch_or_export", sha256:sha256(bytes) });
   expect(entries.filter(e => e.source_kind === "live").map(e => e.member_path)).toEqual([path]);
 });

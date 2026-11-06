@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlink
 import { join } from "node:path";
 import { dryRun, manifest, sha256, type Inventory } from "../../src/archaeology/pipeline";
 import { readExisting } from "../../src/archaeology/main";
+import { expectHeld } from "./hold";
 
 const scratch = () => { mkdirSync(".local", { recursive: true }); return realpathSync(mkdtempSync(".local/archaeology-blockers-")); };
 const row = (member_path: string, bytes: Buffer, overrides: Partial<Inventory> = {}): Inventory => ({ machine: "m4", source_kind: "live", container: "", member_path, session_id: "session", harness: "claude", bytes: String(bytes.length), lines: "1", first_ts: "2026-01-01", last_ts: "2026-01-01", cwd: "/Users/etanheyman/Gits/example", sha256: sha256(bytes), mtime: "", ...overrides });
@@ -20,18 +21,21 @@ test("SHOULD-2 server counts take the maximum across paths and generations, neve
   const header="machine\tsession_id\tpath\tgeneration\tcontent_hash\tcount\n";
   writeFileSync(path, ""); expect(()=>readExisting(path)).toThrow("header");
   writeFileSync(path,header); expect(readExisting(path)).toEqual([]);
-  writeFileSync(path,header+["m4\tsession\told.jsonl\tg1", "m4\tsession\told.jsonl\tg2", "m4\tsession\tother.jsonl\tg1"].map(prefix=>`${prefix}\t${sha256(line)}\t1\n`).join(""));
-  const result=await dryRun(manifest([row("archive.jsonl",bytes,{source_kind:"archive_dir"})],[]),{existing:readExisting(path),read:read(bytes)});
-  expect(result.import_rows).toBe(1); expect(result.skip_live).toBe(1);
+  writeFileSync(path,header+["m4\tsession\t/collector/old.jsonl\tg1", "m4\tsession\t/collector/old.jsonl\tg2", "m4\tsession\tother.jsonl\tg1"].map(prefix=>`${prefix}\t${sha256(line)}\t1\n`).join(""));
+  await expectHeld(manifest([row("archive.jsonl",bytes,{source_kind:"archive_dir"})],[]),{existing:readExisting(path),read:read(bytes)});
+  const result=await dryRun(manifest([row("/collector/old.jsonl",bytes)],[],{m4:["/collector"]}),{existing:readExisting(path),read:read(bytes)});
+  expect(result.import_rows).toBe(0); expect(result.skip_live).toBe(1); expect(result.needs_shipper_backfill).toBe(1);
 });
 
-test("NIT-1 live roots use the physical machine and conflicting cwd provenance needs fetch", async () => {
+test("NIT-1 current collector roots retain custody despite a different cwd username", async () => {
   const bytes = Buffer.from('{"sessionId":"session","type":"user"}\n');
   const entries = manifest([row("/m4-live/session.jsonl", bytes, { cwd: "/Users/happycampr/Gits/example" })], [], { m4: ["/m4-live"], m1: [] });
   expect(entries[0].source_kind).toBe("live");
   let reads = 0;
   const result = await dryRun(entries, { read: async () => { reads++; return read(bytes)(); } });
-  expect(result.needs_fetch).toBe(1); expect(result.import_rows).toBe(0); expect(reads).toBe(0);
+  expect(entries[0]).toMatchObject({ machine:"m4", origin:"m4", cwd:"/Users/happycampr/Gits/example" });
+  expect(result.needs_fetch).toBe(0); expect(result.import_rows).toBe(0); expect(reads).toBe(2);
+  expect(result.needs_shipper_backfill).toBe(1);
 });
 
 for (const tool of ["disk-plan", "repo-evidence"]) test(`NIT-7 ${tool} refuses input aliases through symlinks and directory descendants`, () => {
