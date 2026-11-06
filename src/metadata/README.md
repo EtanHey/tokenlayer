@@ -220,14 +220,43 @@ Root session/project/lifecycle fields remain independent in the final document r
 Missing or unsupported metadata stays explicit in root/row gaps; repeated IDs retain
 separate pointer occurrences. Unknown historical origin/writer remains UNKNOWN.
 
-`metadata.ndjson` and atomically published `manifest.json` are 0600 in a fresh 0700
-directory. Symlink aliases and nonignored repository outputs are refused. The unchanged
-Budget reserves 20GiB + 24MiB pending + bounded rows/bytes/scratch, checking each write.
-Success exits 2 with `exportComplete:true`, `complete:false`, `UNRESOLVED`, consumption
+`metadata.ndjson` and atomically published `manifest.json` are 0600 in a fresh
+0700 directory. The Gemini-only `GeminiOutput` helper holds ancestor/output directory
+FDs; actual opens use no-follow descriptor-relative syscalls. Per-write Budget checks
+validate held edges and measure physical blocks on the held volume, preserving the
+20GiB floor, 24MiB pending and full row/byte/scratch reservation. Final publication
+uses descriptor-relative atomic no-replace rename; an existing receipt is never replaced.
+No path-based write/publish or shared `privateOutput`/`Budget.manifest` is used here.
+
+Git discovery is fail closed before mkdir: successful discovery requires a successful
+quiet ignore check. Normal outside-repo requires an exact C-locale not-repository
+response plus an explicit no-.git check through every ancestor; any other Git/config/
+trust/probe state refuses. Git discovery/config environment overrides refuse rather
+than being cleared. `GIT_PAGER` remains allowed with explicit `--no-pager`.
+
+Native bridge compatibility: Bun1.4.3, Darwin arm64/x64 libSystem `__openat` (fixed
+mode ABI), mkdirat, fstatfs64 and renameatx_np(RENAME_EXCL); Linux x64 glibc openat,
+mkdirat, fstatfs and renameat2(RENAME_NOREPLACE). No install/compiler/global change.
+Missing symbols, unsupported platform/flag/filesystem or native error refuse; no
+path-based fallback. Darwin arm64 synthetic CLI/syscalls qualified locally; Darwin
+x64/Linux CI are NOT_RUN here. Standard Bun Ubuntu-x64 CI can exercise these same
+focused suites; unsupported platforms must refuse. The FFI dependency is experimental
+([Bun documentation](https://bun.sh/docs/runtime/ffi)); no general production-runtime
+qualification follows from these synthetic tests.
+
+Held FDs prevent redirection through later path substitutions; identity checks refuse
+observed changes at the tested directory/ancestor latches. This is not protection
+against arbitrary same-UID process/file tampering, nor proof that multi-syscall initial
+directory acquisition is atomic. Parent/policy changes outside the checked intervals
+are not a general filesystem adversary qualification. No recovery/cleanup deletes
+unrecognized artifacts. Shared LF custody weaknesses remain separately tracked.
+
+Success exits2 with `exportComplete:true`, `complete:false`, `UNRESOLVED`, consumption
 `PARTIAL_METADATA_ONLY`, and source/raw acceptance HOLD. Consumers must validate schema
 `tokenlayer-gemini-json-metadata` version1 and verify metadata bytes/SHA256 against the
-final manifest, retaining all gaps. Failed/invalid/killed/budget-limited runs exit1 or
-are terminated and publish no consumable final manifest; pending files/rows alone
-never authorize consumption. CLI diagnostics use safe reason codes through egress.
-Synthetic verification: `bun test tests/metadata/gemini-export.test.ts`.
+final manifest, retaining all gaps. Failed/invalid/budget-limited or **pre-publication**
+killed runs publish no consumable final manifest. After the no-replace commit point,
+a killed CLI may leave valid output without stdout. SIGKILL tests do not prove power-loss
+durability. Pending files/rows alone never authorize consumption. Diagnostics use egress.
+Synthetic verification: `bun test tests/metadata/gemini-json.test.ts tests/metadata/gemini-export.test.ts tests/metadata/gemini-output.test.ts tests/metadata/gemini-custody-cli.test.ts`.
 Existing broader metadata resource-preflight adverse receipts remain NOT_GREEN.

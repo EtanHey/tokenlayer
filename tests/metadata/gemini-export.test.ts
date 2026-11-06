@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { geminiStatPin } from "../../src/metadata/gemini-json";
 import { hash } from "../../src/metadata/stream";
+import { GeminiOutput } from "../../src/metadata/gemini-output";
 import { Budget, FLOOR_BYTES, PENDING_BYTES } from "../../src/metadata/output";
 import { exportGeminiJson } from "../../src/metadata/gemini-export";
 const message = '{"id":"same","type":"gemini","timestamp":null,"tokens":{"input":7,"output":0,"cached":null,"thoughts":9007199254740993,"total":1.20e1},"content":"BODY_CANARY 🦊","toolCalls":["TOOL_CANARY"],"KEY_CANARY":9}';
@@ -75,7 +76,7 @@ test("preflight/write/final publication failures never publish a consumable mani
     const f=fixture();let mock:any;
     try {
       if(phase==="write") mock=spyOn(Budget.prototype,"write").mockImplementation(()=>{throw new Error("CANARY");});
-      if(phase==="manifest") mock=spyOn(Budget.prototype,"manifest").mockImplementation(()=>{throw new Error("CANARY");});
+      if(phase==="manifest") mock=spyOn(GeminiOutput.prototype,"publish").mockImplementation(()=>{throw new Error("CANARY");});
       if(phase==="preflight") { mock=spyOn(fs,"statfsSync").mockReturnValue({bfree:1,bavail:1,bsize:1} as any); }
       expect(()=>exportGeminiJson(f.manifest,f.out)).toThrow();expect(fs.existsSync(join(f.out,"manifest.json"))).toBe(false);
     } finally {mock?.mockRestore();f.clean();}
@@ -96,9 +97,9 @@ test("actual encoded byte budget exhaustion has no final manifest", () => {
 });
 test("SIGKILL after pending-manifest fsync cannot publish completion", async () => {
   const f=fixture();try {
-    const program=`import * as fs from "node:fs"; import {spyOn} from "bun:test";
+    const program=`import {custodyOps} from ${JSON.stringify(resolve("src/metadata/private-fs.ts"))}; import {spyOn} from "bun:test";
       import {exportGeminiJson} from ${JSON.stringify(resolve("src/metadata/gemini-export.ts"))};
-      spyOn(fs,"renameSync").mockImplementation(()=>{process.kill(process.pid,"SIGKILL");});
+      spyOn(custodyOps,"commit").mockImplementation(()=>{process.kill(process.pid,"SIGKILL");});
       exportGeminiJson(${JSON.stringify(f.manifest)},${JSON.stringify(f.out)});`;
     const child=Bun.spawn(["bun","-e",program],{stdout:"pipe",stderr:"pipe"});await child.exited;
     expect(child.signalCode).toBe("SIGKILL");expect(fs.existsSync(join(f.out,"manifest.json"))).toBe(false);

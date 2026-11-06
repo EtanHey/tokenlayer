@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { GEMINI_LIMITS, geminiStatPin, readGeminiJson } from "./gemini-json";
 import { Budget, FLOOR_BYTES, PENDING_BYTES, ProjectionError } from "./output";
-import { privateOutput } from "./run";
+import { GeminiOutput } from "./gemini-output";
 import { hash, RECORD_CAP } from "./stream";
 
 const fail = (code:string):never => { throw new ProjectionError(code); };
@@ -34,7 +34,7 @@ function manifest(path:string) {
 const fieldGaps = (v:any, names:readonly string[]) => names.flatMap(k=>v[k]?.presence === "value" || v[k]?.presence === "zero" ? [] : [`${k}:${v[k]?.presence ?? "absent"}`]);
 /** One pinned JSON revision. NDJSON is output serialization only; no LF/native admission. */
 export function exportGeminiJson(manifestPath:string, outputPath:string) {
-  const opened:number[]=[];
+  let output:GeminiOutput|undefined;
   try {
     const {m,manifestHash}=manifest(manifestPath), s=m.source;
     if(!keys(m,["version","kind","scope","maxOutputRows","expectedMessages","expectedSessionId","source"]) ||
@@ -64,8 +64,8 @@ export function exportGeminiJson(manifestPath:string, outputPath:string) {
       sourceLocator:s.path,sourceRoot:s.sourceRoot,rootKind:s.rootKind,memberPath:s.path,memberPathBasis:"CURRENT_CUSTODY_LOCATOR",
       memberHash:s.documentHash,physicalRepresentationHash:s.documentHash,containerDriveId:"NOT_APPLICABLE",containerHash:"NOT_APPLICABLE",
       stat:s.stat,observedFrom,observedTo,admission:s.admission,admissionEvidenceHash:s.admissionEvidenceHash??"NOT_APPLICABLE",admissionAuthority:"NOT_ATTESTED"};
-    const out=privateOutput(outputPath), budget=new Budget(out,m.maxOutputRows);
-    const fd=fs.openSync(join(out,"metadata.ndjson"),"wx",0o600);opened.push(fd);
+    output=new GeminiOutput(outputPath,m.maxOutputRows);const budget=output.budget;
+    const fd=output.open("metadata.ndjson");
     const digest=createHash("sha256");let metadataBytes=0,uninspected=0;
     for(const row of messages) {
       const {documentHash,documentBytes,jsonPointer,arrayIndex,outputOrdinal,utf8ByteStart,utf8ByteEndExclusive,spanBytes,spanSha256,originalLFLine,...metadata}=row;
@@ -78,17 +78,17 @@ export function exportGeminiJson(manifestPath:string, outputPath:string) {
         gaps:[...new Set(rowGaps)],fullSourceContinuity:"UNKNOWN"})+"\n";
       budget.write(fd,line);digest.update(line);metadataBytes+=Buffer.byteLength(line);
     }
-    fs.fsyncSync(fd);fs.closeSync(fd);opened.pop();
+    output.finish(fd);
     const receipt={version:1,kind:"tokenlayer-gemini-json-metadata",scope:m.scope,manifestHash,status:"UNRESOLVED",complete:false,
       exportComplete:true,consumption:"PARTIAL_METADATA_ONLY",rawHistoryAcceptance:"HOLD",sourceAcceptance:"HOLD",admissionAuthority:"NOT_ATTESTED",
       document,provenance,gaps,records:messages.length,projected:messages.length-uninspected,uninspected,
       limits:{reader:GEMINI_LIMITS,maxOutputRows:m.maxOutputRows,outputBytes:budget.bytes,scratchBytes:budget.scratchBytes,physicalReserveBytes:FLOOR_BYTES,pendingBytes:PENDING_BYTES},
       outputs:{metadataSha256:digest.digest("hex"),metadataBytes},errors:[]};
-    budget.manifest(receipt); // only successful terminal publication, after data fsync
+    output.publish(receipt); // descriptor-relative, atomic no-replace commit after data fsync
     return receipt;
   } catch(error) {
     if(error instanceof ProjectionError) throw error;
     if(error instanceof Error && /^GEMINI_[A-Z_]+$/.test(error.message)) fail(error.message);
     return fail("GEMINI_EXPORT_IO_INVALID");
-  } finally {for(const fd of opened) fs.closeSync(fd);}
+  } finally {output?.close();}
 }
