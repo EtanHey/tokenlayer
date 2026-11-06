@@ -1,0 +1,14 @@
+{
+  "mutants": {
+    "damage-audit": "AuditImmutable",
+    "drop-pending": "PendingReachableAfterCrash",
+    "append-shared": "NoAppendToArchivedInode",
+    "truncate-on-refusal": "RefusalPreservesRetainedBytes",
+    "consume-torn": "TornNeverConsumed",
+    "missed-link-first": "RetiringInodePublished",
+    "missed-link-second": "RetiringInodePublished",
+    "wrong-inode-second": "RetiringInodePublished",
+    "relink-changed": "RetiringInodePublished"
+  },
+  "reach": ["write", "replacement-fsync", "hardlink", "audit-fsync", "rename", "parent-fsync", "crash-prepare", "crash-dir-sync", "crash-write", "crash-flush", "crash-link", "crash-audit-sync", "crash-rename", "crash-parent-sync", "crash-settle", "crash-append", "restart", "shared-recovery", "recovery-published", "shared-refusal", "partial-refusal", "torn-refusal", "io-refusal", "zero", "full", "success", "new-intent", "second-generation"]
+}
