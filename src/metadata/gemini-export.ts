@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { GEMINI_LIMITS, geminiStatPin, readGeminiJson } from "./gemini-json";
+import { GEMINI_LIMITS, assertGeminiJsonUniqueKeys, geminiProfileLimits, geminiStatPin, readGeminiJson, readGeminiJsonWithProfile } from "./gemini-json";
 import { Budget, FLOOR_BYTES, PENDING_BYTES, ProjectionError } from "./output";
 import { GeminiOutput } from "./gemini-output";
 import { hash, RECORD_CAP } from "./stream";
@@ -27,7 +27,7 @@ function manifest(path:string) {
     if(at!==Number(before.size) || !same(fs.fstatSync(fd,{bigint:true})) || !same(fs.lstatSync(path,{bigint:true})) || fs.realpathSync(path)!==path)
       fail("GEMINI_MANIFEST_UNSTABLE");
     const bytes=raw.subarray(0,at);
-    let m:any;try {m=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes));} catch {fail("GEMINI_MANIFEST_INVALID");}
+    let m:any;try {const decoded=new TextDecoder("utf-8",{fatal:true}).decode(bytes);assertGeminiJsonUniqueKeys(bytes.subarray(bytes[0]===0xef && bytes[1]===0xbb && bytes[2]===0xbf ? 3 : 0));m=JSON.parse(decoded);} catch {fail("GEMINI_MANIFEST_INVALID");}
     return {m,manifestHash:hash(bytes)};
   } finally {fs.closeSync(fd);}
 }
@@ -37,7 +37,8 @@ export function exportGeminiJson(manifestPath:string, outputPath:string) {
   let output:GeminiOutput|undefined;
   try {
     const {m,manifestHash}=manifest(manifestPath), s=m.source;
-    if(!keys(m,["version","kind","scope","maxOutputRows","expectedMessages","expectedSessionId","source"]) ||
+    const profiled=Object.hasOwn(m,"readerProfile"), readerLimits=profiled?geminiProfileLimits(m.readerProfile):GEMINI_LIMITS;
+    if(!keys(m,["version","kind","scope","maxOutputRows","expectedMessages","expectedSessionId","source","readerProfile"]) ||
       m.version!==1 || m.kind!=="tokenlayer-gemini-json-export-input" || !text(m.scope) || m.scope.length>256 ||
       !Number.isSafeInteger(m.maxOutputRows) || m.maxOutputRows<1 || m.maxOutputRows>GEMINI_LIMITS.messages ||
       !Number.isSafeInteger(m.expectedMessages) || m.expectedMessages<0 || m.expectedMessages>m.maxOutputRows || !text(m.expectedSessionId) ||
@@ -52,10 +53,10 @@ export function exportGeminiJson(manifestPath:string, outputPath:string) {
     const parent=fs.realpathSync(dirname(resolve(outputPath)));
     if(join(parent,resolve(outputPath).split("/").at(-1)!)!==resolve(outputPath)) fail("GEMINI_OUTPUT_PATH_ALIAS");
     new Budget(parent,m.maxOutputRows); // unchanged physical floor and complete bounded reservation
-    const observedFrom=new Date().toISOString(), projection=readGeminiJson(s.path,s), observedTo=new Date().toISOString();
+    const observedFrom=new Date().toISOString(), projection=profiled?readGeminiJsonWithProfile(s.path,s,m.readerProfile):readGeminiJson(s.path,s), observedTo=new Date().toISOString();
     if(projection.messages.length!==m.expectedMessages || projection.nativeSessionId.presence!=="value" || projection.nativeSessionId.value!==m.expectedSessionId)
       fail("GEMINI_EXPORT_EXPECTATION_PIN");
-    // Complete input validation precedes the first output mkdir/write. Reader caps cannot be raised here.
+    // Complete input validation precedes the first output mkdir/write; only the closed profile changes bytes.
     const {messages,...document}=projection;
     const gaps=["originMachine","originProof","originalPath","historicalWriterVersion","providerEndpoint","accountIdentity",
       "upstreamPresence","uniqueRequestIdentity","counterInclusionAndCompleteness","fullRootCoverage",
@@ -82,7 +83,7 @@ export function exportGeminiJson(manifestPath:string, outputPath:string) {
     const receipt={version:1,kind:"tokenlayer-gemini-json-metadata",scope:m.scope,manifestHash,status:"UNRESOLVED",complete:false,
       exportComplete:true,consumption:"PARTIAL_METADATA_ONLY",rawHistoryAcceptance:"HOLD",sourceAcceptance:"HOLD",admissionAuthority:"NOT_ATTESTED",
       document,provenance,gaps,records:messages.length,projected:messages.length-uninspected,uninspected,
-      limits:{reader:GEMINI_LIMITS,maxOutputRows:m.maxOutputRows,outputBytes:budget.bytes,scratchBytes:budget.scratchBytes,physicalReserveBytes:FLOOR_BYTES,pendingBytes:PENDING_BYTES},
+      limits:{readerProfile:profiled?m.readerProfile:"default-2mib-v1",reader:readerLimits,maxOutputRows:m.maxOutputRows,outputBytes:budget.bytes,scratchBytes:budget.scratchBytes,physicalReserveBytes:FLOOR_BYTES,pendingBytes:PENDING_BYTES},
       outputs:{metadataSha256:digest.digest("hex"),metadataBytes},errors:[]};
     output.publish(receipt); // descriptor-relative, atomic no-replace commit after data fsync
     return receipt;

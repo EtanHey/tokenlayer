@@ -212,7 +212,20 @@ or verify its assertions. A legacy LF admission receipt is not a Gemini admissio
 Extra manifest/source/stat keys, including LF mapping fields, are rejected.
 
 Complete source validation finishes before output creation. Source bytes are never
-reserialized. Reader caps remain 2MiB, depth64, 100000 tokens, 10000 messages and 1000ms.
+reserialized. Reader caps default to 2MiB, depth64, 100000 tokens, 10000 messages and 1000ms.
+The sole optional top-level `readerProfile: "large-document-16mib-v1"` explicitly
+raises only the original source byte ceiling to 16MiB inclusive. Omit it for the
+unchanged 2MiB default. Unknown, null, object and duplicate/escaped-duplicate
+declarations reject before source admission; no size/path inference or retry occurs.
+Export manifests also reject decoded duplicate keys under the bounded JSON scanner.
+`limits.readerProfile` records `default-2mib-v1` or the selected large profile;
+`limits.reader` binds the actual five caps. Both remain version1 metadata receipts;
+consumers must retain these limits and the input `manifestHash` when auditing scope.
+The legacy `projectGeminiJson`/`readGeminiJson` signatures and lower-only options
+remain unchanged. Explicit library callers use `projectGeminiJsonWithProfile` or
+`readGeminiJsonWithProfile` with `GEMINI_LARGE_DOCUMENT_PROFILE`; their options may
+only lower that profile's caps. Depth/token/message/time refusals still apply below
+16MiB: the profile does not promise support for every document under its byte ceiling.
 Each output row retains the reader's exact original UTF8 document/span coordinates,
 field hashes and six recorded token presence/precision states. No arithmetic, defaults,
 dedup, pricing, inferred owner/account/machine/worktime or lifetime acceptance occurs.
