@@ -194,8 +194,19 @@ export async function runImport(manifestPath: string, ch: ClickHouse, options: {
 if (import.meta.main) {
     installErrorHandlers();
     const args = process.argv.slice(2), value = (name: string) => { const i = args.indexOf(name); return i < 0 ? undefined : args[i + 1]; };
+    const batchFlags = args.flatMap((arg, i) => arg.startsWith('--batch-bytes') ? [i] : []);
+    let batchBytes: number | undefined;
+    if (batchFlags.length) {
+        const i = batchFlags[0], raw = args[i + 1];
+        if (batchFlags.length !== 1 || args[i] !== '--batch-bytes' || !raw || !/^[0-9]+$/.test(raw) ||
+            (args[i + 2] !== undefined && !args[i + 2].startsWith('--')))
+            throw Error('--batch-bytes requires one separate decimal integer (1..4194304), supplied once');
+        batchBytes = Number(raw);
+        if (!Number.isSafeInteger(batchBytes) || batchBytes < 1 || batchBytes > 4 * 1024 ** 2)
+            throw Error('--batch-bytes must be between 1 byte and 4 MiB');
+    }
     if (args.includes('--help')) {
-        writeOut('bun scripts/history/run.ts --manifest pinned-native.json [--epoch-bytes 1073741824] [--pilot-only] [--max-record-bytes 16777216]');
+        writeOut('bun scripts/history/run.ts --manifest pinned-native.json [--epoch-bytes 1073741824] [--pilot-only] [--max-record-bytes 16777216] [--batch-bytes 262144]');
         process.exit(0);
     }
     const manifest = value('--manifest');
@@ -215,6 +226,6 @@ if (import.meta.main) {
         process.on(sig, () => { stopping = true; });
     const dir = await runImport(manifest, ClickHouse.fromEnv(env), { machine: env.TOKENLAYER_MACHINE, roots, directory: expandHome('~/.config/tokenlayer/history-import'),
         liveStates: [expandHome(env.TOKENLAYER_SHIP_STATE ?? '~/.config/tokenlayer/ship-state.json'), expandHome('~/.config/tokenlayer/backfill-state.json')],
-        epochBytes: value('--epoch-bytes') === undefined ? undefined : Number(value('--epoch-bytes')), maxRecordBytes: args.includes('--max-record-bytes') ? Number(value('--max-record-bytes')) : undefined, shouldStop: () => stopping, pilotOnly: args.includes('--pilot-only') });
+        epochBytes: value('--epoch-bytes') === undefined ? undefined : Number(value('--epoch-bytes')), maxRecordBytes: args.includes('--max-record-bytes') ? Number(value('--max-record-bytes')) : undefined, batchBytes, shouldStop: () => stopping, pilotOnly: args.includes('--pilot-only') });
     writeOut(`history receipt directory=${dir}`);
 }
