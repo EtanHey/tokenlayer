@@ -130,7 +130,7 @@ export function projectCursorProjectJsonl(raw: Buffer, options: Partial<Limits> 
 }
 /** One explicitly pinned regular file; no enumeration, writes, export controller or automatic retries. */
 export function readCursorProjectJsonl(path: string, pin: CursorProjectPin, options: Partial<Limits> = {}) {
-  const b = bounds(options); let fd: number | undefined;
+  const b = bounds(options); let fd: number | undefined; let primaryFailure = false;
   try {
     if (!Number.isSafeInteger(pin.bytes) || pin.bytes < 0 || pin.bytes > b.limits.bytes) fail("SIZE_PIN");
     if (!/^[a-f0-9]{64}$/.test(pin.sha256)) fail("HASH_PIN");
@@ -156,7 +156,12 @@ export function readCursorProjectJsonl(path: string, pin: CursorProjectPin, opti
     match(fs.fstatSync(fd, { bigint: true })); match(fs.lstatSync(path, { bigint: true })); pathCheck(); b.check();
     return result;
   } catch (e) {
+    primaryFailure = true;
     if (e instanceof ProjectionError) throw e;
     return fail("IO_FAILURE");
-  } finally { if (fd !== undefined) fs.closeSync(fd); }
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { if (!primaryFailure) fail("IO_FAILURE"); }
+    }
+  }
 }
