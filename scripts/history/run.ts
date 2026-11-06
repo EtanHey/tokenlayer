@@ -1,3 +1,5 @@
+import { recordLimit } from '../../src/ship/record-limit';
+import { MAX_SERIALIZED_BATCH_BYTES } from '../../src/lib/row-size';
 import { existsSync, mkdirSync, openSync, closeSync, unlinkSync, readFileSync, statSync, realpathSync, fsyncSync, writeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -20,10 +22,15 @@ export async function runImport(manifestPath: string, ch: ClickHouse, options: {
     shouldStop?: () => boolean;
     pilotOnly?: boolean;
     batchBytes?: number;
+    maxRecordBytes?: number;
     stateBytesCap?: number;
     receiptBytesCap?: number;
     localSpace?: LocalSpace;
 }) {
+    const maxRecordBytes = recordLimit(options.maxRecordBytes);
+    const batchBytes = options.batchBytes ?? 256 * 1024;
+    if (!Number.isSafeInteger(batchBytes) || batchBytes < 1 || batchBytes > 4 * 1024 ** 2)
+        throw Error('history batchBytes must be between 1 byte and 4 MiB');
     if (statSync(manifestPath).size > 16 * 1024 ** 2)
         throw Error('manifest scratch cap');
     const text = readFileSync(manifestPath, 'utf8'), manifest = JSON.parse(text) as Manifest, hash = sha256Hex(text);
@@ -84,7 +91,7 @@ export async function runImport(manifestPath: string, ch: ClickHouse, options: {
         receipt({ state: 'before', matrix: await matrix() });
         const execute = async (s: Source, pilot: boolean) => {
             const sourceDir = options.roots.filter(r => existsSync(r.dir));
-            const check = await verifySource(s, sourceDir, stop);
+            const check = await verifySource(s, sourceDir, stop, maxRecordBytes);
             const state = join(dir, (pilot ? 'pilot' : sha256Hex(logicalSessionPath(s.path))) + '.json');
             if ([state, state + '.generations', join(dir, 'pilot.json'), join(dir, 'pilot.json.generations')].reduce((n, p) => n + privateSize(p), 0) > stateCap)
                 throw Error('active checkpoint cap');
@@ -108,7 +115,7 @@ export async function runImport(manifestPath: string, ch: ClickHouse, options: {
                 let failure: unknown;
                 try {
                     await shipOnce({ machine: options.machine, roots: sourceDir, files: [s.path], statePath: state, writeState, clickhouse: client,
-                        maxLines: remaining, batchLines: 4096, shouldStop: () => stop() || client.stopped, rateBytesPerSec: 0, batchBytes: options.batchBytes ?? 256 * 1024 });
+                        maxLines: remaining, batchLines: 4096, maxRecordBytes, maxBatchJsonBytes: MAX_SERIALIZED_BATCH_BYTES, shouldStop: () => stop() || client.stopped, rateBytesPerSec: 0, batchBytes });
                 }
                 catch (e) {
                     failure = e;
@@ -161,7 +168,7 @@ if (import.meta.main) {
     installErrorHandlers();
     const args = process.argv.slice(2), value = (name: string) => { const i = args.indexOf(name); return i < 0 ? undefined : args[i + 1]; };
     if (args.includes('--help')) {
-        writeOut('bun scripts/history/run.ts --manifest pinned-native.json [--epoch-bytes 1073741824] [--pilot-only]');
+        writeOut('bun scripts/history/run.ts --manifest pinned-native.json [--epoch-bytes 1073741824] [--pilot-only] [--max-record-bytes 16777216]');
         process.exit(0);
     }
     const manifest = value('--manifest');
@@ -181,6 +188,6 @@ if (import.meta.main) {
         process.on(sig, () => { stopping = true; });
     const dir = await runImport(manifest, ClickHouse.fromEnv(env), { machine: env.TOKENLAYER_MACHINE, roots, directory: expandHome('~/.config/tokenlayer/history-import'),
         liveStates: [expandHome(env.TOKENLAYER_SHIP_STATE ?? '~/.config/tokenlayer/ship-state.json'), expandHome('~/.config/tokenlayer/backfill-state.json')],
-        epochBytes: value('--epoch-bytes') === undefined ? undefined : Number(value('--epoch-bytes')), shouldStop: () => stopping, pilotOnly: args.includes('--pilot-only') });
+        epochBytes: value('--epoch-bytes') === undefined ? undefined : Number(value('--epoch-bytes')), maxRecordBytes: args.includes('--max-record-bytes') ? Number(value('--max-record-bytes')) : undefined, shouldStop: () => stopping, pilotOnly: args.includes('--pilot-only') });
     writeOut(`history receipt directory=${dir}`);
 }
