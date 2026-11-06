@@ -54,7 +54,17 @@ export function failureDetails(error: unknown): { text: string; failures: unknow
             }
         });
     };
-    try { walk(error, 0); return { text, failures }; }
+    try {
+        walk(error, 0);
+        // Joining individually safe fragments can reconstruct a multiline secret.
+        // Sanitize the complete copy, then check its size again without slicing it.
+        const safe = sanitizeOutput(text);
+        if (safe.length > DIAGNOSTIC_TEXT) {
+            if (!clipped) limit();
+            return { text: UNAVAILABLE, failures };
+        }
+        return { text: safe, failures };
+    }
     catch (failure) {
         if (!clipped) unavailable(failure);
         return { text: UNAVAILABLE, failures };

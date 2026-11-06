@@ -3,6 +3,43 @@ import { failureDetails, secondaryFailure } from '../../scripts/history/diagnost
 import { formatError, registerSecrets } from '../../src/lib/egress';
 
 const fallback = '[diagnostic unavailable]';
+for (const [name, first, last] of [
+  ['registered secret', 'synthetic multiline first fragment', 'synthetic multiline final fragment'],
+  ['private key pattern', '-----BEGIN PRIVATE KEY-----', 'synthetic body\n-----END PRIVATE KEY-----'],
+]) {
+  test(`assembled fragments redact ${name} through both APIs`, () => {
+    const secret = `${first}\n${last}`;
+    if (name === 'registered secret') registerSecrets({ DIAGNOSTIC_TEST_SECRET: secret });
+    const primary = Object.defineProperty(Error('primary'), 'stack', { value: first });
+    const secondary = Object.defineProperty(Error('secondary'), 'stack', { value: last });
+    const aggregate = Object.defineProperty(new AggregateError([secondary]), 'stack', { value: first });
+    const direct = failureDetails(aggregate);
+    const bundle = secondaryFailure(primary, 'cleanup', secondary);
+    expect(direct.text).not.toContain(secret);
+    expect(bundle.message).not.toContain(secret);
+    expect(bundle.stack).not.toContain(secret);
+    expect(primary.stack).toBe(first);
+    expect(secondary.stack).toBe(last);
+    expect(bundle.errors[0]).toBe(primary);
+    expect(bundle.errors[1]).toBe(secondary);
+    expect(bundle.cause).toBe(primary);
+    expect(direct.text.length).toBeLessThanOrEqual(8192);
+    expect(bundle.message.length).toBeLessThanOrEqual(8192);
+  });
+}
+test('assembled sanitization growth refuses without slicing the result', () => {
+  registerSecrets({ DIAGNOSTIC_GROWTH_SECRET: 'a\nb' });
+  const members = Array.from({ length: 14 }, () =>
+    Object.defineProperty(Error('fragment'), 'stack', { value: 'b\na' }));
+  members.push(Object.defineProperty(Error('last'), 'stack', { value: 'b' }));
+  const aggregate = Object.defineProperty(new AggregateError(members), 'stack', {
+    value: 'z'.repeat(8100) + 'a',
+  });
+  const result = failureDetails(aggregate);
+  expect(result.text).toBe(fallback);
+  expect(result.failures.some(e => e instanceof Error && e.message === 'history diagnostic limit')).toBe(true);
+  expect(aggregate.stack).toBe('z'.repeat(8100) + 'a');
+});
 // Inspect only trusted wrapper data properties: never re-trigger hostile getters.
 function contains(root: unknown, needle: unknown, seen = new Set<unknown>()): boolean {
   if (Object.is(root, needle)) return true;
