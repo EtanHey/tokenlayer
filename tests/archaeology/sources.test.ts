@@ -43,10 +43,20 @@ test("S-4 native dataless metadata blocks both hashing and reading a loose zst",
     writeFileSync(path,"must not be decoded");
     expect(datalessPaths([path]).has(path)).toBe(false);
     const row: Inventory={machine:"m4",source_kind:"archive_dir",container:"",member_path:path,session_id:"source-test",harness:"codex",bytes:"19",lines:"1",first_ts:"2026-01-01",last_ts:"2026-01-01",cwd:"/Users/etanheyman/Gits/example",sha256:"",mtime:""};
-    const entries=manifest([row],[]),sources=localSources(entries,()=>new Set([path]));
+    const archive=manifest([row],[]),archiveSources=localSources(archive,()=>{throw Error("held archive must not be probed");});
+    const archiveReport=await dryRun(archive,archiveSources);
+    expect(archiveReport.needs_fetch).toBe(1);expect(archiveReport.read_errors).toBe(0);
+    expect(archive[0].origin).toBe("unknown");expect(archive[0].container_hash).toBe("");expect(archiveSources.errors).toEqual([]);
+    const entries=manifest([{...row,source_kind:"live"}],[],{m4:[dir]}),probes:string[][]=[];
+    const sources=localSources(entries,paths=>{probes.push([...paths]);return new Set([path]);});
     const result=await dryRun(entries,sources);
-    expect(result.needs_fetch).toBe(1);expect(result.read_errors).toBe(0);
+    expect(probes).toEqual([[path]]);expect(entries[0].origin).toBe("m4");
+    expect(result.needs_fetch).toBe(1);expect(result.blocked_live).toBe(1);expect(result.read_errors).toBe(0);
     expect(entries[0].container_hash).toBe("");expect(sources.errors).toEqual([]);
+    // Without the dataless refusal this invalid synthetic zstd reaches hashing/decoding.
+    const readable=manifest([{...row,source_kind:"live"}],[],{m4:[dir]});
+    const readableSources=localSources(readable,()=>new Set()),readableReport=await dryRun(readable,readableSources);
+    expect(readable[0].container_hash).not.toBe("");expect(readableReport.read_errors).toBe(1);
   } finally {rmSync(dir,{recursive:true});}
 });
 
