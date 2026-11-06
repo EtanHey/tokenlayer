@@ -14,7 +14,8 @@ export function repoName(remote: string): string {
   return /^[\w.-]+\/[\w.-]+$/.test(remote) ? remote : /github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/.exec(remote)?.[1] ?? "";
 }
 export function observeGit(raw: { machine: string; cwd: string; git_remote: string }, localMachine = "m4"): GitObservation {
-  const machine = origin({ ...raw, member_path: "" });
+  // This is a current collector observation, never historical-host proof.
+  const machine = /^(m1|m4)$/i.test(raw.machine) ? raw.machine.toLowerCase() : "unknown";
   const git = (...args: string[]) => Bun.spawnSync(["git", "--no-optional-locks", "-C", raw.cwd, ...args], { stderr: "ignore" });
   const root = machine === localMachine ? git("rev-parse", "--show-toplevel") : null;
   const current = root?.exitCode === 0;

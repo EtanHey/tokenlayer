@@ -10,7 +10,10 @@ is empty. Missing exports and malformed headers fail closed.
 Each `count` is per **(machine, stream, path, generation, content_hash)**. Never sum occurrences
 across paths or generations: coverage uses the maximum per stream/hash within one machine.
 Local live files are candidates, not evidence of server coverage: an uncheckpointed file older
-than 24 hours may have been skipped without shipper `--backfill`. Uncovered live lines are included
-in the import projection and deduplicated against archive copies. The library's optional export
+than 24 hours may have been skipped without shipper `--backfill`. Uncovered live lines remain
+owned by the shipper and require backfill. Archive collection/custody machines and paths do not
+prove historical origin: these sources retain `origin=unknown` and cannot emit import rows.
+See [the attribution contract](../src/archaeology/README.md) for holds and current collector semantics.
+The library's optional export
 supports conservative fixture projections with zero assumed server coverage; any future apply
 must require a fresh server export and recheck the disk gate (at least 35 GiB real free after import).

@@ -6,6 +6,7 @@ import { readExisting } from "../../src/archaeology/main";
 import { clickhouseBinary, startLocalClickHouse } from "../../src/lib/local-clickhouse";
 import { applySchema } from "../../src/lib/schema";
 import { shipOnce } from "../../src/ship/ship";
+import { expectHeld } from "./hold";
 
 test.skipIf(!clickhouseBinary())("SHOULD-B canonical CLI export covers empty session ids, subagents and generations", async () => {
   mkdirSync(".local", { recursive: true });
@@ -34,8 +35,10 @@ test.skipIf(!clickhouseBinary())("SHOULD-B canonical CLI export covers empty ses
     expect(existing.filter(r => r[2] === agent)).toHaveLength(2);
     expect(existing.filter(r => r[2] === agent).every(r => r[1] === parent && r[4] === 2)).toBe(true);
     const row: Inventory = { machine: "m4", source_kind: "archive_dir", container: "", member_path: `copy/${parent}/subagents/agent-a.jsonl`, session_id: parent, harness: "claude", bytes: String(marker.length * 3), lines: "3", first_ts: "2026-01-01", last_ts: "2026-01-01", cwd: "/Users/etanheyman/Gits/example", sha256: sha256(Buffer.concat([marker, marker, marker])), mtime: "" };
-    const report = await dryRun(manifest([row], []), { existing, read: async () => (async function* () { yield Buffer.concat([marker, marker, marker]); })() });
-    expect(report.skip_live).toBe(2); expect(report.import_rows).toBe(1);
+    await expectHeld(manifest([row], []), { existing, read: async () => null });
+    const current={...row,source_kind:"live",member_path:agent};
+    const report=await dryRun(manifest([current],[],{m4:[sessions]}),{existing,read:async()=>(async function*(){yield Buffer.concat([marker,marker,marker]);})()});
+    expect(report.skip_live).toBe(2); expect(report.import_rows).toBe(0); expect(report.needs_shipper_backfill).toBe(1);
     expect((await local.client.exec("SELECT count() FROM tokenlayer.session_events FINAL WHERE session_id='' ")).trim()).toBe("6");
   } finally { await local.stop(); }
 }, 40_000);

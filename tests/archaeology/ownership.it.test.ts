@@ -23,7 +23,7 @@ for (const trigger of ["backfill", "mtime"] as const) test.skipIf(!clickhouseBin
     expect((await shipOnce(recent)).lines).toBe(0);
     const pending = await dryRun(entries(), { existing: [], read });
     expect(pending.import_rows).toBe(0);
-    expect(pending).toMatchObject({ needs_shipper_backfill: 1, skip_shipper: 1 });
+    expect(pending).toMatchObject({ needs_shipper_backfill: 1, skip_shipper: 0, needs_fetch: 1 });
     expect(pending.sample).toEqual([]);
     const inventory = join(dir, "inventory.tsv"), roots = join(dir, "roots.json"), empty = join(dir, "empty.tsv"), out = join(dir, "out");
     writeFileSync(inventory, `${Object.keys(row).join("\t")}\n${Object.values(row).join("\t")}\n`);

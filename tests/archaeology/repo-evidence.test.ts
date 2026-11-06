@@ -3,14 +3,14 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { observeGit, deriveRepoEvidence } from "../../src/archaeology/repo-evidence";
-import { origin } from "../../src/archaeology/pipeline";
 
 test("MF-4 real git toplevels prevent coach poisoning and conflicting aliases stay unresolved", () => {
   const dir=mkdtempSync(join(tmpdir(),"repo-evidence-"));
   const git=(cwd:string,...args:string[])=>{const p=Bun.spawnSync(["git","-C",cwd,...args],{stderr:"ignore"});expect(p.exitCode).toBe(0);};
   const repo=(path:string,remote:string)=>{mkdirSync(path,{recursive:true});git(path,"init","-q");git(path,"remote","add","origin",`https://github.com/${remote}.git`);return path;};
-  // Fixture paths inherit the physical host identity, even though the target is synthetic M4 data.
-  const observe=(cwd:string)=>observeGit({machine:"m4",cwd,git_remote:""},origin({machine:"m4",cwd,member_path:""}));
+  // Synthetic current-collector observation, explicitly bound to this local fixture.
+  // No historical machine identity is inferred from its temporary path.
+  const observe=(cwd:string)=>observeGit({machine:"m4",cwd,git_remote:""},"m4");
   try {
     const coach=repo(join(dir,"a","coach"),"EtanHey/coach"),golems=repo(join(dir,"golems"),"EtanHey/golems");
     const nested=join(golems,"packages","coach");mkdirSync(nested,{recursive:true});

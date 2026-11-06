@@ -1,6 +1,6 @@
 import { createReadStream, lstatSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { sha256, type Entry } from "./pipeline";
+import { origin, sha256, type Entry } from "./pipeline";
 
 const tarReader = `import sys,json,tarfile,struct
 wanted=set(json.loads(sys.stdin.buffer.readline()))
@@ -34,8 +34,10 @@ print(json.dumps(blocked))`;
 
 /** Sequential tar streaming, no extraction. Only the current member is held in memory. */
 export function localSources(entries: Entry[], probe: (paths: readonly string[]) => ReadonlySet<string> = datalessPaths) {
-  const supported = (e:Entry) => !["drive_file","drive_tarball_member","tarball_member","t3_sqlite","icloud"].includes(e.source_kind) && !/note=dataless/.test(e.sha256);
-  const blocked = probe([...new Set(entries.flatMap(e=>supported(e)?[e.member_path]:["tarball_member","drive_tarball_member"].includes(e.source_kind)?[e.container]:[]))]);
+  const attributed = (e:Entry) => e.origin !== "unknown" && e.origin === origin(e);
+  const supported = (e:Entry) => attributed(e) && !["drive_file","drive_tarball_member","tarball_member","t3_sqlite","icloud"].includes(e.source_kind) && !/note=dataless/.test(e.sha256);
+  const paths = [...new Set(entries.flatMap(e=>!attributed(e)?[]:supported(e)?[e.member_path]:["tarball_member","drive_tarball_member"].includes(e.source_kind)?[e.container]:[]))];
+  const blocked = paths.length ? probe(paths) : new Set<string>();
   let current: { entry: Entry; bytes: Buffer } | null = null;
   const errors: { container: string; reason: string }[] = [];
   const readable = (path: string) => {
@@ -44,9 +46,17 @@ export function localSources(entries: Entry[], probe: (paths: readonly string[])
   async function fileHash(path: string) { try { const digest = createHash("sha256"); for await (const chunk of createReadStream(path)) digest.update(chunk); return digest.digest("hex"); } catch { errors.push({ container: path, reason: "container hash read failed" }); return ""; } }
   async function* order() {
     const archives = new Map<string, Entry[]>();
-    const loose = entries.filter(e => !["tarball_member", "drive_tarball_member"].includes(e.source_kind));
-    for (const e of loose.sort((a, b) => Number(b.source_kind === "live") - Number(a.source_kind === "live") || Number(b.bytes) - Number(a.bytes))) { if (supported(e) && e.member_path.endsWith(".zst") && readable(e.member_path)) e.container_hash = await fileHash(e.member_path); yield e; }
-    for (const e of entries.filter(e => ["tarball_member", "drive_tarball_member"].includes(e.source_kind))) {
+    // Preserve held records, but do not hash or decode them before dryRun's hold.
+    const loose = entries.filter(e => !attributed(e) || !["tarball_member", "drive_tarball_member"].includes(e.source_kind));
+    for (const e of loose.sort((a, b) => Number(b.source_kind === "live") - Number(a.source_kind === "live") || Number(b.bytes) - Number(a.bytes))) {
+      if (["tarball_member","drive_tarball_member"].includes(e.source_kind) && !/^[a-f0-9]{64}$/.test(e.sha256)) {
+        e.status = "invalid_member_hash";
+        errors.push({container:e.container,reason:`expected member hash must be SHA-256 hex: ${e.member_path}`});
+      }
+      if (supported(e) && e.member_path.endsWith(".zst") && readable(e.member_path)) e.container_hash = await fileHash(e.member_path);
+      yield e;
+    }
+    for (const e of entries.filter(e => attributed(e) && ["tarball_member", "drive_tarball_member"].includes(e.source_kind))) {
       const group = archives.get(e.container) ?? []; group.push(e); archives.set(e.container, group);
     }
     for (const [container, group] of archives) {
@@ -87,6 +97,7 @@ export function localSources(entries: Entry[], probe: (paths: readonly string[])
     }
   }
   async function read(e: Entry) {
+    if (!attributed(e)) return null;
     if (current?.entry === e) { const bytes = current.bytes; return (async function* () { yield bytes; })(); }
     if (["drive_file", "drive_tarball_member", "tarball_member", "t3_sqlite", "icloud"].includes(e.source_kind) || /note=dataless/.test(e.sha256) || !readable(e.member_path)) return null;
     if (!e.member_path.endsWith(".zst")) return createReadStream(e.member_path);

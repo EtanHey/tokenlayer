@@ -26,11 +26,12 @@ export function classify(r: Inventory): { session: boolean; reason: string } {
   return { session: true, reason: `${r.harness} session identity from inventory` };
 }
 
-export function origin(r: Pick<Inventory, "machine" | "cwd" | "member_path">): string {
-  const evidence = r.cwd || r.member_path;
-  if (/(?:\/Users\/|-Users-)etanheyman(?:\/|-|$)/.test(evidence)) return "m4";
-  if (/(?:\/Users\/|-Users-)happycampr(?:\/|-|$)/.test(evidence)) return "m1";
-  return /^(m1|m4)$/i.test(r.machine) ? r.machine.toLowerCase() : "unknown";
+/** Legacy field name: live rows identify the current collector only, not historical origin.
+ * Inventory has no trusted archive-origin contract. Custody, cwd and member names
+ * cannot attest the original host, path or generation of any non-live source.
+ */
+export function origin(r: Pick<Inventory, "machine" | "source_kind">): string {
+  return r.source_kind === "live" && /^(m1|m4)$/i.test(r.machine) ? r.machine.toLowerCase() : "unknown";
 }
 
 export function parseEvidenceLine(line: string): Evidence {
@@ -123,12 +124,13 @@ export function manifest(rows: Inventory[], maps: RepoMap[], roots: MachineRoots
   const livePaths = new Set(rows.filter(r => r.source_kind === "live").map(r => `${r.machine.toLowerCase()}\0${r.member_path}`));
   for (const r of rows.filter(r => classify(r).session)) {
     const key = JSON.stringify([r.machine, r.source_kind, r.container, r.member_path, r.sha256]);
-    const ts=Date.parse(r.first_ts), matching=(repos.get(`${origin(r)}\0${r.cwd}`)??[]).filter(m=>(m.valid_from===null||ts>=Date.parse(m.valid_from))&&(m.valid_to===null||ts<Date.parse(m.valid_to)));
-    const names=new Set(matching.map(m=>m.repo_canonical));
-    const physical = r.machine.toLowerCase(), inferred = origin(r);
+    const physical = r.machine.toLowerCase();
     const compressed = r.harness === "codex" || /rollout-/.test(r.member_path);
     const owned = shipperCovers(r.member_path,physical,roots,compressed) && ownsSessionPath(r.member_path,compressed,p => livePaths.has(`${physical}\0${p}`));
-    const kind = r.source_kind === "live" && physical === inferred && !owned ? "archive_dir" : r.source_kind;
+    const kind = r.source_kind === "live" && !owned ? "archive_dir" : r.source_kind;
+    const inferred = origin({ ...r, source_kind: kind });
+    const ts=Date.parse(r.first_ts), matching=(repos.get(`${inferred}\0${r.cwd}`)??[]).filter(m=>(m.valid_from===null||ts>=Date.parse(m.valid_from))&&(m.valid_to===null||ts<Date.parse(m.valid_to)));
+    const names=new Set(matching.map(m=>m.repo_canonical));
     copies.set(key, { ...r, source_kind: kind, origin: inferred, repo: names.size===1?matching[0].repo_canonical:"", selected: false, relation: "unverified", status: "pending", container_hash: "", stream: streamId(r.session_id, r.member_path) });
   }
   const entries = [...copies.values()].sort((a, b) => Number(b.bytes) - Number(a.bytes) || a.member_path.localeCompare(b.member_path));
@@ -178,6 +180,9 @@ export async function dryRun(entries: Entry[], options: {
       if (e.source_kind !== "live" && pendingLive.size) throw Error("live sources must precede archives");
       pendingLive.delete(e);
       try {
+      // Re-check at the emission boundary: old manifests/direct callers may carry
+      // an inferred or conflicting label. No archive declaration certifies itself.
+      if (e.origin !== origin(e)) e.origin = "unknown";
       if (e.status === "invalid_member_hash") { report.invalid_member_hash++; blockLive(e); options.onEntry?.(e); continue; }
       const source = e.origin === "unknown" || (e.source_kind === "live" && e.machine.toLowerCase() !== e.origin) || e.source_kind === "t3_sqlite" ? null : await options.read(e);
       if (!source) { e.status = "needs_fetch_or_export"; report.needs_fetch++; blockLive(e); options.onEntry?.(e); continue; }

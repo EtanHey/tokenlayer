@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { localSources } from "../../src/archaeology/sources";
 import { manifest, dryRun, sha256, type Inventory } from "../../src/archaeology/pipeline";
-test("local source adapter streams repeated tar members without extracting and decodes zstd", async () => {
+test("local source adapter holds repeated tar members; current zstd decoding stays exact", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arch-source-"));
   try {
     mkdirSync(join(dir, "input"));
@@ -18,10 +18,20 @@ test("local source adapter streams repeated tar members without extracting and d
     if (Bun.which("zstd")) expect(Bun.spawnSync(["zstd", "-q", file, "-o", zst]).exitCode).toBe(0);
     const row: Inventory = { machine: "m4", source_kind: "tarball_member", container: tar, member_path: "session.jsonl", session_id: "source-test", harness: "claude", bytes: String(bytes.length), lines: "1", first_ts: "2026-01-01", last_ts: "2026-01-01", cwd: "/Users/etanheyman/Gits/example", sha256: sha256(bytes), mtime: "" };
     const rows = manifest([row, { ...row, sha256: sha256(extra), bytes: String(extra.length) }, ...(Bun.which("zstd") ? [{ ...row, source_kind: "archive_dir", container: "", member_path: zst }] : [])], []);
-    const sources = localSources(rows), result = await dryRun(rows, sources);
-    expect(result.import_rows).toBe(2);
-    expect(result.sample[0].raw).toBe(bytes.toString());
+    const sources = localSources(rows,()=>{throw Error("unknown archive must not be probed");}), result = await dryRun(rows, sources);
+    expect(result).toMatchObject({ import_rows:0, needs_fetch:rows.length, sample:[] });
+    expect(rows.map(e=>e.sha256).sort()).toEqual([sha256(bytes),sha256(extra),...(Bun.which("zstd")?[sha256(bytes)]:[])].sort());
+    expect(rows.every(e=>e.origin==="unknown"&&e.status==="needs_fetch_or_export"&&e.container_hash==="")).toBe(true);
     expect(sources.errors).toEqual([]);
+    if (Bun.which("zstd")) {
+      // A new current collector fixture, not historical admission of the tar rows.
+      const live=manifest([{...row,source_kind:"live",harness:"codex",container:"",member_path:zst}],[],{m4:[dir]});
+      const decoder=localSources(live),chunks:Buffer[]=[];
+      for await(const e of decoder.order) for await(const chunk of (await decoder.read(e))!) chunks.push(Buffer.from(chunk));
+      expect(Buffer.concat(chunks).equals(bytes)).toBe(true);
+      expect(live[0].container_hash).toBe(sha256(Buffer.from(await Bun.file(zst).arrayBuffer())));
+      expect(decoder.errors).toEqual([]);
+    }
     expect(await Bun.file(join(dir, "session.jsonl")).exists()).toBe(false);
   } finally { rmSync(dir, { recursive: true }); }
 });
