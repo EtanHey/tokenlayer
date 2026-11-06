@@ -254,9 +254,12 @@ unrecognized artifacts. Shared LF custody weaknesses remain separately tracked.
 Success exits2 with `exportComplete:true`, `complete:false`, `UNRESOLVED`, consumption
 `PARTIAL_METADATA_ONLY`, and source/raw acceptance HOLD. Consumers must validate schema
 `tokenlayer-gemini-json-metadata` version1 and verify metadata bytes/SHA256 against the
-final manifest, retaining all gaps. Failed/invalid/budget-limited or **pre-publication**
-killed runs publish no consumable final manifest. After the no-replace commit point,
-a killed CLI may leave valid output without stdout. SIGKILL tests do not prove power-loss
+final manifest, retaining all gaps. Failures before publication, including invalid input,
+budget refusal and pre-publication kill, publish no consumable final manifest. After
+the no-replace commit point, output remains committed even if status delivery fails or
+the CLI is killed. A failed summary write retains exit2 and emits the fixed COMMITTED
+warning when stderr is available; closed stderr cannot provide that warning. Exit codes
+and stdout alone never replace final-manifest/hash validation. SIGKILL tests do not prove power-loss
 durability. Pending files/rows alone never authorize consumption. Diagnostics use egress.
 Synthetic verification: `bun test tests/metadata/gemini-json.test.ts tests/metadata/gemini-export.test.ts tests/metadata/gemini-output.test.ts tests/metadata/gemini-custody-cli.test.ts`.
 Existing broader metadata resource-preflight adverse receipts remain NOT_GREEN.
