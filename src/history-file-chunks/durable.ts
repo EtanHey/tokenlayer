@@ -19,7 +19,7 @@ const hash = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 const fail = (): never => { throw Error('DURABLE_ACQUISITION_REFUSED'); };
 const quiet = (fn: () => void) => { try { fn(); } catch {} };
 const json = (v: unknown) => JSON.stringify(v) + '\n';
-function describe(d: RawDocument, index: number, offset: number | null) {
+export function describe(d: RawDocument, index: number, offset: number | null) {
   if (d.bytes.length !== d.originalBytes || sha(d.bytes) !== d.originalHash) fail();
   const revisionId = sha(JSON.stringify(['raw-document-revision-v1', d.custodyMachine, d.sourceLocator, d.format, d.formatVersion, d.originalHash, d.originalBytes]));
   const acquisitionId = sha(JSON.stringify(['raw-document-acquisition-v1', revisionId, d.acquisition.method, d.acquisition.observedAt, d.acquisition.receiptHash]));

@@ -64,14 +64,14 @@ export class RawDocumentStore {
     if (wireBytes > MAX_WIRE_BYTES) throw Error('WIRE_CAP');
     const database = this.ch.config.database;
     const tables = await this.ch.queryJSON<{ engine: string; sorting_key: string; storage_policy: string }>(
-      `SELECT engine, sorting_key, storage_policy FROM system.tables WHERE database='${database}' AND name='raw_documents'`);
+      `SELECT engine, sorting_key, storage_policy FROM system.tables WHERE database='${database}' AND name='raw_documents'`, signal);
     const actual = await this.ch.queryJSON<{ name: string; type: string }>(
-      `SELECT name, type FROM system.columns WHERE database='${database}' AND table='raw_documents'`);
+      `SELECT name, type FROM system.columns WHERE database='${database}' AND table='raw_documents'`, signal);
     if (tables.length !== 1 || tables[0].engine !== 'ReplacingMergeTree' || tables[0].storage_policy !== 'default' || tables[0].sorting_key !== 'revision_id, acquisition_id' ||
       actual.length !== columns.length || columns.some(c => !actual.some(a => a.name === c.name && a.type === c.type)))
       throw Error('SCHEMA_MISMATCH');
     const disks = await this.ch.queryJSON<{ name: string; free_space: string; unreserved_space: string; keep_free_space: string }>(
-      "SELECT name, toString(free_space) AS free_space, toString(unreserved_space) AS unreserved_space, toString(keep_free_space) AS keep_free_space FROM system.disks");
+      "SELECT name, toString(free_space) AS free_space, toString(unreserved_space) AS unreserved_space, toString(keep_free_space) AS keep_free_space FROM system.disks", signal);
     const disk = disks[0];
     const valid = (v: unknown) => typeof v === 'string' && /^(0|[1-9]\d*)$/.test(v) && Number.isSafeInteger(Number(v));
     if (disks.length !== 1 || !disk || disk.name !== 'default' ||
@@ -88,7 +88,7 @@ export class RawDocumentStore {
         diskVerdict(temporary, free + reserve).verdict !== 'PASS') throw Error('SPACE_REFUSED');
     }
     signal?.throwIfAborted();
-    try { await this.ch.insert('raw_documents', [row], acquisitionId); }
+    try { await this.ch.insert('raw_documents', [row], acquisitionId, signal); }
     catch { throw Error('ACK_UNKNOWN: replay the same pinned acquisition; no checkpoint or retry performed'); }
     return { revisionId, acquisitionId, status: 'ACKNOWLEDGED' as const };
   }
