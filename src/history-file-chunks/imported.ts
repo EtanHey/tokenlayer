@@ -142,6 +142,16 @@ export function importAcquisition(input: ImportAuthority) {
       manifestHash: p.manifestHash, authorityHash: p.authorityHash, wholeHash: m.wholeHash, wholeBytes: m.wholeBytes, chunkCount: m.chunkCount,
       chunks: Object.freeze(m.chunks.map(({ index, offset, bytes, hash }) => Object.freeze({ index, offset, bytes, hash }))), sourceComplete: false as const });
     return Object.freeze({ summary, verifyWhole: whole,
+      /** Declared parent document: exact final receipt bytes including LF, never an original-source row. */
+      readManifest(): RawDocument {
+        return run(false, (a, b) => {
+          const bytes = Buffer.alloc(p.manifestBytes);
+          file(a, b, 'manifest.json', p.manifestBytes, JSON.stringify(p.manifestStat), bytes, p.manifestHash);
+          return { bytes, originalHash: p.manifestHash, originalBytes: p.manifestBytes, custodyMachine: m.custodyMachine,
+            sourceLocator: `history-file-chunks-manifest-v1:${m.sourceRevision}`, format: 'history-file-chunks-manifest-v1', formatVersion: '1',
+            acquisition: { method: m.method, observedAt: m.observedAt, receiptHash: p.receiptHash } };
+        });
+      },
       readChunk(index: number): RawDocument {
         if (!number(index, m.chunkCount - 1)) fail();
         return run(false, (a, b) => {
