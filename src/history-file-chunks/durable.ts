@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto';
 import { custodyOps, directoryFlags, closeOnExec, atCwd } from '../metadata/private-fs';
 import { guardGit } from '../metadata/gemini-output';
 import { FLOOR_BYTES, PENDING_BYTES } from '../metadata/output';
-import { ClickHouse, encodeRow, RAW_BYTES } from '../lib/clickhouse';
+import { encodeRow, RAW_BYTES } from '../lib/clickhouse';
+import type { RawClient } from '../raw-document/client';
 import { RawDocumentStore, MAX_WIRE_BYTES, type RawDocument } from '../raw-document/storage';
 import { importAcquisition, type ImportAuthority } from './imported';
 import { statPin } from './acquire';
@@ -19,7 +20,7 @@ const hash = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 const fail = (): never => { throw Error('DURABLE_ACQUISITION_REFUSED'); };
 const quiet = (fn: () => void) => { try { fn(); } catch {} };
 const json = (v: unknown) => JSON.stringify(v) + '\n';
-function describe(d: RawDocument, index: number, offset: number | null) {
+export function describe(d: RawDocument, index: number, offset: number | null) {
   if (d.bytes.length !== d.originalBytes || sha(d.bytes) !== d.originalHash) fail();
   const revisionId = sha(JSON.stringify(['raw-document-revision-v1', d.custodyMachine, d.sourceLocator, d.format, d.formatVersion, d.originalHash, d.originalBytes]));
   const acquisitionId = sha(JSON.stringify(['raw-document-acquisition-v1', revisionId, d.acquisition.method, d.acquisition.observedAt, d.acquisition.receiptHash]));
@@ -98,7 +99,7 @@ class Ledger {
   close() { for (const e of this.chain.reverse()) quiet(() => fs.closeSync(e.fd)); this.chain = []; }
 }
 /** Callable ACK-stage core only; FINAL readback/coverage and storage completion explicitly NOT_IMPLEMENTED. */
-export async function storeAcquisition(authority: ImportAuthority, writerPins: WriterPins, ledgerPath: string, ch: ClickHouse, current: CurrentAdmission, signal?: AbortSignal) {
+export async function storeAcquisition(authority: ImportAuthority, writerPins: WriterPins, ledgerPath: string, ch: RawClient, current: CurrentAdmission, signal?: AbortSignal) {
   let ledger: Ledger | undefined, stage = 'REFUSED';
   try {
     const a = structuredClone(authority), p = structuredClone(writerPins), path = ledgerPath;
