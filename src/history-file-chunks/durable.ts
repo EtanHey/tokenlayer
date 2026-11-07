@@ -12,9 +12,10 @@ import { statPin } from './acquire';
 
 export type WriterPins = { scopeHash: string; ownerHash: string; windowHash: string; epochHash: string; schemaHash: string; configHash: string };
 type Bound = Readonly<WriterPins & { bindingHash: string }>;
-/** Trusted external authentication/current-window + whole-source/state admission, not a hash-based lease. */
+/** Trusted current-window/source admission, not a hash lease. DISPATCH follows put preflight.
+ * assertDispatch, when supplied, synchronously rechecks local owner/revocation after the admission await. */
 export type CurrentAdmission = (phase: 'PREPARE' | 'LOCAL' | 'DISPATCH' | 'FINISH', bound: Bound,
-  charge: Readonly<{ localBytes: number; wireBytes: number }>) => Promise<{ admitted: true; bindingHash: string }>;
+  charge: Readonly<{ localBytes: number; wireBytes: number }>) => Promise<{ admitted: true; bindingHash: string; assertDispatch?: () => void }>;
 const sha = (v: Buffer | string) => createHash('sha256').update(v).digest('hex');
 const hash = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 const fail = (): never => { throw Error('DURABLE_ACQUISITION_REFUSED'); };
@@ -125,8 +126,12 @@ export async function storeAcquisition(authority: ImportAuthority, writerPins: W
     for (let i = 0; i < documents.length; i++) {
       const expected = documents[i], doc = i === 0 ? reader.readManifest() : reader.readChunk(i - 1);
       if (JSON.stringify(describe(doc, expected.index, expected.offset)) !== JSON.stringify(expected)) fail();
-      await gate('DISPATCH', bound, Object.freeze({ localBytes: ledger.remaining, wireBytes: expected.wireBytes })); ledger.room();
-      stage = 'ACK_UNKNOWN'; const ack = await sink.put(doc, signal);
+      ledger.room();
+      const ack = await sink.put(doc, signal, async () => {
+        const admitted = await gate('DISPATCH', bound, Object.freeze({ localBytes: ledger!.remaining, wireBytes: expected.wireBytes }));
+        return () => { admitted.assertDispatch?.(); ledger!.room(); stage = 'ACK_UNKNOWN'; };
+      });
+      stage = 'ACK_UNKNOWN';
       if (ack.status !== 'ACKNOWLEDGED' || ack.revisionId !== expected.revisionId || ack.acquisitionId !== expected.acquisitionId) fail();
       stage = 'ACK_UNRECORDED'; await ledger.write(`ack-${String(i).padStart(6, '0')}.json`, acks[i]); stage = 'REFUSED';
     }

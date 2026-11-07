@@ -24,9 +24,10 @@ function fixture(bytes = Buffer.from('\ufeff{\r\n "x":"שלום🌍"}\tTAIL')) {
     acquisitionId: receipt.manifest.acquisitionId, wholeHash: sha(bytes), wholeBytes: bytes.length, authorityHash: 'b'.repeat(64) };
   const ch = new ClickHouse({ url: 'http://NO_NETWORK.invalid', user: '', password: '', database: 'owned' });
   const columns = [...fs.readFileSync('src/raw-document/schema.sql', 'utf8').matchAll(/^    (\w+) (String|UInt64|UInt8),?$/gm)].map(m => ({ name: m[1], type: m[2] }));
-  const query = spyOn(ClickHouse.prototype, 'queryJSON').mockImplementation(async sql => sql.includes('system.tables') ? [{ engine: 'ReplacingMergeTree', sorting_key: 'revision_id, acquisition_id', storage_policy: 'default' }] as never :
-    sql.includes('system.columns') ? columns as never : [{ name: 'default', free_space: String(40 * 1024 ** 3), unreserved_space: String(40 * 1024 ** 3), keep_free_space: String(15 * 1024 ** 3) }] as never);
-  return { source, out, ledger, raw, authority, ch, calls: () => calls, restore: () => { query.mockRestore(); free.mockRestore(); } };
+  let onQuery = (_sql: string) => {};
+  const query = spyOn(ClickHouse.prototype, 'queryJSON').mockImplementation(async sql => { onQuery(sql); return sql.includes('system.tables') ? [{ engine: 'ReplacingMergeTree', sorting_key: 'revision_id, acquisition_id', storage_policy: 'default' }] as never :
+    sql.includes('system.columns') ? columns as never : [{ name: 'default', free_space: String(40 * 1024 ** 3), unreserved_space: String(40 * 1024 ** 3), keep_free_space: String(15 * 1024 ** 3) }] as never; });
+  return { source, out, ledger, raw, authority, ch, calls: () => calls, onQuery: (fn: (sql: string) => void) => { onQuery = fn; }, restore: () => { query.mockRestore(); free.mockRestore(); } };
 }
 test('actual private intent/ACK fsync order, declared exact parent bytes, chunk IDs/wire and empty manifest ACK', async () => {
   for (const bytes of [Buffer.alloc(0), Buffer.from('{\r\n "x":"🌍"}\tTAIL'), Buffer.concat([Buffer.alloc(CHUNK_BYTES, 0), Buffer.from('TAIL')])]) {
@@ -104,4 +105,16 @@ test('R1 final admission source drift refuses after last awaited gate', async ()
       expect(fs.existsSync(join(f.ledger, 'storage-complete.json'))).toBe(false);
     } finally { release(); insert.mockRestore(); f.restore(); }
   }
+});
+
+test('DISPATCH follows put preflight so owner loss cannot admit an INSERT', async () => {
+  const f = fixture(); let owned = true, puts = 0;
+  f.onQuery(sql => { if (sql.includes('system.disks')) owned = false; });
+  const insert = spyOn(ClickHouse.prototype, 'insert').mockImplementation(async () => { puts++; });
+  try {
+    await expect(storeAcquisition(f.authority, pins, f.ledger, f.ch, async (phase, binding) => ({
+      admitted: (phase !== 'DISPATCH' || owned) as true, bindingHash: binding.bindingHash,
+    }))).rejects.toThrow(/^DURABLE_ACQUISITION_REFUSED$/);
+    expect(puts).toBe(0); expect(fs.existsSync(join(f.ledger, 'ack-000000.json'))).toBe(false);
+  } finally { insert.mockRestore(); f.restore(); }
 });

@@ -34,13 +34,15 @@ export class RawDocumentStore {
     this.ch = cloneRawClient(ch);
   }
 
-  /** Returns only after synchronous CH acknowledgement; replay identity never depends on the local clock. */
-  async put(input: RawDocument, signal?: AbortSignal) {
+  /** Returns only after CH acknowledgement. Optional INSERT admission runs after all preflights,
+   * returning a mandatory synchronous assertion; continuous cooperative ownership remains external. */
+  async put(input: RawDocument, signal?: AbortSignal, admitInsert?: () => Promise<() => void>) {
     if (this.#inFlight) throw Error('PUT_IN_FLIGHT');
     this.#inFlight = true;
-    try { return await this.write(input, signal); } finally { this.#inFlight = false; }
+    try { return await this.write(input, signal, admitInsert); } finally { this.#inFlight = false; }
   }
-  private async write(input: RawDocument, signal?: AbortSignal) {
+  private async write(input: RawDocument, signal?: AbortSignal, admitInsert?: () => Promise<() => void>) {
+    if (admitInsert !== undefined && typeof admitInsert !== 'function') throw Error('ADMISSION_CALLBACK_INVALID');
     signal?.throwIfAborted();
     if (!Buffer.isBuffer(input.bytes) || input.bytes.length > MAX_DOCUMENT_BYTES) throw Error('DOCUMENT_CAP');
     const bytes = Buffer.from(input.bytes); // Own the snapshot before the first asynchronous boundary.
@@ -87,6 +89,12 @@ export class RawDocumentStore {
       // Restore reserve ONLY for the old manual physical-floor accounting; never for its write budget.
       if (!Number.isSafeInteger(free + reserve) || usable < budget ||
         diskVerdict(temporary, free + reserve).verdict !== 'PASS') throw Error('SPACE_REFUSED');
+    }
+    // Last awaited admission, then its mandatory synchronous current-owner assertion. No query follows.
+    if (admitInsert) {
+      const assertDispatch = await admitInsert();
+      if (typeof assertDispatch !== 'function') throw Error('ADMISSION_CALLBACK_INVALID');
+      assertDispatch();
     }
     signal?.throwIfAborted();
     try { await this.ch.insert('raw_documents', [row], acquisitionId, signal); }

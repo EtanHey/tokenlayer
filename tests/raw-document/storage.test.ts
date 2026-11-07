@@ -207,3 +207,27 @@ test('numeric real-26.10 response is projected by exact SQL casts, independent o
     await f.store.put(input()); expect(seen).toBe(expected); expect(f.inserts).toHaveLength(1);
   } finally { f.stop(); }
 });
+
+test('insert admission follows every preflight await and can refuse without dispatch', async () => {
+  const f = fixture('streaming'); let owner = true, admissions = 0;
+  f.setDisks([disk(String(40 * GiB))]); f.onDisk(() => { owner = false; });
+  try {
+    await expect(f.store.put(input(), undefined, async () => {
+      admissions++; expect(f.reads()).toBe(3);
+      if (!owner) throw Error('SYNTHETIC_OWNER_LOST');
+      return () => {};
+    })).rejects.toThrow(/^SYNTHETIC_OWNER_LOST$/);
+    expect(admissions).toBe(1); expect(f.inserts).toHaveLength(0);
+    await f.store.put(input(), undefined, async () => { admissions++; expect(f.reads()).toBe(6); return () => {}; });
+    expect(admissions).toBe(2); expect(f.inserts).toHaveLength(1);
+    const controller = new AbortController();
+    await expect(f.store.put(input(), controller.signal, async () => () => { controller.abort(); })).rejects.toThrow();
+    expect(f.inserts).toHaveLength(1);
+    owner = true;
+    await expect(f.store.put(input(), undefined, async () => {
+      queueMicrotask(() => { owner = false; });
+      return () => { if (!owner) throw Error('SYNTHETIC_ADMISSION_AWAIT_GAP'); };
+    })).rejects.toThrow(/^SYNTHETIC_ADMISSION_AWAIT_GAP$/);
+    expect(f.inserts).toHaveLength(1);
+  } finally { await f.stop(); }
+});
