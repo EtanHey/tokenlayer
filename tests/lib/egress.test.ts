@@ -82,8 +82,8 @@ for (const main of ['drain', 'steer', 'ship', 'usage']) test(`${main} strips opa
     const config = join(dir, 'synthetic.env');
     writeFileSync(config, names.map((n, i) => `${n}="${values[i]}"`).join('\n'));
     const preload = join(dir, 'inject.ts');
-    // Delay until startup env loaders have run; block all network access.
-    writeFileSync(preload, `globalThis.fetch = () => new Promise(() => {}); ${main === 'usage' ? 'Bun.spawn = () => ({ stdout: new Response(\"\").body, exited: new Promise(() => {}), kill() {} });' : ''}\nsetTimeout(() => { throw new Error(${JSON.stringify('ordinary failure ' + 'distance '.repeat(30) + variants.join(' | '))}); }, 100);`);
+    // Wait for the fatal handler; synchronous entry-point env loading finishes before setImmediate. Block all network access.
+    writeFileSync(preload, `globalThis.fetch = () => new Promise(() => {}); ${main === 'usage' ? 'Bun.spawn = () => ({ stdout: new Response(\"\").body, exited: new Promise(() => {}), kill() {} });' : ''}\nprocess.on('newListener', function ready(event) { if (event !== 'uncaughtException') return; process.off('newListener', ready); setImmediate(() => { throw new Error(${JSON.stringify('ordinary failure ' + 'distance '.repeat(30) + variants.join(' | '))}); }); });`);
     const result = await run(main, { TOKENLAYER_ENV: config, TOKENLAYER_ENV_FILES: config, TOKENLAYER_MACHINE: 'synthetic', TOKENLAYER_STATE_DIR: join(dir, 'state'), TOKENLAYER_SHIP_STATE: join(dir, 'ship.json'), ...(main === 'usage' ? Object.fromEntries(names.map((n, i) => [n, values[i]])) : {}) }, preload, main === 'steer' ? ['--once'] : []);
     expect(result.code).not.toBe(0);
     expect(result.err).toContain('[redacted]');
