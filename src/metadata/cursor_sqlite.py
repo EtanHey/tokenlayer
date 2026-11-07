@@ -15,6 +15,7 @@ from urllib.parse import quote
 FORMAT = 'cursor-sqlite-logical-cells-v1'
 OUTPUT = Path.home() / '.config/tokenlayer/history-intake'
 CAPS = dict(rows=100000, total_bytes=64 * 1024**2, value_bytes=16 * 1024**2, seconds=30)
+PROFILES = ('default', 'ide-512mib-v1')
 FLOOR = 20 * 1024**3
 FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
@@ -63,11 +64,13 @@ def directory(path, create=False):
         raise
 
 
-def acquire(source, run, *, pending_bytes, _after_snapshot=None, **options):
+def acquire(source, run, *, pending_bytes, profile='default', _after_snapshot=None, **options):
     """Returns metadata only. Complete cells are streamed privately; hooks are synthetic-only."""
-    limits = CAPS | options
-    require(set(limits) == set(CAPS), 'LIMITS')
-    for key, maximum in CAPS.items():
+    require(type(profile) is str and profile in PROFILES, 'PROFILE')
+    maxima = CAPS if profile == 'default' else CAPS | dict(total_bytes=512 * 1024**2, seconds=180)
+    limits = maxima | options
+    require(set(limits) == set(maxima), 'LIMITS')
+    for key, maximum in maxima.items():
         value = limits[key]
         require(type(value) in (int, float) and 0 < value <= maximum and math.isfinite(value)
                 and (key == 'seconds' or type(value) is int), 'LIMITS')
@@ -263,7 +266,7 @@ def acquire(source, run, *, pending_bytes, _after_snapshot=None, **options):
         manifest = dict(status='COMPLETE_WITH_HOLDS' if counts['held'] else 'COMPLETE', format=FORMAT,
                         formatVersion=1, method='readonly-sqlite-transaction-logical-cells', observedAt=observed,
                         sourceLocator=str(source), sourceIdentity=identity(os.fstat(pin)), output=output_path,
-                        counts=counts, retainedBytes=total, limits=limits, pendingBytes=pending_bytes,
+                        counts=counts, retainedBytes=total, profile=profile, limits=limits, pendingBytes=pending_bytes,
                         selectionDigest=selection.hexdigest(), cellsSha256=stream_hash.hexdigest(),
                         custodyMachine=os.uname().nodename, table='cursorDiskKV', sqliteVersion=sqlite3.sqlite_version,
                         keyRanges=[['bubbleId:', 'bubbleId;'], ['composerData:', 'composerData;']],
@@ -325,9 +328,10 @@ if __name__ == '__main__':
     parser.add_argument('--source', required=True)
     parser.add_argument('--run', required=True)
     parser.add_argument('--pending-bytes', type=int, required=True)
+    parser.add_argument('--profile', default='default', help='default (64MiB/30s) or ide-512mib-v1 (512MiB/180s)')
     args = parser.parse_args()
     try:
-        result = acquire(Path(args.source), args.run, pending_bytes=args.pending_bytes)
+        result = acquire(Path(args.source), args.run, pending_bytes=args.pending_bytes, profile=args.profile)
         print(json.dumps({k: result[k] for k in ('status', 'counts', 'selectionDigest', 'cellsSha256')}))
     except Refusal as error:
         print(json.dumps(dict(status='REFUSED', code=error.code)))
