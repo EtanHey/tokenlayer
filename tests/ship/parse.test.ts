@@ -70,6 +70,37 @@ const codexMessage = JSON.stringify({
 });
 
 describe("detectHarness", () => {
+  const cloud = { type: "user", client_platform: "synthetic-cloud-platform", sessionId: "cse_synthetic", session_id: "cse_synthetic", message: { role: "user", content: [] } };
+  const detect = (...records: unknown[]) => detectHarness("claude", records.map(r => JSON.stringify(r)));
+  test("cloud is a record shape, independent of paths, filenames and thinking text", () => {
+    expect(detect(cloud)).toBe("claude-cloud");
+    expect(detect({ ...cloud, type: "assistant", message: { content: [{ type: "thinking", signature: "synthetic" }] } })).toBe("claude-cloud");
+    expect(detect({ ...cloud, cwd: "/ordinary/project", filename: "ordinary.jsonl" })).toBe("claude-cloud");
+    expect(detect({ type: "user", cwd: "/cloud-credit-import/cse_synthetic.jsonl" })).toBeNull();
+  });
+  test("explicit CLI/T3 signals outrank cloud in either line order", () => {
+    for (const control of [{ entrypoint: "cli" }, { entrypoint: "sdk-ts" }, { version: "1.2.3" }]) {
+      const expected = control.entrypoint === "sdk-ts" ? "t3" : control.entrypoint ? "claude" : null;
+      expect(detect({ ...cloud, ...control })).toBe(expected);
+      expect(detect(cloud, control)).toBe(expected);
+      expect(detect(control, cloud)).toBe(expected);
+    }
+  });
+  test("partial, malformed and conflicting cloud evidence stays undecided", () => {
+    for (const overrides of [
+      { client_platform: undefined }, { client_platform: null }, { client_platform: 1 }, { client_platform: " " },
+      { sessionId: undefined }, { sessionId: "cse_" }, { sessionId: "ordinary" }, { sessionId: 1 },
+      { session_id: undefined }, { session_id: "cse_other" }, { session_id: null }, { message: null }, { type: "queue-operation" },
+      { version: null }, { version: "" }, { entrypoint: null }, { entrypoint: "" }, { entrypoint: 1 },
+    ]) expect(detect({ ...cloud, ...overrides })).toBeNull();
+    expect(detectHarness("claude", ["{bad", "[]", "null"])).toBeNull();
+    expect(detect(cloud, { version: null })).toBeNull();
+    expect(detect(cloud, { entrypoint: 1 })).toBeNull();
+    expect(detectHarness("codex", [JSON.stringify(cloud)])).toBeNull();
+    expect(detectHarness("antigravity-cli", [JSON.stringify(cloud)])).toBe("antigravity");
+    expect(detectHarness("t3-antigravity", [JSON.stringify(cloud)])).toBe("t3");
+    expect(detectHarness("kiro", [JSON.stringify(cloud)])).toBe("kiro");
+  });
   test("claude files: entrypoint sdk-ts means T3, cli means claude, none yet means undecided", () => {
     expect(detectHarness("claude", [claudeUser])).toBe("claude");
     expect(detectHarness("claude", [JSON.stringify({ type: "queue-operation" }), claudeUser.replace('"cli"', '"sdk-ts"')])).toBe("t3");

@@ -72,8 +72,14 @@ Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
   export before importing. Do not silently replay under a new generation and claim unique counts.
   Archaeology's `shipperCovers(.zst)` remains false until this reader is deployed and the collab's F-3 replay/coverage
   prerequisites are satisfied; installing source alone must not suppress historical recovery.
-- `harness`: Claude files whose lines carry `entrypoint: "sdk-ts"` → `t3` (T3 drives Claude Code via the Agent SDK),
-  otherwise `claude`. Codex files whose `session_meta.payload.originator` is `"T3 Code"` → `t3`, otherwise `codex`.
+- `harness`: Claude files whose lines carry `entrypoint: "sdk-ts"` → `t3` (T3 drives Claude Code via the Agent SDK).
+  Other explicit entrypoints → `claude`. Without any `version`/`entrypoint` fields in the inspected head,
+  a user/assistant record with a message object, nonempty string `client_platform`, and matching top-level
+  `sessionId`/`session_id` beginning `cse_` with a nonempty whitespace-free suffix → `claude-cloud`.
+  Paths, filenames and thinking contents do not decide this. Other Claude files default to `claude` while
+  undecided (including version-only records). Detection uses complete lines in the first 64 KiB; untouched
+  completed checkpoints stay skipped, undecided checkpoints recheck on append, and state-loss replay redetects.
+  Codex files whose `session_meta.payload.originator` is `"T3 Code"` → `t3`, otherwise `codex`.
   A file whose head has no deciding line yet ships with the default and is reshipped once it is decided.
   Harness is a file-level column, excluded from generation identity so late classification and state loss
   do not duplicate lines. On a returning inode whose head was rewritten in place, `harness` may change

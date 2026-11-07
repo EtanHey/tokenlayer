@@ -2,7 +2,7 @@ import { repoFromCwd } from "../lib/repo";
 import { parseTimestampMs, toClickHouseTime } from "../lib/time";
 
 export type SourceKind = "claude" | "codex" | "antigravity-cli" | "t3-antigravity" | "kiro";
-export type Harness = "claude" | "codex" | "t3" | "antigravity" | "kiro";
+export type Harness = "claude" | "claude-cloud" | "codex" | "t3" | "antigravity" | "kiro";
 
 /** V3 checkpoint shape. Antigravity uses native metadata and timestamp carry-forward. */
 export type FileState = {
@@ -57,22 +57,31 @@ function tryParse(line: string): Obj | null {
 /**
  * Decide the harness from a file's first lines. Claude Code files written by T3 Code carry
  * `entrypoint: "sdk-ts"` (T3 drives Claude through the Agent SDK); Codex files written by T3 carry
- * `session_meta.payload.originator: "T3 Code"`. Returns null while the head has no deciding line.
+ * `session_meta.payload.originator: "T3 Code"`. Cloud inference requires client_platform
+ * and matching cse_ session IDs without CLI markers. Explicit CLI markers outrank that shape across
+ * the whole head; malformed CLI markers suppress cloud inference. No path or thinking-text signal.
+ * Returns null while the head has no deciding line.
  */
 export function detectHarness(kind: SourceKind, headLines: string[]): Harness | null {
   if (kind === "kiro") return "kiro";
   if (kind === "antigravity-cli") return "antigravity";
   if (kind === "t3-antigravity") return "t3";
+  let cloud = false, cliMarker = false;
   for (const line of headLines) {
     const o = tryParse(line);
     if (!o) continue;
     if (kind === "claude") {
       const ep = str(o.entrypoint);
       if (ep) return ep === "sdk-ts" ? "t3" : "claude";
+      cliMarker ||= "entrypoint" in o || "version" in o;
+      cloud ||= (o.type === "user" || o.type === "assistant") && isObj(o.message)
+        && !!str(o.client_platform).trim() && /^cse_\S+$/.test(str(o.sessionId))
+        && o.session_id === o.sessionId;
     } else if (o.type === "session_meta" && isObj(o.payload)) {
       return str(o.payload.originator) === "T3 Code" ? "t3" : "codex";
     }
   }
+  if (kind === "claude" && cloud && !cliMarker) return "claude-cloud";
   return null;
 }
 
