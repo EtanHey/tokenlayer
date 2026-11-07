@@ -1,6 +1,7 @@
 import { test, expect, afterAll } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { ClickHouse } from '../../src/lib/clickhouse';
+import { ClickHouse as LegacyClickHouse } from '../../src/lib/clickhouse';
+import { RawClickHouse as ClickHouse } from '../../src/raw-document/client';
 import { describe } from '../../src/history-file-chunks/durable';
 import { readFinalCoverage, expectedRow } from '../../src/history-file-chunks/coverage';
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
@@ -56,7 +57,7 @@ test('unset flatMap holes, all holes, empty, dense and source order; bounded hol
   response = ''; status = 200; headers = {};
   const sparse = new Array(4); sparse[1] = { a: 1 }; sparse[3] = { b: 2 };
   for (const [rows, body] of [[sparse, '{"a":1}\n{"b":2}\n'], [new Array(3), ''], [[], null], [[{ z: 3 }, { a: 1 }], '{"z":3}\n{"a":1}\n']] as const) {
-    const before = seen.length; await new ClickHouse(legacy()).insert('tiny', rows);
+    const before = seen.length; await new LegacyClickHouse(legacy()).insert('tiny', rows);
     expect(seen.length).toBe(before + (body === null ? 0 : 1)); if (body !== null) expect(seen.at(-1)!.body).toBe(body);
   }
   for (const rows of [sparse, new Array(3)]) {
@@ -64,5 +65,25 @@ test('unset flatMap holes, all holes, empty, dense and source order; bounded hol
     await expect(new ClickHouse(cfg()).insert('tiny', rows)).rejects.toThrow(/^CLICKHOUSE_BOUNDED_REFUSED$/); expect(seen.length).toBe(before);
   }
   const explicitUndefined = [undefined], before = seen.length;
-  await expect(new ClickHouse(legacy()).insert('tiny', explicitUndefined)).rejects.toBeInstanceOf(TypeError); expect(seen.length).toBe(before);
+  await expect(new LegacyClickHouse(legacy()).insert('tiny', explicitUndefined)).rejects.toBeInstanceOf(TypeError); expect(seen.length).toBe(before);
+});
+
+// Byte framing: TextDecoder strips an initial BOM; INSERT ACK requires zero wire bytes.
+test('BOM-only nonempty INSERT ACK refuses by response byte count', async () => {
+  response = '\uFEFF'; status = 200; headers = {};
+  expect(Buffer.from(response).toString('hex')).toBe('efbbbf');
+  const before = seen.length;
+  await expect(new ClickHouse(cfg()).insert('tiny', [{ a: 1 }])).rejects.toThrow(/^CLICKHOUSE_BOUNDED_REFUSED$/);
+  expect(seen.length).toBe(before + 1);
+});
+test('zero-byte INSERT ACK remains accepted and space-only ACK refuses', async () => {
+  response = ''; status = 200; headers = {};
+  const before = seen.length; await new ClickHouse(cfg()).insert('tiny', [{ a: 1 }]);
+  expect(seen.length).toBe(before + 1);
+  response = ' ';
+  await expect(new ClickHouse(cfg()).insert('tiny', [{ a: 1 }])).rejects.toThrow(/^CLICKHOUSE_BOUNDED_REFUSED$/);
+});
+test('BOM query decoding retains prior behavior', async () => {
+  response = '\uFEFF'; status = 200; headers = {};
+  expect(await new ClickHouse(cfg()).exec('SELECT 1')).toBe('');
 });

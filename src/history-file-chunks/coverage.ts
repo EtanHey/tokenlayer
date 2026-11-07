@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { ClickHouse } from '../lib/clickhouse';
+import { RawClickHouse } from '../raw-document/client';
 import type { describe } from './durable';
 export type ExpectedDocument = ReturnType<typeof describe>;
 const fail = (): never => { throw Error('FINAL_COVERAGE_REFUSED'); };
@@ -20,13 +20,13 @@ function uint(v: unknown) {
 /** Expected metadata MUST be unchanged describe() output from an authenticated safe-reader document.
  * role/index/offset/wireBytes are trusted caller annotations, not validated or certified by this lookup.
  * Evidence covers stored columns only; it grants no source-topology, authorization or completion proof. */
-export async function readFinalCoverage(client: ClickHouse, input: readonly ExpectedDocument[], authorize: () => Promise<void>, signal?: AbortSignal) {
+export async function readFinalCoverage(client: RawClickHouse, input: readonly ExpectedDocument[], authorize: () => Promise<void>, signal?: AbortSignal) {
   try {
     if (!Array.isArray(input) || !input.length || input.length > 1025) fail();
     const expected = structuredClone(input), cfg = { ...client.config };
     if (typeof authorize !== 'function' || !expected.length || expected.length > 1025 || !/^[a-zA-Z_][a-zA-Z_0-9]*$/.test(cfg.database) ||
       cfg.requestTimeoutMs === undefined || cfg.maxRequestBytes === undefined || cfg.maxResponseBytes === undefined) fail();
-    const ch = new ClickHouse({ ...cfg, requestTimeoutMs: Math.min(cfg.requestTimeoutMs!, 5000), maxRequestBytes: Math.min(cfg.maxRequestBytes!, 192 * 1024), maxResponseBytes: Math.min(cfg.maxResponseBytes!, 1024 ** 2) });
+    const ch = new RawClickHouse({ ...cfg, requestTimeoutMs: Math.min(cfg.requestTimeoutMs!, 5000), maxRequestBytes: Math.min(cfg.maxRequestBytes!, 192 * 1024), maxResponseBytes: Math.min(cfg.maxResponseBytes!, 1024 ** 2) });
     const key = (d: ExpectedDocument) => `${d.revisionId}:${d.acquisitionId}`;
     if (expected.some(d => !hash(d.revisionId) || !hash(d.acquisitionId) || !hash(d.originalHash) || !hash(d.acquisition.receiptHash) || !Number.isSafeInteger(d.originalBytes) || d.originalBytes < 0 || d.originalBytes > 1024 ** 2) || new Set(expected.map(key)).size !== expected.length) fail();
     const proofs: string[] = [];

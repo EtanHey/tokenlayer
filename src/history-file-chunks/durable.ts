@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto';
 import { custodyOps, directoryFlags, closeOnExec, atCwd } from '../metadata/private-fs';
 import { guardGit } from '../metadata/gemini-output';
 import { FLOOR_BYTES, PENDING_BYTES } from '../metadata/output';
-import { ClickHouse, encodeRow, RAW_BYTES } from '../lib/clickhouse';
+import { encodeRow, RAW_BYTES } from '../lib/clickhouse';
+import type { RawClient } from '../raw-document/client';
 import { RawDocumentStore, MAX_WIRE_BYTES, type RawDocument } from '../raw-document/storage';
 import { importAcquisition, type ImportAuthority } from './imported';
 import { statPin } from './acquire';
@@ -98,7 +99,7 @@ class Ledger {
   close() { for (const e of this.chain.reverse()) quiet(() => fs.closeSync(e.fd)); this.chain = []; }
 }
 /** Callable ACK-stage core only; FINAL readback/coverage and storage completion explicitly NOT_IMPLEMENTED. */
-export async function storeAcquisition(authority: ImportAuthority, writerPins: WriterPins, ledgerPath: string, ch: ClickHouse, current: CurrentAdmission, signal?: AbortSignal) {
+export async function storeAcquisition(authority: ImportAuthority, writerPins: WriterPins, ledgerPath: string, ch: RawClient, current: CurrentAdmission, signal?: AbortSignal) {
   let ledger: Ledger | undefined, stage = 'REFUSED';
   try {
     const a = structuredClone(authority), p = structuredClone(writerPins), path = ledgerPath;

@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { ClickHouse } from '../lib/clickhouse';
+import { RawClickHouse } from '../raw-document/client';
 import { custodyOps, directoryFlags, closeOnExec, atCwd } from '../metadata/private-fs';
 import { guardGit } from '../metadata/gemini-output';
 import { FLOOR_BYTES, PENDING_BYTES } from '../metadata/output';
@@ -96,10 +96,10 @@ class Snapshot {
   close() { for (const e of this.chain.reverse()) quiet(() => fs.closeSync(e.fd)); this.chain = []; }
 }
 /** No caller-supplied coverage/verified handle. Concrete fresh FINAL + complete synchronous commit protocol. */
-export async function finalizeStorage(input: FinalizeInput, client: ClickHouse, current: FinalAdmission, signal?: AbortSignal) {
+export async function finalizeStorage(input: FinalizeInput, client: RawClickHouse, current: FinalAdmission, signal?: AbortSignal) {
   let snapshot: Snapshot | undefined, committing = false;
   try {
-    const c = structuredClone(input), a = c.authority, p = c.writerPins, l = c.ledger, ch = new ClickHouse({ ...client.config });
+    const c = structuredClone(input), a = c.authority, p = c.writerPins, l = c.ledger, ch = new RawClickHouse({ ...client.config });
     if (typeof current !== 'function' || Object.keys(p).sort().join(',') !== 'configHash,epochHash,ownerHash,schemaHash,scopeHash,windowHash' || !Object.values(p).every(hash) ||
       !hash(l.intentHash) || !hash(l.authorityHash) || !hash(l.ackStageHash) || !ch.config.requestTimeoutMs || !ch.config.maxRequestBytes || !ch.config.maxResponseBytes) fail();
     const bindingHash = sha(json(['history-storage-finalize-v1', c]));

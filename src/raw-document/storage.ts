@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { ClickHouse, encodeRow, RAW_BYTES } from '../lib/clickhouse';
+import { encodeRow, RAW_BYTES } from '../lib/clickhouse';
+import { cloneRawClient, type RawClient } from './client';
 import { diskVerdict } from '../archaeology/disk-plan';
 
 export const MAX_DOCUMENT_BYTES = 16 * 1024 ** 2;
@@ -23,14 +24,14 @@ function text(value: string, cap: number) {
 
 /** Complete, pinned buffers only. No filesystem reader, DDL executor, retry or runtime entry point. */
 export class RawDocumentStore {
-  private readonly ch: ClickHouse;
+  private readonly ch: RawClient;
   #policy: 'manual' | 'streaming';
   #inFlight = false;
-  constructor(ch: ClickHouse, policy: 'manual' | 'streaming' = 'manual') {
+  constructor(ch: RawClient, policy: 'manual' | 'streaming' = 'manual') {
     if (policy !== 'manual' && policy !== 'streaming') throw Error('ADMISSION_POLICY_INVALID');
     this.#policy = policy;
     if (!/^[a-zA-Z_][a-zA-Z_0-9]*$/.test(ch.config.database)) throw Error('DATABASE_IDENTIFIER_INVALID');
-    this.ch = new ClickHouse({ ...ch.config });
+    this.ch = cloneRawClient(ch);
   }
 
   /** Returns only after synchronous CH acknowledgement; replay identity never depends on the local clock. */

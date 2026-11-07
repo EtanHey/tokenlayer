@@ -35,3 +35,7 @@ bounded completion bytes; caller additionally owes actual allocation/source/epoc
 Actual owned FS+loopback fake SQL proof is not real backend/source acceptance. No CLI,
 service, native, CH server, pilot or production adoption. Separate admitted backend
 byte/ACK/FINAL qualification and full live schema/authority verification remain HOLD.
+
+API compatibility delta: finalizeStorage now accepts the explicit RawClickHouse from
+raw-document/client. Its captured-config clone remains bounded and receives the same signal.
+Completion semantics and all source/ledger/FINAL contracts are unchanged.

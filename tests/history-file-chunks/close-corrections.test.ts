@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { ClickHouse } from '../../src/lib/clickhouse';
+import { RawClickHouse as ClickHouse } from '../../src/raw-document/client';
 import { acquireFile, statPin } from '../../src/history-file-chunks/acquire';
 import { storeAcquisition } from '../../src/history-file-chunks/durable';
 import { finalizeStorage, type FinalAdmission } from '../../src/history-file-chunks/finalize';

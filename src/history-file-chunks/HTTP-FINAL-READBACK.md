@@ -1,9 +1,9 @@
-# Opt-in bounded HTTP and FINAL evidence — unused
+# Raw-only bounded HTTP and FINAL evidence — unused
 
-Flat ClickHouseConfig requestTimeoutMs/maxRequestBytes/maxResponseBytes must all be
-positive safe integers, capped60s/16MiB/2MiB. An opt-in client snapshots/freezes flat
-config; RawDocumentStore's existing clone preserves these primitives. Its insert
-passes the optional signal to this real transport. Unset clients retain legacy
+RawClickHouseConfig requestTimeoutMs/maxRequestBytes/maxResponseBytes must all be
+positive safe integers, capped60s/16MiB/2MiB. The explicit raw client snapshots/freezes flat
+config; RawDocumentStore's concrete clone preserves the profile. Its insert
+passes the optional signal to this real transport. Original shared clients retain legacy
 fetch/text/error/signal behavior. No env default or production caller changes.
 
 Bounded requests charge actual URL (including encoded insert query/dedup token) plus
@@ -28,3 +28,9 @@ native/source/adoption qualification. Caller still owes fresh full schema/config
 sole-owner/epoch and complete allocation authority; no fencing or maximum-size claim.
 
 ExpectedDocument is a trusted-input contract: callers supply unchanged describe() output from an authenticated safe-reader document. This lookup compares stored columns, raw hash and length. It does not validate or certify role/index/offset/wireBytes annotations or source topology; the safe-reader/ledger reconstruction in finalizeStorage supplies that separate boundary. Its evidence cannot grant completion or authority.
+
+API boundary: import RawClickHouse/RawClickHouseConfig from raw-document/client; the shared
+lib/clickhouse module is restored byte-for-byte to e0790c5. All three limits are required
+on this explicit client. RawDocumentStore and storeAcquisition accept RawClient (legacy
+ClickHouse or RawClickHouse); cloneRawClient preserves concrete transport and cancellation.
+readFinalCoverage requires RawClickHouse. Legacy sparse/unset wire and errors stay exact.
