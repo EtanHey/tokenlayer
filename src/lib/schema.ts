@@ -3,13 +3,13 @@ import { repoFunctionsSQL } from "./repo";
 import { migrateSessionSchema } from "./session-schema";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { assertTokenlayerDatabase, type ClickHouse } from "./clickhouse";
+import { fixed, type ClickHouse } from "./clickhouse";
 
 export const SCHEMA_DIR = join(import.meta.dir, "..", "..", "schema");
 
 /** Apply schema/*.sql in name order. Files contain idempotent statements (CREATE ... IF NOT EXISTS). */
 export async function applySchema(ch: ClickHouse, dir = SCHEMA_DIR): Promise<string[]> {
-  assertTokenlayerDatabase(ch.config);
+  fixed(ch);
   const files = readdirSync(dir)
     .filter((f) => f.endsWith(".sql"))
     .sort();

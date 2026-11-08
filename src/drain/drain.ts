@@ -1,4 +1,4 @@
-import { assertTokenlayerDatabase, type ClickHouse } from "../lib/clickhouse";
+import { fixed, type ClickHouse } from "../lib/clickhouse";
 import { redactDeep, redactText } from "../lib/redact";
 import { sha256Hex } from "../lib/hash";
 import { mapUsageRecord } from "./record";
@@ -46,7 +46,7 @@ async function fetchPage(opts: DrainOptions, count: number): Promise<unknown[]> 
 
 /** Flush the spool, pop the usage queue until it is empty, spool what was popped, flush again. */
 export async function drainOnce(opts: DrainOptions): Promise<DrainResult> {
-  assertTokenlayerDatabase(opts.clickhouse.config);
+  fixed(opts.clickhouse);
   const pageSize = opts.pageSize ?? 1000;
   const maxPages = opts.maxPages ?? 100;
   const result: DrainResult = { drained: 0, inserted: 0, spooled: 0, rejected: 0 };

@@ -2,11 +2,11 @@ import { dryRun, sha256, type Entry, type Event } from "./pipeline";
 import { newFileState, parseLine } from "../ship/parse";
 import { startLocalClickHouse } from "../lib/local-clickhouse";
 import { applySchema } from "../lib/schema";
-import { assertTokenlayerDatabase, type ClickHouse } from "../lib/clickhouse";
+import { fixed, type ClickHouse } from "../lib/clickhouse";
 
 /** Write/read the actual sample, checking bytes rather than a dry-run-only baseline. */
 export async function validateSample(client: ClickHouse, sample: Event[]): Promise<number> {
-  assertTokenlayerDatabase(client.config);
+  fixed(client);
   await client.exec("CREATE TABLE tokenlayer.archaeology_sample AS tokenlayer.session_events");
   await client.insert("archaeology_sample", sample);
   const stored=await client.queryJSON<{raw:string;content_hash:string}>("SELECT raw,content_hash FROM tokenlayer.archaeology_sample FINAL");

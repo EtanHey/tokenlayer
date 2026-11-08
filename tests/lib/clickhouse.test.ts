@@ -93,6 +93,8 @@ describe("fixed-schema database admission", () => {
       const { s, seen, client } = server(() => new Response(""));
       try {
         const ch = new ClickHouse({ ...client.config, database: "other" });
+        await expect(ch.insert(table, [])).rejects.toThrow(refused);
+        await expect(ch.insert(table, { get length(): never { throw Error("ROWS_ACCESSED_BEFORE_REFUSAL"); } } as unknown as readonly unknown[])).rejects.toThrow(refused);
         await expect(ch.insert(table, [{ a: 1 }])).rejects.toThrow(refused);
         // A throwing serializer proves refusal precedes row encoding as well as HTTP.
         await expect(ch.insert(table, [{ toJSON() { throw Error("ENCODED_BEFORE_REFUSAL"); } }])).rejects.toThrow(refused);
@@ -131,6 +133,33 @@ describe("fixed-schema database admission", () => {
       await clone.insert("raw_documents", [{ raw: "", [RAW_BYTES]: Buffer.from([0x80, 0xff]) }]);
       expect(clone.config.database).toBe("synthetic");
       expect(bodies).toEqual([Buffer.from([123, 34, 114, 97, 119, 34, 58, 34, 128, 255, 34, 125, 10])]);
+    } finally { s.stop(true); }
+  });
+  test("generic direct inserts retain exact table selection and arbitrary database", async () => {
+    const { s, seen, client } = server(() => new Response(""));
+    try {
+      const ch = new ClickHouse({ ...client.config, database: "synthetic" });
+      for (const table of ["", "Session_events", "session_events_extra", "tokenlayer.session_events", "raw_documents"]) {
+        await ch.insert(table, []);
+        expect(seen).toHaveLength(0);
+      }
+      await ch.insert("raw_documents", [{ a: 1 }], "fixture-token");
+      expect(seen).toHaveLength(1);
+      expect(seen[0].searchParams.get("query")).toBe("INSERT INTO synthetic.raw_documents FORMAT JSONEachRow");
+      expect(seen[0].searchParams.get("insert_deduplication_token")).toBe("fixture-token");
+    } finally { s.stop(true); }
+  });
+  test("direct admissions recheck a client's current database", async () => {
+    const { s, seen, client } = server(() => new Response(""));
+    try {
+      for (const table of ["session_events", "proxy_usage", "credentials_snap", "archaeology_sample"]) {
+        client.config.database = "tokenlayer";
+        await client.insert(table, []);
+        client.config.database = "other";
+        await expect(client.insert(table, [])).rejects.toThrow(refused);
+      }
+      await expect(verifySessionSchema(client)).rejects.toThrow(refused);
+      expect(seen).toHaveLength(0);
     } finally { s.stop(true); }
   });
 });
