@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClickHouse } from "../../src/lib/clickhouse";
 import { shipOnce, type ShipOptions } from "../../src/ship/ship";
-import { loadState } from "../../src/ship/state";
+import { loadState, saveState } from "../../src/ship/state";
 
 type Row = Record<string, unknown>;
 
@@ -67,6 +67,57 @@ const claudeFile = () => join(root, "claude", "-Users-u-Gits-golems", "s-1.jsonl
 const codexFile = () => join(root, "codex", "2026", "10", "28", "rollout-a.jsonl");
 
 describe("shipOnce", () => {
+  const cloudLine = JSON.stringify({ type: "user", client_platform: "synthetic-cloud-platform", sessionId: "cse_synthetic", session_id: "cse_other", message: { role: "user", content: [] } });
+  test("cloud fresh shipping, appends, checkpoint loss and full state loss retain harness and identity", async () => {
+    writeFileSync(claudeFile(), `${cloudLine}\n`);
+    expect((await shipOnce(opts)).lines).toBe(1);
+    const first = { ...db.rows[0] };
+    expect(first.harness).toBe("claude-cloud");
+    expect(loadState(opts.statePath).files[claudeFile()].harnessDecided).toBe(true);
+    expect((await shipOnce(opts)).lines).toBe(0);
+    appendFileSync(claudeFile(), `${cloudLine}\n`);
+    expect((await shipOnce(opts)).lines).toBe(1);
+    expect(db.rows.at(-1)).toMatchObject({ harness: "claude-cloud", generation: first.generation, byte_offset: cloudLine.length + 1 });
+    for (const fullLoss of [false, true]) {
+      rmSync(opts.statePath);
+      if (fullLoss) rmSync(`${opts.statePath}.generations`);
+      const before = db.rows.length;
+      expect((await shipOnce(opts)).lines).toBe(2);
+      expect(db.rows.slice(before).map(r => r.harness)).toEqual(["claude-cloud", "claude-cloud"]);
+      expect(db.rows[before]).toEqual(first);
+    }
+  });
+  test.each(["legacy-cloud", "undecided-prelude"])("%s checkpoint skips untouched files, then corrects all rows on cloud append", async (mode) => {
+    const initial = mode === "legacy-cloud" ? cloudLine : JSON.stringify({ type: "queue-operation" });
+    writeFileSync(claudeFile(), `${initial}\n`);
+    await shipOnce(opts);
+    const state = loadState(opts.statePath);
+    const cp = state.files[claudeFile()];
+    const generation = cp.generation;
+    cp.harnessDecided = false;
+    cp.parser.harness = "claude";
+    saveState(opts.statePath, state);
+    saveState(`${opts.statePath}.generations`, state);
+    expect((await shipOnce(opts)).lines).toBe(0);
+    expect(loadState(opts.statePath).files[claudeFile()].parser.harness).toBe("claude");
+    const before = db.rows.length;
+    appendFileSync(claudeFile(), `${cloudLine}\n`);
+    expect(await shipOnce(opts)).toMatchObject({ lines: 2, resets: 1 });
+    expect(db.rows.slice(before).map(r => [r.byte_offset, r.harness, r.generation])).toEqual([
+      [0, "claude-cloud", generation], [initial.length + 1, "claude-cloud", generation],
+    ]);
+    expect(db.tokens.at(-1)).not.toBe(db.tokens[0]);
+    expect(loadState(opts.statePath).files[claudeFile()].harnessDecided).toBe(true);
+  });
+  test("version-only CLI evidence remains undecided so late T3 still reclassifies", async () => {
+    writeFileSync(claudeFile(), `${JSON.stringify({ ...JSON.parse(cloudLine), version: "1.2.3" })}\n`);
+    await shipOnce(opts);
+    expect(db.rows[0].harness).toBe("claude");
+    expect(loadState(opts.statePath).files[claudeFile()].harnessDecided).toBe(false);
+    appendFileSync(claudeFile(), `${claudeLine(2, "sdk-ts")}\n`);
+    expect(await shipOnce(opts)).toMatchObject({ lines: 2, resets: 1 });
+    expect(db.rows.slice(1).map(r => r.harness)).toEqual(["t3", "t3"]);
+  });
   test("content hashes cover exact source bytes including LF, before decoding or redaction", async () => {
     const sources = [Buffer.from('{"email":"one@example.invalid"}\r\n'),
       Buffer.from('{"email":"two@example.invalid"}\r\n'), Buffer.from([0xff, 0x0a]), Buffer.from([0xfe, 0x0a])];
