@@ -173,6 +173,9 @@ export class StreamingHistoryClient extends ClickHouse {
                 if ((this.options.stateBytesUsed?.() ?? this.ledger.size()) + reserved > this.ledger.cap) this.ledger.rotate();
             }
             this.options.verifySource?.(reserved);
+            // Reconciliation can yield after the earlier stop check.
+            if (this.options.shouldStop?.())
+                throw Error('history stopped before dispatch');
             this.record(intent, 'intent');
             this.used += charge;
             try {
