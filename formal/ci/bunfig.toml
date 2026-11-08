@@ -1,0 +1,3 @@
+# Explicit formal-runner configuration; ambient repo Bun configuration is not an input.
+preload = []
+env = false
