@@ -38,7 +38,7 @@ for (const coverage of [0, 2, 1]) {
     }
     assert.ok(refused, 'SHARED_APPEND_NOT_REFUSED');
     assert.equal(readFileSync(archived, 'utf8'), original);
-    const client = new StreamingHistoryClient({ url: 'http://invalid.local', database: 'unused', user: '', password: '' },
+    const client = new StreamingHistoryClient({ url: 'http://invalid.local', database: 'tokenlayer', user: '', password: '' },
         { ledger: path, manifest: 'm', run: 'r', sessionId: 'synthetic', stateBytesCap: 4096, localSpace: space });
     Object.assign(client, { ledger: log });
     client.coverage = async () => coverage;
