@@ -5,11 +5,11 @@
     "description": "UNQUALIFIED separate Linux profile; never reviewed Mac binary equivalence",
     "jar": {
       "url": "https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar",
-      "sha256": "8bc07d8686b7e40bbc289a5744324865526b1c107f7f21571a937b488dbbfe03",
-      "size": 4509175,
-      "asset_id": 718127750,
+      "sha256": "e1f11b75c4b5bc4478ba0ac5cb6ae28e40a01b0016bc33e0aa97da22dfdbcd7f",
+      "size": 4510215,
+      "asset_id": 718777374,
       "prerelease": true,
-      "tag_commit": "c058b21a5013c31281312d3f029bcbb5c98e3748"
+      "tag_commit": "d8fb231de4e4b5d02c1b2ed1ac759c086f694021"
     },
     "jdk_archive": {
       "url": "https://github.com/adoptium/temurin27-binaries/releases/download/jdk-27.0.1.0.2%2B1/OpenJDK27U-jdk_x64_linux_hotspot_27.0.1.0.2_1.tar.gz",
