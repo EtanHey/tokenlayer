@@ -3,7 +3,7 @@ import { MAX_SERIALIZED_BATCH_BYTES } from '../../src/lib/row-size';
 import { existsSync, mkdirSync, openSync, closeSync, unlinkSync, readFileSync, statSync, realpathSync, fsyncSync, writeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { ClickHouse } from '../../src/lib/clickhouse';
+import { ClickHouse, fixed } from '../../src/lib/clickhouse';
 import { expandHome, loadEnvFiles } from '../../src/lib/env';
 import { installErrorHandlers, writeOut } from '../../src/lib/egress';
 import { sha256Hex } from '../../src/lib/hash';
@@ -28,6 +28,7 @@ export async function runImport(manifestPath: string, ch: ClickHouse, options: {
     receiptBytesCap?: number;
     localSpace?: LocalSpace;
 }) {
+    fixed(ch);
     const maxRecordBytes = recordLimit(options.maxRecordBytes);
     const batchBytes = options.batchBytes ?? 256 * 1024;
     if (!Number.isSafeInteger(batchBytes) || batchBytes < 1 || batchBytes > 4 * 1024 ** 2)

@@ -14,7 +14,7 @@ installErrorHandlers();
 // The daemon only picks up files without a checkpoint if they changed in the last day; run --backfill once for history.
 import { loadState } from "./state";
 import { verifySessionSchema } from "../lib/session-schema";
-import { ClickHouse } from "../lib/clickhouse";
+import { ClickHouse, fixed } from "../lib/clickhouse";
 import { expandHome, loadEnvFiles } from "../lib/env";
 import { shipOnce, type ShipOptions } from "./ship";
 
@@ -52,7 +52,7 @@ const opts: ShipOptions = {
     { kind: "antigravity-cli", dir: expandHome(env.TOKENLAYER_ANTIGRAVITY_CLI_DIR ?? "~/.gemini/antigravity-cli/brain") },
     { kind: "t3-antigravity", dir: expandHome(env.TOKENLAYER_T3_ANTIGRAVITY_DIR ?? "~/.t3/userdata/providers/antigravity") },
   ],
-  clickhouse: ClickHouse.fromEnv(env),
+  clickhouse: fixed(ClickHouse.fromEnv(env)),
   statePath: expandHome(env.TOKENLAYER_SHIP_STATE ?? "~/.config/tokenlayer/ship-state.json"),
   sinceMs,
   rateBytesPerSec: Math.round(rateMb * 1024 * 1024),

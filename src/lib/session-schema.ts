@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ClickHouse } from "./clickhouse";
+import { fixed, type ClickHouse } from "./clickhouse";
 
 const key = "machine, path, generation, byte_offset, content_hash";
 const definition = () => readFileSync(join(import.meta.dir, "../../schema/004_session_events.sql"), "utf8");
@@ -9,6 +9,7 @@ const expectedTypes = () => [...definition().matchAll(/^    (\w+)\s+(\w+(?:\([^\
 const expectedColumns = () => expectedTypes().map((c) => c.name);
 
 export async function verifySessionSchema(ch: ClickHouse): Promise<void> {
+  fixed(ch);
   const tables = await ch.queryJSON<{ sorting_key: string; engine: string }>(
     "SELECT sorting_key, engine FROM system.tables WHERE database='tokenlayer' AND name='session_events'",
   );
@@ -23,6 +24,7 @@ export async function verifySessionSchema(ch: ClickHouse): Promise<void> {
 
 /** Run with shippers stopped. EXCHANGE is atomic; the old table remains as an archive. */
 export async function migrateSessionSchema(ch: ClickHouse): Promise<void> {
+  fixed(ch);
   // Additive F-1 upgrade: existing rows keep an empty alias without rebuilding the archive.
   await ch.exec("ALTER TABLE tokenlayer.session_events ADD COLUMN IF NOT EXISTS session_alias String CODEC(ZSTD(3))");
   await ch.exec("ALTER TABLE tokenlayer.session_events ADD COLUMN IF NOT EXISTS credits Nullable(Float64) DEFAULT NULL");

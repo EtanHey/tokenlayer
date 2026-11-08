@@ -7,6 +7,12 @@ export type ClickHouseConfig = {
   database: string;
 };
 
+/** Admit fixed-schema work and return the same client; explicit generic tables bypass this guard. */
+export function fixed<T extends { config: Pick<ClickHouseConfig, "database"> }>(ch: T, table = "proxy_usage"): T {
+  if (["session_events", "proxy_usage", "credentials_snap", "archaeology_sample"].includes(table) && ch.config.database !== "tokenlayer") throw new Error("CLICKHOUSE_DATABASE_UNSUPPORTED");
+  return ch;
+}
+
 // JSONEachRow accepts String bytes without requiring UTF-8. Keep source bytes out of JS decoding.
 export const RAW_BYTES = Symbol("source line bytes");
 const shortEscapes: Record<string, string> = { '"': '\\"', "\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t" };
@@ -35,10 +41,6 @@ export class ClickHouse {
     });
   }
 
-  private headers(): Record<string, string> {
-    return { "X-ClickHouse-User": this.config.user, "X-ClickHouse-Key": this.config.password };
-  }
-
   /**
    * POST and read the whole response. ClickHouse can answer HTTP 200 and still fail
    * (https://clickhouse.com/docs/interfaces/http#http-response-codes-caveats), so every call sets
@@ -47,12 +49,11 @@ export class ClickHouse {
    */
   private async post(what: string, params: URLSearchParams, body: string | Buffer, bodyIsResult: boolean): Promise<string> {
     params.set("wait_end_of_query", "1");
-    const res = await fetch(`${this.config.url}/?${params}`, { method: "POST", headers: this.headers(), body: typeof body === "string" ? body : new Uint8Array(body) });
+    const res = await fetch(`${this.config.url}/?${params}`, { method: "POST", headers: { "X-ClickHouse-User": this.config.user, "X-ClickHouse-Key": this.config.password }, body: typeof body === "string" ? body : new Uint8Array(body) });
     const text = await res.text();
     const code = res.headers.get("x-clickhouse-exception-code");
     // An insert answers with an empty body, so any exception text in it means the insert failed.
-    const bodyException = !bodyIsResult && /DB::Exception/.test(text);
-    if (!res.ok || code || bodyException) {
+    if (!res.ok || code || (!bodyIsResult && /DB::Exception/.test(text))) {
       throw new Error(`clickhouse ${what} failed: HTTP ${res.status}${code ? ` exception ${code}` : ""} ${redactText(text).slice(0, 300)}`);
     }
     return text;
@@ -63,6 +64,8 @@ export class ClickHouse {
    * (tables set non_replicated_deduplication_window). Resolves only once ClickHouse confirmed the insert.
    */
   async insert(table: string, rows: readonly unknown[], dedupToken?: string): Promise<void> {
+    // Keep the generic client available for parameterized raw-document storage and exports.
+    fixed(this, table);
     if (rows.length === 0) return;
     const params = new URLSearchParams({ query: `INSERT INTO ${this.config.database}.${table} FORMAT JSONEachRow`, async_insert: "0" });
     if (dedupToken) params.set("insert_deduplication_token", dedupToken);
