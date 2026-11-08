@@ -55,3 +55,13 @@ D1 regression (fake files, probes and host; NEW ignored fixture directory each r
 
 Still pending: shared resolver/transfer controls, launcher/workflow/protocol integration and
 Linux hosted qualification. B2/B3 remain open.
+
+## Shared resolver/transfer controls (`check_tools.py`, `check_transfer.py`)
+
+The two reviewed control files are published byte-for-byte unchanged. They use fake files,
+probes, host and HTTP, plus real local forked workers for the timeout/cancel cases. They run no
+Java, Bun, TLC, tool version, download or network step (NEW ignored fixture directory each run):
+`python3 -I -B formal/ci/check_tools.py <new-fixture-directory>`
+A pass is macOS synthetic evidence only. It is not Linux, hosted or tool qualification, and
+not protocol acceptance. Launcher/workflow/protocol integration and Linux hosted qualification
+remain pending. B2/B3 remain open, and `formal_lane_accepted` stays `false`.
