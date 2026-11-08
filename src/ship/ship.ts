@@ -341,8 +341,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             if (identity(after) !== identity(st) || after.mtimeMs !== st.mtimeMs || after.ctimeMs !== st.ctimeMs) break;
           }
           if (cp.compressed) {
-            cp.compressed.complete = opts.maxLines === undefined && opts.shouldStop === undefined
-              ? true : cp.offset === size;
+            cp.compressed.complete = cp.offset === size;
             dirty = true;
           }
           if (shippedFromFile) result.files++;

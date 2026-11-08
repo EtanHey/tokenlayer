@@ -6,9 +6,10 @@ type Launchctl = (args: string[]) => { status: number | null; stderr: string };
 const ctl: Launchctl = args => spawnSync('launchctl', args, { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] });
 const domain = `gui/${process.getuid!()}`;
 const pause = (ms: number) => Bun.sleep(ms);
-async function stop(label: string, command: Launchctl, sleep: typeof pause) {
+async function stop(label: string, command: Launchctl, sleep: typeof pause, onStopped?: () => void) {
   if (command(['print', `${domain}/${label}`]).status !== 0) return false;
   if (command(['bootout', `${domain}/${label}`]).status !== 0) throw Error(`bootout ${label} failed`);
+  onStopped?.(); // A successful bootout requires restoration even if teardown later fails.
   for (let i = 0; i < 40; i++) {
     if (command(['print', `${domain}/${label}`]).status !== 0) return true;
     await sleep(250);
@@ -33,7 +34,7 @@ export async function withPausedSidecars(work: () => Promise<void>, home = homed
   const primaryFailures: unknown[] = [];
   try {
     for (const label of ['com.tokenlayer.ship', 'com.tokenlayer.drain']) {
-      if (await stop(label, command, sleep)) stopped.push(label);
+      await stop(label, command, sleep, () => stopped.push(label));
     }
     await work();
   } catch (err) {
