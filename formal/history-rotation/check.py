@@ -17,7 +17,8 @@ JAVA = Path('/opt/homebrew/opt/openjdk/bin/java').resolve()
 JAR = Path.home() / '.cache/tla/tla2tools.jar'
 BUN = (Path.home() / '.bun/bin/bun').resolve()
 SOURCES = ['scripts/history/journal.ts', 'scripts/history/stream.ts', 'src/ship/state.ts',
-           'tests/support/history-rotation-child.ts', 'tests/integration/history-revision.it.test.ts']
+           'tests/support/history-rotation-child.ts', 'tests/integration/history-revision.it.test.ts',
+           'formal/ci/bunfig.toml', 'formal/ci/tsconfig.json', 'package.json']
 def sha(p):
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
@@ -121,7 +122,10 @@ def main():
                                    ('source-missed-link',missed,'RETIRING_INODE_NOT_PUBLISHED'),
                                    ('source-baseline',ROOT/'scripts/history/journal.ts',None)]:
             log = out/(name+'.log')
-            argv = [str(BUN),'run',str(HERE/'conformance.ts'),str(source),str(out/name)]
+            argv = [str(BUN),'run','--no-env-file','--no-install',
+                    '--config='+str(ROOT/'formal/ci/bunfig.toml'),
+                    '--tsconfig-override='+str(ROOT/'formal/ci/tsconfig.json'),
+                    str(HERE/'conformance.ts'),str(source),str(out/name)]
             code = run(argv, ROOT, log, min(60,deadline-time.monotonic()),env)
             text = log.read_text()
             ok = valid_source(code, text, marker)
