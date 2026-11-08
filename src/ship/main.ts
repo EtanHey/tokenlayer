@@ -69,7 +69,7 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => (stoppin
 do {
   const started = Date.now();
   try {
-    const r = await shipOnce(opts);
+    const r = await shipOnce({ ...opts, shouldStop: () => stopping });
     if (r.lines || r.resets) {
       writeOut(`${new Date().toISOString()} files=${r.files} lines=${r.lines} bytes=${r.bytes} resets=${r.resets}`);
     }
