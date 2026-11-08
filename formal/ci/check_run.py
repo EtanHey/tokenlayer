@@ -1,15 +1,17 @@
 """Offline launcher controls: owned fake runners/tools only; no Java/Bun/TLC/version/network step.
-Usage: python3 -I -B check_run.py <dir with run.py,tools.py,expected.py,toolchain.json> <NEW fixture dir>
+Usage: python3 -I -B check_run.py <formal/ci dir with run.py and its shared modules> <NEW fixture dir>
 Every control compares its whole observed string exactly with its expectation."""
-import contextlib, copy, hashlib, importlib.util, io, json, os, shutil, signal, sys, threading, time
+import contextlib, copy, hashlib, importlib.util, io, json, os, re, shutil, signal, sys, threading, time
 from pathlib import Path
 
 MOD, F = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
 F.mkdir(mode=0o700, parents=True, exist_ok=False)
 REPO, TOOLS = F / 'repo', F / 'tools'
 (REPO / 'formal/ci').mkdir(parents=True); TOOLS.mkdir()
-for name in ('run.py', 'tools.py', 'expected.py', 'toolchain.json'):
+MODULE = ('run.py', 'tools.py', 'expected.py', 'closure.py', 'toolchain.json', 'acquisition.py', 'bunfig.toml', 'tsconfig.json')
+for name in MODULE:
     shutil.copyfile(MOD / name, REPO / 'formal/ci' / name)
+shutil.copyfile(MOD.parents[1] / 'package.json', REPO / 'package.json')
 for key in ('java', 'jar', 'bun'):
     (TOOLS / key).write_bytes(b'fake-' + key.encode()); (TOOLS / key).chmod(0o700)
 GH = ('GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT')
@@ -27,6 +29,7 @@ def audit(event, args):  # only this interpreter may start; any socket use fails
         raise RuntimeError('NETWORK_FORBIDDEN:' + event)
 sys.addaudithook(audit)
 sha = lambda p: hashlib.sha256(Path(p).read_bytes()).hexdigest()
+MODULE_INPUTS = {name: sha(MOD / name) for name in MODULE}
 PATHS = {k: str((TOOLS / k).resolve()) for k in ('java', 'jar', 'bun')}
 TOOL = {**PATHS, **{k + '_sha256': sha(v) for k, v in PATHS.items()}}
 DIRS = {'importer': 'history', 'rotation': 'history-rotation', 'writer': 'writer-transfer',
@@ -109,8 +112,19 @@ EXTRA = {'importer': ['formal/history/Model.tla'], 'rotation': ['formal/history-
          's2': ['formal/history-conformance/contract.json', 'formal/history-conformance/corpus/case-1.json']}
 for rel in sum(EXTRA.values(), []):
     (REPO / rel).parent.mkdir(parents=True, exist_ok=True); (REPO / rel).write_text('fake source ' + rel + '\n')
+# Fixture closure contract for these fake runners (real lanes: check_closure.py); pinned like the real one.
+CLOSURE = {'schema': json.loads((MOD / 'closure.json').read_text())['schema'], 'shared': json.loads((MOD / 'closure.json').read_text())['shared'],
+           'lanes': {k: {'consumers': {'formal/%s/check.py' % d: sha(REPO / 'formal' / d / 'check.py')},
+                         'exec': ['formal/%s/check.py' % d], 'identity': [], 'dirs': {}, 'imports': [],
+                         'input': ['formal/%s/toolchain.json' % {'s2': 'history'}.get(k, d)] if k != 'writer' else []}
+                     for k, d in DIRS.items()}}
+(REPO / 'formal/ci/closure.json').write_text(json.dumps(CLOSURE, indent=1))
+fixture_run = REPO / 'formal/ci/run.py'
+fixture_run.write_text(re.sub(r"(?m)^CLOSURE_SHA256 = '[0-9a-f]{64}'$",
+    "CLOSURE_SHA256 = '" + sha(REPO / 'formal/ci/closure.json') + "'", fixture_run.read_text()))
 spec = importlib.util.spec_from_file_location('run', REPO / 'formal/ci/run.py')
 run = importlib.util.module_from_spec(spec); spec.loader.exec_module(run)
+run.CLOSURE_SHA256 = sha(REPO / 'formal/ci/closure.json')
 probes = []
 def probe(path, flag):
     probes.append(str(path))
@@ -303,14 +317,16 @@ def drift(rel):  # bound source changes after every lane completed; the manifest
         return gate(lanes)
     finally:
         p.write_bytes(before)
-for case, rel in [('gate-runner-drift-after-lane', 'formal/history/check.py'),
-                  ('gate-model-drift-after-lane', 'formal/history/Model.tla'),
+check('gate-runner-drift-after-lane', '1 REFUSED CLOSURE_CONSUMER_STALE:importer:formal/history/check.py',
+      lambda: drift('formal/history/check.py'))
+for case, rel in [('gate-model-drift-after-lane', 'formal/history/Model.tla'),
                   ('gate-corpus-drift-after-lane', 'formal/history-conformance/corpus/case-1.json'),
                   ('gate-contract-drift-after-lane', 'formal/history-conformance/contract.json'),
                   ('gate-protocol-lock-drift-after-lane', 'formal/history/toolchain.json'),
                   ('gate-profile-authority-drift-after-lane', 'formal/ci/toolchain.json'),
                   ('gate-manifest-helper-drift-after-lane', 'formal/ci/expected.py')]:
-    check(case, '1 REFUSED SOURCE_MISMATCH:' + rel, lambda rel=rel: drift(rel))
+    reason = 'CLOSURE_CONSUMER_STALE:shared:' if rel == 'formal/ci/expected.py' else 'SOURCE_MISMATCH:'
+    check(case, '1 REFUSED ' + reason + rel, lambda rel=rel: drift(rel))
 check('gate-reexpected-model-old-receipts', '1 REFUSED RECEIPT_SOURCES:importer',
       lambda: gate(lanes, manifest(edit=lambda m: m['lanes']['importer']['sources'].update({'formal/history/Model.tla': '1' * 64}))))
 check('gate-selected-tool-expectation-changed', '1 REFUSED RECEIPT_TOOLS:' + FIVE,
@@ -386,8 +402,8 @@ def cancel():
     WAITS['cancel-kill-reap'] = rec.get('seconds')
     return '%s exit=%d kid=%s' % (rec['status'], code, dead(REPO / 'kid-rotation'))
 check('cancel-kill-reap', 'CANCELLED exit=130 kid=reaped', cancel)
-check('inputs-unchanged', 'True', lambda: str(frozen() == INPUTS and all(sha(MOD / k) == sha(REPO / 'formal/ci' / k)
-      for k in ('run.py', 'tools.py', 'expected.py', 'toolchain.json'))))
+check('inputs-unchanged', 'True', lambda: str(frozen() == INPUTS and all(sha(MOD / k) == MODULE_INPUTS[k]
+      for k in MODULE)))
 check('probes-fake-only', 'True', lambda: str(bool(probes) and all(p.startswith(str(TOOLS)) for p in probes)))
 check('starts-python-only', 'True', lambda: str(bool(SPAWNS) and all(a[0] == sys.executable for a in SPAWNS)))
 (F / 'results.json').write_text(json.dumps(dict(results=results, waits=WAITS, spawns=len(SPAWNS),
