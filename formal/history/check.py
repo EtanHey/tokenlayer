@@ -62,20 +62,21 @@ def self_test():
 
 
 def cases(manifest):
-    rows = [("current-stop", "none", True, "", "invariant", ["StopBeforeDispatch"],
-             False, "CURRENT_SOURCE_EXPECTED_VIOLATION")]
-    rows += [(name, name, True, "", "invariant", [prop], False, "INTENDED_MUTANT")
+    # Current source rechecks stop after the terminal-ledger await (RecheckStop=TRUE).
+    # The pre-recheck source violation is retained as a historical discriminator only.
+    rows = [("historical-stop", "none", True, "", "invariant", ["StopBeforeDispatch"],
+             False, "HISTORICAL_SOURCE_VIOLATION")]
+    rows += [(name, name, True, "", "invariant", [prop], True, "INTENDED_MUTANT")
             for name, prop in manifest["mutants"].items()]
-    rows += [("current-other-safety", "none", True, "", "pass",
-              [p for p in manifest["safety"] if p != "StopBeforeDispatch"], False, "CURRENT_SOURCE_BOUNDED_PASS"),
-             ("proposal-safety", "none", True, "", "pass", manifest["safety"], True, "PROPOSAL_ONLY"),
-             ("progress", "none", False, "", "pass", ["EventuallyAccepted"], False, "NO_FAILURE_PROGRESS"),
-             ("stall", "stall", False, "", "temporal", ["EventuallyAccepted"], False, "INTENDED_MUTANT")]
-    rows += [("reach-" + goal, "none", True, goal, "invariant", ["WitnessAbsent"], False, "REACHABILITY")
+    rows += [("current-safety", "none", True, "", "pass", manifest["safety"], True, "CURRENT_SOURCE_BOUNDED_PASS"),
+             ("progress", "none", False, "", "pass", ["EventuallyAccepted"], True, "NO_FAILURE_PROGRESS"),
+             ("stall", "stall", False, "", "temporal", ["EventuallyAccepted"], True, "INTENDED_MUTANT")]
+    rows += [("reach-" + goal, "none", True, goal, "invariant", ["WitnessAbsent"], True, "REACHABILITY")
              for goal in manifest["reach"]]
     assert set(manifest["safety"]) == set(manifest["mutants"].values())
-    assert manifest["current_source"] == {"StopBeforeDispatch": "EXPECTED_VIOLATION"}
-    assert manifest["proposal_only"] == {"RecheckStop": True}
+    assert manifest["current_source"] == {"RecheckStop": True}
+    assert manifest["historical_source"] == {"base": "d737a6e7844a7b13706d394524fa2a55a538c305",
+                                             "RecheckStop": False, "StopBeforeDispatch": "EXPECTED_VIOLATION"}
     assert manifest["progress"] == {"baseline": "EventuallyAccepted", "stall": "EventuallyAccepted"}
     assert len({r[0] for r in rows}) == len(rows)
     assert all(re.fullmatch(r"[a-z-]+", r[0]) for r in rows)
@@ -121,7 +122,8 @@ def main():
     pins = {str(p): digest(p) for p in [HERE / "Importer.tla", HERE / "checks.json",
             HERE / "check.py", HERE / "toolchain.json", *[ROOT / p for p in SOURCES]]}
     receipt = {"pins": pins, "results": [], "selected_case": args.case,
-               "full_suite_complete": False, "scope": "MODEL_ONLY; S2 conformance NOT_RUN"}
+               "full_suite_complete": False,
+               "scope": "MODEL_ONLY; sampled code binding is formal/history-conformance"}
     for name in ["Importer.tla", "check.py", "checks.json", "toolchain.json"]:
         (run / name).write_bytes((HERE / name).read_bytes())
     try:
