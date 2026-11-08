@@ -18,7 +18,7 @@ async function stop(label: string, command: Launchctl, sleep: typeof pause) {
 async function bootstrap(label: string, target: string, command: Launchctl, sleep: typeof pause) {
   for (let i = 0; i < 5; i++) {
     const result = command(['bootstrap', domain, target]);
-    if (result.status === 0) return; // RunAtLoad starts it once; do not kill/restart it.
+    if (result.status === 0) return; // Loaded, not health-checked. RunAtLoad starts it once; do not kill/restart it.
     if (!/Bootstrap failed: 5\b/.test(result.stderr)) throw Error(`bootstrap ${label} failed`);
     if (i < 4) await sleep(250 * (i + 1));
   }
@@ -30,17 +30,21 @@ export async function replaceService(label: string, target: string, command = ct
 }
 export async function withPausedSidecars(work: () => Promise<void>, home = homedir(), command = ctl, sleep = pause) {
   const stopped: string[] = [];
+  const primaryFailures: unknown[] = [];
   try {
     for (const label of ['com.tokenlayer.ship', 'com.tokenlayer.drain']) {
       if (await stop(label, command, sleep)) stopped.push(label);
     }
     await work();
+  } catch (err) {
+    primaryFailures.push(err);
+    throw err;
   } finally {
     const failures: unknown[] = [];
     for (const label of stopped) {
       try { await bootstrap(label, join(home, 'Library/LaunchAgents', `${label}.plist`), command, sleep); }
       catch (err) { failures.push(err); }
     }
-    if (failures.length) throw new AggregateError(failures, 'failed to restore stopped sidecars; rerun setup.sh ship m1');
+    if (failures.length) throw new AggregateError([...primaryFailures, ...failures], 'failed to restore stopped sidecars; rerun setup.sh ship m1');
   }
 }
