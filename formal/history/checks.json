@@ -12,8 +12,8 @@
     "ignore-stop": "StopBeforeDispatch",
     "accept-mismatch": "AcceptanceRequiresFinal"
   },
-  "current_source": {"StopBeforeDispatch": "EXPECTED_VIOLATION"},
-  "proposal_only": {"RecheckStop": true},
+  "current_source": {"RecheckStop": true},
+  "historical_source": {"base": "d737a6e7844a7b13706d394524fa2a55a538c305", "RecheckStop": false, "StopBeforeDispatch": "EXPECTED_VIOLATION"},
   "progress": {"baseline": "EventuallyAccepted", "stall": "EventuallyAccepted"},
   "reach": [
     "write-ahead", "intent", "dispatch", "apply", "response", "ack", "checkpoint",

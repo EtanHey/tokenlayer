@@ -1,13 +1,13 @@
 # Bounded importer protocol (S0/S1)
 
-Status: model/checker candidate; **S2 implementation conformance NOT_RUN**. No existing tests may be removed on this evidence. No runtime, CI, ratchet or data changes.
+Status: model/checker bound to current source (`RecheckStop=TRUE`); sampled S2 code binding lives in `formal/history-conformance/`. No existing tests may be removed on this evidence. No runtime, CI, ratchet or data changes.
 
 Run from the repository root with Python 3 and the existing, locked local Java/jar:
 ```sh
 python3 formal/history/check.py --self-test
 python3 formal/history/check.py --out /outside/repo/private-evidence
 ```
-`--case NAME` is a diagnostic partial run, not the full acceptance gate. `checks.json` enumerates seven desired safety targets and dedicated mutants, no-failure progress/stall, and twenty-two reachability probes. `current-stop` must violate StopBeforeDispatch; `current-other-safety` checks the other six. Only `proposal-safety` checks all seven expecting PASS, under the hypothetical RecheckStop guard. Receipt classifications distinguish these outcomes; full-suite completion means every expected outcome occurred, never that current source satisfies every target. Each mutant selects its intended property, requiring the precise TLC error and exit (12 invariant, 13 named temporal violation). Parse/tool/timeout/wrong-property failures refuse acceptance. Reachability deliberately violates `WitnessAbsent`; these are existential witnesses, not additional safety guarantees.
+`--case NAME` is a diagnostic partial run, not the full acceptance gate. `checks.json` enumerates seven desired safety targets and dedicated mutants, no-failure progress/stall, and twenty-two reachability probes. `current-safety` checks all seven expecting PASS under `RecheckStop=TRUE`, the current source profile; mutants, progress/stall and reachability use that profile too. `historical-stop` (`RecheckStop=FALSE`, pre-guard base `d737a6e`) must violate StopBeforeDispatch: retained historical evidence and the discriminator for the recheck, not a current-source result. Receipt classifications distinguish these outcomes; full-suite completion means every expected outcome occurred. Each mutant selects its intended property, requiring the precise TLC error and exit (12 invariant, 13 named temporal violation). Parse/tool/timeout/wrong-property failures refuse acceptance. Reachability deliberately violates `WitnessAbsent`; these are existential witnesses, not additional safety guarantees.
 
 ## State and bounds
 
@@ -22,15 +22,15 @@ Safety allows stuttering and assumes no fairness. Progress disables crashes, exc
 | Action / checked property | Current implementation join | Required broken config |
 |---|---|---|
 | Prepare / write-ahead vs checkpoint | `src/ship/ship.ts:315-327,338,356-357` | early-checkpoint |
-| Intent + Send / IntentBeforeDispatch | `scripts/history/stream.ts:163-180` | no-intent |
-| Reply + Ack + Checkpoint / CheckpointAfterAck | `stream.ts:178-185`; `ship.ts:321-327` | early-checkpoint |
-| Reconcile / PartialPendingStops + PartialPendingCustody | `stream.ts:78-95`; `run.ts:111-118` | partial-continue (exact reset continuation), partial-ack (terminal custody loss) |
-| Reconcile + Reset / RecoveryDoesNotCheckpoint | `stream.ts:91-95`; `scripts/history/run.ts:111-118` | recovery-commit |
-| GuardThenAwait + RequestStop + Send / StopBeforeDispatch | `stream.ts:163-180`; `run.ts:224-229`; `source.ts:115-116` | current-stop (EXPECTED adverse), ignore-stop |
-| Accept + RefuseFinal / AcceptanceRequiresFinal | `run.ts:151-172` | accept-mismatch |
+| Intent + Send / IntentBeforeDispatch | `scripts/history/stream.ts:163-183` | no-intent |
+| Reply + Ack + Checkpoint / CheckpointAfterAck | `stream.ts:181-188`; `ship.ts:321-327` | early-checkpoint |
+| Reconcile / PartialPendingStops + PartialPendingCustody | `stream.ts:78-95`; `run.ts:112-119` | partial-continue (exact reset continuation), partial-ack (terminal custody loss) |
+| Reconcile + Reset / RecoveryDoesNotCheckpoint | `stream.ts:91-95`; `scripts/history/run.ts:112-119` | recovery-commit |
+| GuardThenAwait + RequestStop + Stop / StopBeforeDispatch | `stream.ts:163-178` (recheck 176-178); `run.ts:225-230`; `source.ts:115-116` | historical-stop (RecheckStop=FALSE), ignore-stop |
+| Accept + RefuseFinal / AcceptanceRequiresFinal | `run.ts:152-173` | accept-mismatch |
 | FairSpec / EventuallyAccepted | Finite abstraction under the assumptions above | stall |
 
-R1 correction to the original S0/S1 claim: the final stop guard is followed by a conditional `await reconcile()` at stream.ts:171-173. Terminal ledger history is read asynchronously; the source identity/size checks afterward do not recheck stop. GuardThenAwait requires cp=1 and an acked prior ledger, passes the guard, and permits stop during that wait. Intent/Send then continue without an invented recheck. Branch selection is nondeterministic: exact capacity/rotation internals remain excluded. The current-source counterexample is required adverse evidence, not a production incident; real-code/signal reproduction is NOT_RUN. RecheckStop=TRUE is exclusively PROPOSAL_ONLY. The frozen original implementation/review remains unchanged.
+R1 correction to the original S0/S1 claim: the final stop guard is followed by a conditional `await reconcile()` at stream.ts:171-173. Terminal ledger history is read asynchronously. GuardThenAwait requires cp=1 and an acked prior ledger, passes the guard, and permits stop during that wait. Branch selection is nondeterministic: exact capacity/rotation internals remain excluded. At base `d737a6e` nothing rechecked stop after that await, so Intent/Send continued: the `historical-stop` counterexample, retained as history and never as a production incident. PR133 (`5f57536`) added the recheck at stream.ts:176-178, which this model already expressed as `RecheckStop=TRUE`: guard-wait with stop admits only Stop→halt. That is now the current profile. Real-code binding of both directions is in `formal/history-conformance/`; OS-signal reproduction is NOT_RUN. The frozen original implementation/review remains unchanged.
 
 RequestStop excludes the synchronous intent-to-dispatch interval, but includes guard-wait. A dispatched request can finish after stop. PartialRecoveryStep observes the actual Reconcile transition; independent sticky monitors require next pc=halt and the entire pending ledger unchanged. They do not trust event strings. The partial-continue mutant assigns pc=reset unconditionally, exactly matching review A's challenge; partial-ack changes terminal status and independently fails custody. `reach-partial-effects` witnesses halt with partial coverage and retained pending custody; `reach-terminal-await-stop` witnesses the stopped terminal-history wait. An explicit Restart means externally authorized resumption after lock disposition; the model never reaps a lock. Latest intent/terminal state abstracts the cumulative ledger; append/fsync and checkpoint replacement are atomic completed operations here. Failure assumes ambiguous recording succeeds; individual disk-write failures are deferred. ACKs/checkpoints are eagerly separated into steps, not a proof of every batching/save schedule.
 
