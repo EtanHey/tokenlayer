@@ -1,0 +1,136 @@
+{
+  "schema": "tokenlayer.formal-ci.closure.v3",
+  "shared": {
+    "exec": ["formal/ci/run.py", "formal/ci/tools.py", "formal/ci/expected.py", "formal/ci/closure.py"],
+    "input": ["formal/ci/closure.json", "formal/ci/toolchain.json", "formal/ci/bunfig.toml", 
+        "formal/ci/tsconfig.json", "package.json"],
+    "identity": ["formal/ci/acquisition.py"],
+    "consumers": {
+      "formal/ci/run.py": "5c33b26ef8ba32de359310e176a3812258cf5015853e3a31e7e66ae9b5930d89",
+      "formal/ci/tools.py": "ec235de864ce3d0514b33b3d10305923e36c5fef6e1cabe50ec74472bbf8e738",
+      "formal/ci/expected.py": "0ef60a42831e67893041f84940c90c9a1bc7144abe16fe730eabc32409a2980a",
+      "formal/ci/closure.py": "9003805ce730e6d0a7d38ce144016950cb2aeb9643f9070c003a6ade60717a58",
+      "formal/ci/acquisition.py": "55723a68960d9c4ebf4171446659a34c325bc5df89979530344aa1f1d5881201",
+      "formal/ci/bunfig.toml": "93712d9e2e0cccd23944397dabed7997367a0a7be2b76778088b0158a4fd6b83",
+      "formal/ci/tsconfig.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "package.json": "a244b30c2c11bb9e5dfa298977712e4893d24ef49636eb8d18cd0a4550d5f779"
+    },
+    "absent": ["formal/history-conformance/package.json", "formal/history-rotation/package.json", 
+        "formal/package.json", "scripts/history/package.json", "scripts/package.json", 
+        "src/lib/package.json", "src/package.json", "src/ship/package.json"]
+  },
+  "lanes": {
+    "importer": {
+      "consumers": {
+        "formal/history/check.py": "aa929a299c6e822ca40e24c2886f3e9498fcef0066287d3f10f8b3d4ccb0ca86",
+        "formal/history/Importer.tla": "935092a3d0a1ad33c9b74241f55ee094b84924638e34421bb914aa7f50983e8c"
+      },
+      "exec": ["formal/history/check.py", "formal/history/Importer.tla"],
+      "input": ["formal/history/checks.json", "formal/history/toolchain.json"],
+      "identity": ["scripts/history/stream.ts", "scripts/history/run.ts", "scripts/history/source.ts", 
+          "src/ship/ship.ts", "src/ship/state.ts"],
+      "dirs": {},
+      "imports": []
+    },
+    "rotation": {
+      "consumers": {
+        "formal/history-rotation/check.py": "780f1f427a6e66537efaaa492cc4d0a388bcd7f9b4de1fea58f2f78e6d93074b",
+        "formal/history-rotation/conformance.ts": "8c1470e37e2c96aeda3ee7097d8564e36fef65290cb2260ee66bcc223033d737",
+        "formal/history-rotation/Rotation.tla": "dd1809d5101834c28d45d565af065790deeb62e30b54d50059c3dc2a825ebba0",
+        "scripts/history/journal.ts": "f0e4a5721120635956fd133f78f09788fc2308e8c736f611acba7e0193e0e384",
+        "scripts/history/stream.ts": "420b5b7a412011f36fc40a07499309648471596abea98f84567b31fbd9e956c4",
+        "src/lib/clickhouse.ts": "fb504716b29b040e5cadc11e619e840ab524485dd38c1e27e2f8e2c1b992512b",
+        "src/lib/hash.ts": "e388dc4c99124cfd1222ff8bdb24774e8180ea83740a803e1719ef5a4bbb8cc8",
+        "src/lib/redact.ts": "3ed70d5000270bcb1ff48021436cfd201c62665d55fded262084038bf4897f05",
+        "src/lib/row-size.ts": "6987bb6b5f644a46bdc89607cf45df5a6a3f3e078e14f5072ba162368defb7b0"
+      },
+      "exec": ["formal/history-rotation/check.py", "formal/history-rotation/Rotation.tla", 
+          "formal/history-rotation/conformance.ts", "scripts/history/journal.ts", 
+          "scripts/history/stream.ts", "src/lib/clickhouse.ts", "src/lib/hash.ts", "src/lib/redact.ts", 
+          "src/lib/row-size.ts"],
+      "input": ["formal/history-rotation/checks.json", "formal/history-rotation/toolchain.json"],
+      "identity": ["formal/history-rotation/README.md", "src/ship/state.ts", 
+          "tests/support/history-rotation-child.ts", "tests/integration/history-revision.it.test.ts"],
+      "dirs": {
+        "formal/history-rotation": "*.*"
+      },
+      "imports": ["formal/history-rotation/conformance.ts", "scripts/history/journal.ts"]
+    },
+    "writer": {
+      "consumers": {
+        "formal/writer-transfer/check.py": "1ab301de8956173e43540147d2a69766835a78efe2ae0e55e45b206261ffefc2",
+        "formal/writer-transfer/Current.tla": "7f6a9ec8a8e34dfa18588133a3d8284ca0bd7c053cc656e7974a2826082abef9",
+        "formal/writer-transfer/Transfer.tla": "e566c9a3dc531e713711913837a890090b4189cd280fbe1bd928f1d38e9884f7",
+        "formal/writer-transfer/SourceStop.tla": "3991356fe90b09579c5ca1f1d787fa001c4c07fc92b60f33f12d449754f3f0f7"
+      },
+      "exec": ["formal/writer-transfer/check.py", "formal/writer-transfer/Current.tla", 
+          "formal/writer-transfer/Transfer.tla", "formal/writer-transfer/SourceStop.tla"],
+      "input": ["formal/writer-transfer/Current.cfg", "formal/writer-transfer/Conditional.cfg", 
+          "formal/writer-transfer/SourceStop.cfg", "formal/writer-transfer/ProposedStop.cfg"],
+      "identity": ["formal/writer-transfer/README.md", "scripts/history/run.ts", "scripts/history/stream.ts", 
+          "scripts/history/source.ts", "scripts/history/README.md", "src/ship/ship.ts"],
+      "dirs": {
+        "formal/writer-transfer": "*"
+      },
+      "imports": []
+    },
+    "backup": {
+      "consumers": {
+        "formal/backup-before-delete/check.py": "5b1c1d5b2b0c65fbaa4101f930be9b6ef2a94e980dc6f3dc2036fdaae96825f4",
+        "formal/backup-before-delete/BackupBeforeDelete.tla": "8328cae347b55b2c86858942dc9f007c1b6570dee3a0a8a09fb25054679ba6a5"
+      },
+      "exec": ["formal/backup-before-delete/check.py", "formal/backup-before-delete/BackupBeforeDelete.tla"],
+      "input": ["formal/backup-before-delete/Hold.cfg", "formal/backup-before-delete/Permitted.cfg", 
+          "formal/backup-before-delete/toolchain.json"],
+      "identity": ["formal/backup-before-delete/README.md"],
+      "dirs": {
+        "formal/backup-before-delete": "*"
+      },
+      "imports": []
+    },
+    "s2": {
+      "consumers": {
+        "formal/history-conformance/check.py": "081481b457754882d5a3deca2a68e6dc57f414b705742f6933fd60f588d336d2",
+        "formal/history-conformance/bind.ts": "489189629b5dfe36ce57c192b3dc8f5247936838760932c6561664fe92e4ba4f",
+        "formal/history-conformance/corpus.json": "fdd6498712be13abf50dc5a53fc54ab48ef98503fc9c58639cca45e876802800",
+        "scripts/history/diagnostic-bundle.ts": "9999380c81a0736f2f5177fb31f1e3ad5a24235438d2e2fa835607cdca771991",
+        "scripts/history/journal.ts": "f0e4a5721120635956fd133f78f09788fc2308e8c736f611acba7e0193e0e384",
+        "scripts/history/run.ts": "4c1908f5b06bf043844169dbab0eafdab4b7563d7189d3b1fe7f6e054609c71c",
+        "scripts/history/source.ts": "dd6be0b9865ef9fca5adac466fefe2de2feea977f421b7ace69b7ccd4ab44f3f",
+        "scripts/history/stream.ts": "420b5b7a412011f36fc40a07499309648471596abea98f84567b31fbd9e956c4",
+        "src/lib/clickhouse.ts": "fb504716b29b040e5cadc11e619e840ab524485dd38c1e27e2f8e2c1b992512b",
+        "src/lib/egress.ts": "9aac74a3c009d13183a4d114746191ffb188307b54ba68b3fc4c13be5c72c8f2",
+        "src/lib/env.ts": "d83d4317e785baa8b147ebe833b7bc49cbf12fe6c9866610833feede8018af4d",
+        "src/lib/hash.ts": "e388dc4c99124cfd1222ff8bdb24774e8180ea83740a803e1719ef5a4bbb8cc8",
+        "src/lib/redact.ts": "3ed70d5000270bcb1ff48021436cfd201c62665d55fded262084038bf4897f05",
+        "src/lib/repo.ts": "31bfc8529addc30988c4135ea08e59a898d2db0899dbae5bfbcb4acc094639e8",
+        "src/lib/row-size.ts": "6987bb6b5f644a46bdc89607cf45df5a6a3f3e078e14f5072ba162368defb7b0",
+        "src/lib/session-schema.ts": "8f54b3bd7412f47a6e124325d58099385af83b8737e64fc7a0f428b6beaa27e4",
+        "src/lib/time.ts": "18bc196d474f6798781f69998d360c39e77d427e80f1d8a91a332ea1969cf04b",
+        "src/ship/antigravity.ts": "27ed9e359fa98738f790f7db925c3154165937d46d647291a1c63a69be40cc61",
+        "src/ship/kiro.ts": "3c2f2b7e216ebea1d95568f5cc8a2ccc3e4c02cddfcfff2847a16207cbebea61",
+        "src/ship/parse.ts": "c19432b53955e63aeb2a402e6b5c8dd881d1dd693e5a643dac7eec978457c052",
+        "src/ship/record-limit.ts": "4104c7de764f12d34934ac81c5d53a8f71b3667525bb901257bb40b1c0f36840",
+        "src/ship/ship.ts": "7d2a3a45f271ce41d6e05d88ad35b52cf1dcfdb974e34f507d3945366a73274e",
+        "src/ship/state.ts": "053137e028af78be77ec5e902218023f27afcd1a6133eaa8f504867a811d4f27",
+        "src/ship/tail.ts": "d5938d0edcbd9706106a300087a1181432913667bd55efb525f249c33d990328",
+        "src/ship/zst.ts": "483c90580bb7f62ee02bbf1c9fa233cdc31ae8fca32d25da2d774589a811f64a"
+      },
+      "exec": ["formal/history-conformance/check.py", "formal/history-conformance/bind.ts", 
+          "scripts/history/diagnostic-bundle.ts", "scripts/history/journal.ts", "scripts/history/run.ts", 
+          "scripts/history/source.ts", "scripts/history/stream.ts", "src/lib/clickhouse.ts", 
+          "src/lib/egress.ts", "src/lib/env.ts", "src/lib/hash.ts", "src/lib/redact.ts", "src/lib/repo.ts", 
+          "src/lib/row-size.ts", "src/lib/session-schema.ts", "src/lib/time.ts", "src/ship/antigravity.ts", 
+          "src/ship/kiro.ts", "src/ship/parse.ts", "src/ship/record-limit.ts", "src/ship/ship.ts", 
+          "src/ship/state.ts", "src/ship/tail.ts", "src/ship/zst.ts"],
+      "input": ["formal/history-conformance/corpus.json", "schema/004_session_events.sql", 
+          "formal/history/toolchain.json"],
+      "identity": ["formal/history-conformance/contract.json", "formal/history/Importer.tla", 
+          "formal/history/check.py", "formal/history/checks.json", "tests/integration/history.it.test.ts", 
+          "tests/integration/history-revision.it.test.ts"],
+      "dirs": {},
+      "imports": ["scripts/history/run.ts", "scripts/history/stream.ts", "src/ship/ship.ts", 
+          "formal/history-conformance/bind.ts"]
+    }
+  }
+}
