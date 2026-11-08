@@ -58,7 +58,7 @@ function tryParse(line: string): Obj | null {
  * Decide the harness from a file's first lines. Claude Code files written by T3 Code carry
  * `entrypoint: "sdk-ts"` (T3 drives Claude through the Agent SDK); Codex files written by T3 carry
  * `session_meta.payload.originator: "T3 Code"`. Cloud inference requires client_platform
- * and matching cse_ session IDs without CLI markers. Explicit CLI markers outrank that shape across
+ * and cse_ session ID prefixes without CLI markers. Explicit CLI markers outrank that shape across
  * the whole head; malformed CLI markers suppress cloud inference. No path or thinking-text signal.
  * Returns null while the head has no deciding line.
  */
@@ -75,8 +75,8 @@ export function detectHarness(kind: SourceKind, headLines: string[]): Harness | 
       if (ep) return ep === "sdk-ts" ? "t3" : "claude";
       cliMarker ||= "entrypoint" in o || "version" in o;
       cloud ||= (o.type === "user" || o.type === "assistant") && isObj(o.message)
-        && !!str(o.client_platform).trim() && /^cse_\S+$/.test(str(o.sessionId))
-        && o.session_id === o.sessionId;
+        && !!str(o.client_platform).trim() && str(o.sessionId).startsWith("cse_")
+        && str(o.session_id).startsWith("cse_");
     } else if (o.type === "session_meta" && isObj(o.payload)) {
       return str(o.payload.originator) === "T3 Code" ? "t3" : "codex";
     }

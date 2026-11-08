@@ -74,6 +74,7 @@ describe("detectHarness", () => {
   const detect = (...records: unknown[]) => detectHarness("claude", records.map(r => JSON.stringify(r)));
   test("cloud is a record shape, independent of paths, filenames and thinking text", () => {
     expect(detect(cloud)).toBe("claude-cloud");
+    expect(detect({ ...cloud, session_id: "cse_other" })).toBe("claude-cloud");
     expect(detect({ ...cloud, type: "assistant", message: { content: [{ type: "thinking", signature: "synthetic" }] } })).toBe("claude-cloud");
     expect(detect({ ...cloud, cwd: "/ordinary/project", filename: "ordinary.jsonl" })).toBe("claude-cloud");
     expect(detect({ type: "user", cwd: "/cloud-credit-import/cse_synthetic.jsonl" })).toBeNull();
@@ -89,8 +90,8 @@ describe("detectHarness", () => {
   test("partial, malformed and conflicting cloud evidence stays undecided", () => {
     for (const overrides of [
       { client_platform: undefined }, { client_platform: null }, { client_platform: 1 }, { client_platform: " " },
-      { sessionId: undefined }, { sessionId: "cse_" }, { sessionId: "ordinary" }, { sessionId: 1 },
-      { session_id: undefined }, { session_id: "cse_other" }, { session_id: null }, { message: null }, { type: "queue-operation" },
+      { sessionId: undefined }, { sessionId: "ordinary" }, { sessionId: 1 },
+      { session_id: undefined }, { session_id: "ordinary" }, { session_id: null }, { message: null }, { type: "queue-operation" },
       { version: null }, { version: "" }, { entrypoint: null }, { entrypoint: "" }, { entrypoint: 1 },
     ]) expect(detect({ ...cloud, ...overrides })).toBeNull();
     expect(detectHarness("claude", ["{bad", "[]", "null"])).toBeNull();

@@ -74,11 +74,13 @@ Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
   prerequisites are satisfied; installing source alone must not suppress historical recovery.
 - `harness`: Claude files whose lines carry `entrypoint: "sdk-ts"` → `t3` (T3 drives Claude Code via the Agent SDK).
   Other explicit entrypoints → `claude`. Without any `version`/`entrypoint` fields in the inspected head,
-  a user/assistant record with a message object, nonempty string `client_platform`, and matching top-level
-  `sessionId`/`session_id` beginning `cse_` with a nonempty whitespace-free suffix → `claude-cloud`.
+  a user/assistant record with a message object, nonempty string `client_platform`, and both top-level
+  `sessionId`/`session_id` strings beginning `cse_` → `claude-cloud`.
   Paths, filenames and thinking contents do not decide this. Other Claude files default to `claude` while
   undecided (including version-only records). Detection uses complete lines in the first 64 KiB; untouched
   completed checkpoints stay skipped, undecided checkpoints recheck on append, and state-loss replay redetects.
+  Archaeology calls detection per line and does not retain this cross-line CLI veto; its cloud inventory
+  allowlist and precedence handling remain a separate recovery follow-up.
   Codex files whose `session_meta.payload.originator` is `"T3 Code"` → `t3`, otherwise `codex`.
   A file whose head has no deciding line yet ships with the default and is reshipped once it is decided.
   Harness is a file-level column, excluded from generation identity so late classification and state loss

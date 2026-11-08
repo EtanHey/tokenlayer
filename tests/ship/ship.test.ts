@@ -67,7 +67,7 @@ const claudeFile = () => join(root, "claude", "-Users-u-Gits-golems", "s-1.jsonl
 const codexFile = () => join(root, "codex", "2026", "10", "28", "rollout-a.jsonl");
 
 describe("shipOnce", () => {
-  const cloudLine = JSON.stringify({ type: "user", client_platform: "synthetic-cloud-platform", sessionId: "cse_synthetic", session_id: "cse_synthetic", message: { role: "user", content: [] } });
+  const cloudLine = JSON.stringify({ type: "user", client_platform: "synthetic-cloud-platform", sessionId: "cse_synthetic", session_id: "cse_other", message: { role: "user", content: [] } });
   test("cloud fresh shipping, appends, checkpoint loss and full state loss retain harness and identity", async () => {
     writeFileSync(claudeFile(), `${cloudLine}\n`);
     expect((await shipOnce(opts)).lines).toBe(1);
