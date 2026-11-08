@@ -125,6 +125,81 @@ test('hub reruns restore stopped ship and drain agents even when hub setup fails
   expect([...loaded].sort()).toEqual(['com.tokenlayer.drain', 'com.tokenlayer.ship']);
   expect(calls.filter(c => c[0] === 'bootstrap')).toHaveLength(2);
 });
+const sidecars = ['com.tokenlayer.ship', 'com.tokenlayer.drain'];
+function pausedFixture(initial = sidecars, failures = new Map<string, unknown>()) {
+  const home = root(), loaded = new Set(initial), calls: string[][] = [];
+  mkdirSync(join(home, 'Library/LaunchAgents'), { recursive: true });
+  for (const label of initial) writeFileSync(join(home, `Library/LaunchAgents/${label}.plist`), 'fixture');
+  const command = (args: string[]) => {
+    calls.push(args);
+    const label = args.at(-1)!.split('/').pop()!.replace('.plist', '');
+    if (args[0] === 'print') return { status: loaded.has(label) ? 0 : 1, stderr: '' };
+    if (args[0] === 'bootout') loaded.delete(label);
+    if (args[0] === 'bootstrap') {
+      if (failures.has(label)) throw failures.get(label);
+      loaded.add(label);
+    }
+    return { status: 0, stderr: '' };
+  };
+  return { home, loaded, calls, command };
+}
+const workFailures: [string, unknown][] = [
+  ['Error', Error('private-work-fixture')], ['undefined', undefined], ['null', null],
+  ['false', false], ['zero', 0], ['empty string', ''],
+  ['raw object', { toString() { throw Error('must not format thrown values'); } }],
+];
+for (const [name, original] of workFailures) {
+  for (const count of [1, 2]) test(`paused sidecars retain ${name} work failure before ${count} restore failures`, async () => {
+    const restoreErrors = [Error('private-restore-ship'), Error('private-restore-drain')].slice(0, count);
+    const fixture = pausedFixture(sidecars, new Map(restoreErrors.map((err, i) => [sidecars[i], err])));
+    const failure = await withPausedSidecars(async () => {
+      expect(fixture.loaded.size).toBe(0);
+      throw original;
+    }, fixture.home, fixture.command, async () => {}).then(() => { throw Error('expected refusal'); }, err => err);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure.errors).toHaveLength(1 + count);
+    expect(failure.errors[0]).toBe(original);
+    restoreErrors.forEach((err, i) => expect(failure.errors[i + 1]).toBe(err));
+    expect(failure.message).toBe('failed to restore stopped sidecars; rerun setup.sh ship m1');
+    expect(fixture.calls.filter(c => c[0] === 'bootstrap').map(c => c.at(-1))).toEqual(
+      sidecars.map(label => join(fixture.home, `Library/LaunchAgents/${label}.plist`)));
+    expect([...fixture.loaded]).toEqual(sidecars.slice(count));
+  });
+  test(`paused sidecars preserve ${name} work-only rejection identity`, async () => {
+    const fixture = pausedFixture();
+    let rejected = false;
+    await withPausedSidecars(async () => { throw original; }, fixture.home, fixture.command, async () => {}).then(
+      () => { throw Error('expected refusal'); }, err => { rejected = true; expect(err).toBe(original); });
+    expect(rejected).toBe(true);
+    expect([...fixture.loaded]).toEqual(sidecars);
+  });
+}
+test('paused sidecars preserve restore-only aggregate and attempt every restoration', async () => {
+  const errors = [Error('ship restore'), Error('drain restore')];
+  const fixture = pausedFixture(sidecars, new Map(errors.map((err, i) => [sidecars[i], err])));
+  let worked = false;
+  const failure = await withPausedSidecars(async () => { worked = true; }, fixture.home, fixture.command, async () => {})
+    .then(() => { throw Error('expected refusal'); }, err => err);
+  expect(worked).toBe(true);
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect(failure.errors).toHaveLength(2);
+  errors.forEach((err, i) => expect(failure.errors[i]).toBe(err));
+  expect(fixture.calls.filter(c => c[0] === 'bootstrap')).toHaveLength(2);
+});
+for (const initial of [sidecars, sidecars.slice(0, 1), []]) test(`paused sidecars restore only ${initial.length} previously loaded services`, async () => {
+  const fixture = pausedFixture(initial);
+  let worked = false;
+  const result = await withPausedSidecars(async () => {
+    expect(fixture.loaded.size).toBe(0);
+    worked = true;
+  }, fixture.home, fixture.command, async () => {});
+  expect(result).toBeUndefined();
+  expect(worked).toBe(true);
+  expect([...fixture.loaded]).toEqual(initial);
+  expect(fixture.calls.filter(c => c[0] === 'bootstrap')).toHaveLength(initial.length);
+  // Loading succeeds without measuring process health; RunAtLoad must not be kickstarted again.
+  expect(fixture.calls.every(c => ['print', 'bootout', 'bootstrap'].includes(c[0]))).toBe(true);
+});
 test('credential transfer publishes only a successful nonempty private file and preserves existing credentials', () => {
   const home = root(), bin = join(home, 'bin'); mkdirSync(bin);
   writeFileSync(join(bin, 'ssh'), '#!/bin/bash\nprintf "%s" "$TRANSFER_TEXT"\nexit "$TRANSFER_STATUS"\n', { mode: 0o700 });
