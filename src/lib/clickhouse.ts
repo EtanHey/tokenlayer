@@ -7,6 +7,11 @@ export type ClickHouseConfig = {
   database: string;
 };
 
+/** Session schema, coverage and legacy telemetry tables currently target tokenlayer only. */
+export function assertTokenlayerDatabase(config: Pick<ClickHouseConfig, "database">): void {
+  if (config.database !== "tokenlayer") throw new Error("CLICKHOUSE_DATABASE_UNSUPPORTED");
+}
+
 // JSONEachRow accepts String bytes without requiring UTF-8. Keep source bytes out of JS decoding.
 export const RAW_BYTES = Symbol("source line bytes");
 const shortEscapes: Record<string, string> = { '"': '\\"', "\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t" };
@@ -63,6 +68,8 @@ export class ClickHouse {
    * (tables set non_replicated_deduplication_window). Resolves only once ClickHouse confirmed the insert.
    */
   async insert(table: string, rows: readonly unknown[], dedupToken?: string): Promise<void> {
+    // Keep the generic client available for parameterized raw-document storage and exports.
+    if (["session_events", "proxy_usage", "credentials_snap", "archaeology_sample"].includes(table)) assertTokenlayerDatabase(this.config);
     if (rows.length === 0) return;
     const params = new URLSearchParams({ query: `INSERT INTO ${this.config.database}.${table} FORMAT JSONEachRow`, async_insert: "0" });
     if (dedupToken) params.set("insert_deduplication_token", dedupToken);

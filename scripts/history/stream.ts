@@ -1,4 +1,4 @@
-import { ClickHouse, type ClickHouseConfig } from '../../src/lib/clickhouse';
+import { ClickHouse, assertTokenlayerDatabase, type ClickHouseConfig } from '../../src/lib/clickhouse';
 import { boundedRowsBytes } from '../../src/lib/row-size';
 import { sha256Hex } from '../../src/lib/hash';
 import { AuditLog, localHeadroom, STATE_CAP, type LocalSpace } from './journal';
@@ -57,7 +57,7 @@ export class StreamingHistoryClient extends ClickHouse {
         sessionId: string;
         shouldStop?: () => boolean;
         verifySource?: (extraBytes?: number) => void;
-    }) { super(config); this.ledger = new AuditLog(options.ledger, options.stateBytesCap, options.localSpace); }
+    }) { super(config); assertTokenlayerDatabase(config); this.ledger = new AuditLog(options.ledger, options.stateBytesCap, options.localSpace); }
     record(intent: Intent, state: string) {
         const record: RecordState = { ...intent, state, manifest: this.options.manifest, run: this.options.run };
         this.ledger.append(record);

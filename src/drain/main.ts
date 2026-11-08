@@ -8,7 +8,7 @@ installErrorHandlers();
 //   CLICKHOUSE_URL, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, CLICKHOUSE_DB,
 //   TOKENLAYER_DRAIN_INTERVAL_MS (default 15000), TOKENLAYER_STATE_DIR (default ~/.local/state/tokenlayer/drain)
 import { join } from "node:path";
-import { ClickHouse } from "../lib/clickhouse";
+import { ClickHouse, assertTokenlayerDatabase } from "../lib/clickhouse";
 import { expandHome, loadEnvFiles } from "../lib/env";
 import { drainOnce } from "./drain";
 import { Spool } from "./spool";
@@ -22,11 +22,13 @@ if (!mgmtKey) {
   process.exit(2);
 }
 
+const clickhouse = ClickHouse.fromEnv(env);
+assertTokenlayerDatabase(clickhouse.config);
 const opts = {
   hubUrl: env.TOKENLAYER_HUB_URL ?? "http://127.0.0.1:8317",
   mgmtKey,
   hub: env.TOKENLAYER_HUB ?? "m1",
-  clickhouse: ClickHouse.fromEnv(env),
+  clickhouse,
   spool: new Spool(expandHome(env.TOKENLAYER_STATE_DIR ?? join("~/.local/state/tokenlayer", "drain"))),
   onInsertError: (err: unknown) => writeErr(`tokenlayer-drain: insert failed, spooled: ${(err as Error).message}`),
 };

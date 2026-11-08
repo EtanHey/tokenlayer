@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
-import { ClickHouse } from '../../src/lib/clickhouse';
+import { ClickHouse, assertTokenlayerDatabase } from '../../src/lib/clickhouse';
 import { expandHome, loadEnvFiles } from '../../src/lib/env';
 import { installErrorHandlers, writeOut } from '../../src/lib/egress';
 import { verifySessionSchema } from '../../src/lib/session-schema';
@@ -22,6 +22,7 @@ export function inventoryBytes(roots: ShipRoot[], sinceMs: number) {
   }, 0);
 }
 export async function checkSpace(ch: ClickHouse, bytes: number) {
+  assertTokenlayerDatabase(ch.config);
   const [disk] = await ch.queryJSON<{ free_space: string; keep_free_space: string; compressed: string; uncompressed: string }>(`SELECT free_space, keep_free_space,
     (SELECT sum(data_compressed_bytes) FROM system.parts WHERE database='tokenlayer' AND table='session_events' AND active) AS compressed,
     (SELECT sum(data_uncompressed_bytes) FROM system.parts WHERE database='tokenlayer' AND table='session_events' AND active) AS uncompressed

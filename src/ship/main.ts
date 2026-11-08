@@ -14,7 +14,7 @@ installErrorHandlers();
 // The daemon only picks up files without a checkpoint if they changed in the last day; run --backfill once for history.
 import { loadState } from "./state";
 import { verifySessionSchema } from "../lib/session-schema";
-import { ClickHouse } from "../lib/clickhouse";
+import { ClickHouse, assertTokenlayerDatabase } from "../lib/clickhouse";
 import { expandHome, loadEnvFiles } from "../lib/env";
 import { shipOnce, type ShipOptions } from "./ship";
 
@@ -60,6 +60,7 @@ const opts: ShipOptions = {
 };
 const intervalMs = Number(env.TOKENLAYER_SHIP_INTERVAL_MS ?? 10_000);
 
+assertTokenlayerDatabase(opts.clickhouse.config);
 loadState(opts.statePath);
 await verifySessionSchema(opts.clickhouse);
 
