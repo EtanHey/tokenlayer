@@ -1,0 +1,272 @@
+{
+  "schema": "tokenlayer.history-conformance.corpus.v2",
+  "scope": "Synthetic model edge/effect projections and one bounded PASS record for the current RecheckStop=TRUE profile; SAMPLED code binding, not exhaustive code traces or private source payloads",
+  "model": {
+    "path": "formal/history/Importer.tla",
+    "sha256": "935092a3d0a1ad33c9b74241f55ee094b84924638e34421bb914aa7f50983e8c"
+  },
+  "provenance": {
+    "tlc": "2026.10.28.014557 rev56d37a9",
+    "receipt_sha256": "556366f89926884af84d15d7eeef92eaa2c94ff89a2ed2c69b187edfe5016846",
+    "generator": "one complete formal/history/check.py receipt; reviewed only when its fresh review seals it",
+    "predecessor_corpus_sha256": "0a3cea03b6e634258418f8e34b8f75dedd2c587eae83467be21a8e1e1b68fa3e"
+  },
+  "obligations": {
+    "reach-checkpoint": {
+      "configuration": {
+        "text": "SPECIFICATION Spec\nCONSTANTS\n Mutation = \"none\"\n Faults = TRUE\n Goal = \"checkpoint\"\n RecheckStop = TRUE\nCHECK_DEADLOCK FALSE\nINVARIANT WitnessAbsent\n",
+        "sha256": "41645fa43fa5157650423393a20c7ac66677024080024af2ca2d19618077a53c"
+      },
+      "raw_log_sha256": "5d440c62e3f437bc94c4e4949f63fe29658078fe78123dfb33c714091d696ea8",
+      "classification": "REACHABILITY",
+      "events": [
+        "init",
+        "write-ahead",
+        "intent",
+        "dispatch",
+        "apply",
+        "response",
+        "ack",
+        "checkpoint"
+      ],
+      "pre_state": "/\\ partialCustodyBad = FALSE\n/\\ partialStopBad = FALSE\n/\\ s = [ ledger |-> [status |-> \"acked\", keys |-> 1..1, end |-> 1],\n  stored |-> {1},\n  pc |-> \"acked\",\n  cp |-> 0,\n  wa |-> 1,\n  acknowledged |-> 1,\n  batch |-> 1..1,\n  hi |-> 1,\n  wire |-> {},\n  stop |-> FALSE,\n  accepted |-> FALSE,\n  crashes |-> 0,\n  recoveryBad |-> FALSE,\n  stopBad |-> FALSE,\n  event |-> \"ack\" ]",
+      "last": "/\\ partialCustodyBad = FALSE\n/\\ partialStopBad = FALSE\n/\\ s = [ ledger |-> [status |-> \"acked\", keys |-> 1..1, end |-> 1],\n  stored |-> {1},\n  pc |-> \"idle\",\n  cp |-> 1,\n  wa |-> 1,\n  acknowledged |-> 1,\n  batch |-> 1..1,\n  hi |-> 1,\n  wire |-> {},\n  stop |-> FALSE,\n  accepted |-> FALSE,\n  crashes |-> 0,\n  recoveryBad |-> FALSE,\n  stopBad |-> FALSE,\n  event |-> \"checkpoint\" ]",
+      "edge": {
+        "pre": {
+          "pc": "acked",
+          "cp": 0,
+          "ledger": "acked"
+        },
+        "post": {
+          "pc": "idle",
+          "cp": 1,
+          "ledger": "acked"
+        }
+      }
+    },
+    "reach-full-reconcile": {
+      "configuration": {
+        "text": "SPECIFICATION Spec\nCONSTANTS\n Mutation = \"none\"\n Faults = TRUE\n Goal = \"full-reconcile\"\n RecheckStop = TRUE\nCHECK_DEADLOCK FALSE\nINVARIANT WitnessAbsent\n",
+        "sha256": "a5c4c754e2b6d1e8e38493762ffcf256f10cda2ef363edad4949e8780128cd4e"
+      },
+      "raw_log_sha256": "88cd4737a5b580e13638989cae7a42ab4f145098845778e733db9185c4f0007e",
+      "classification": "REACHABILITY",
+      "events": [
+        "init",
+        "write-ahead",
+        "intent",
+        "dispatch",
+        "apply",
+        "crash",
+        "restart",
+        "full-reconcile"
+      ],
+      "pre_state": "/\\ partialCustodyBad = FALSE\n/\\ partialStopBad = FALSE\n/\\ s = [ ledger |-> [status |-> \"intent\", keys |-> 1..1, end |-> 1],\n  stored |-> {1},\n  pc |-> \"recover\",\n  cp |-> 0,\n  wa |-> 1,\n  acknowledged |-> 0,\n  batch |-> {},\n  hi |-> 1,\n  wire |-> {},\n  stop |-> FALSE,\n  accepted |-> FALSE,\n  crashes |-> 1,\n  recoveryBad |-> FALSE,\n  stopBad |-> FALSE,\n  event |-> \"restart\" ]",
+      "last": "/\\ partialCustodyBad = FALSE\n/\\ partialStopBad = FALSE\n/\\ s = [ ledger |-> [status |-> \"acked\", keys |-> 1..1, end |-> 1],\n  stored |-> {1},\n  pc |-> \"reset\",\n  cp |-> 0,\n  wa |-> 1,\n  acknowledged |-> 1,\n  batch |-> {},\n  hi |-> 1,\n  wire |-> {},\n  stop |-> FALSE,\n  accepted |-> FALSE,\n  crashes |-> 1,\n  recoveryBad |-> FALSE,\n  stopBad |-> FALSE,\n  event |-> \"full-reconcile\" ]",
+      "edge": {
+        "pre": {
+          "pc": "recover",
+          "cp": 0,
+          "ledger": "intent"
+        },
+        "post": {
+          "pc": "reset",
+          "cp": 0,
+          "ledger": "acked"
+        }
+      }
+    },
+    "reach-zero-reconcile": {
+      "configuration": {
+        "text": "SPECIFICATION Spec\nCONSTANTS\n Mutation = \"none\"\n Faults = TRUE\n Goal = \"zero-reconcile\"\n RecheckStop = TRUE\nCHECK_DEADLOCK FALSE\nINVARIANT WitnessAbsent\n",
+        "sha256": "6d811a84490bb614424ccf6f5c515655826b409fa0c89a8dc4cd349632796776"
+      },
+      "raw_log_sha256": "28120be957d03283cf9700fd6b885354037ce813df62c9f21e649f896562e79f",
+      "classification": "REACHABILITY",
+      "events": [
+        "init",
+        "write-ahead",
+        "intent",
+        "crash",
+        "restart",
+        "zero-reconcile"
+      ],
+      "pre_state": "/\\ partialCustodyBad = FALSE\n/\\ partialStopBad = FALSE\n/\\ s = [ ledger |-> [status |-> \"intent\", keys |-> 1..1, end |-> 1],\n  stored |-> {},\n  pc |-> \"recover\",\n  cp |-> 0,\n  wa |-> 1,\n  acknowledged |-> 0,\n  batch |-> {},\n  hi |-> 1,\n  wire |-> {},\n  stop |-> FALSE,\n  accepted |-> FALSE,\n  crashes |-> 1,\n  recoveryBad |-> FALSE,\n  stopBad |-> FALSE,\n  event |-> \"restart\" ]",
+      "last": "/\\ partialCustodyBad = FALSE\n/\\ partialStopBad = FALSE\n/\\ s = [ ledger |-> [status |-> \"retry\", keys |-> 1..1, end |-> 1],\n  stored |-> {},\n  pc |-> \"reset\",\n  cp |-> 0,\n  wa |-> 1,\n  acknowledged |-> 0,\n  batch |-> {},\n  hi |-> 1,\n  wire |-> {},\n  stop |-> FALSE,\n  accepted |-> FALSE,\n  crashes |-> 1,\n  recoveryBad |-> FALSE,\n  stopBad |-> FALSE,\n  event |-> \"zero-reconcile\" ]",
+      "edge": {
+        "pre": {
+          "pc": "recover",
+          "cp": 0,
+          "ledger": "intent"
+        },
+        "post": {
+          "pc": "reset",
+          "cp": 0,
+          "ledger": "retry"
+        }
+      }
+    },
+    "reach-partial-effects": {
+      "configuration": {
+        "text": "SPECIFICATION Spec\nCONSTANTS\n Mutation = \"none\"\n Faults = TRUE\n Goal = \"partial-effects\"\n RecheckStop = TRUE\nCHECK_DEADLOCK FALSE\nINVARIANT WitnessAbsent\n",
+        "sha256": "f147ba7c69cc0263e8d22e2403cf6d5bae9343bd97e5a28c6aac57f27fe476d8"
+      },
+      "raw_log_sha256": "ed79f4ef515b2334e2c3e808cd7af6ad6ed58a1780405fa58791ced353457fb5",
+      "classification": "REACHABILITY",
+      "events": [
+        "init",
+        "write-ahead",
+        "intent",
+        "dispatch",
+        "apply",
+        "crash",
+        "restart",
+        "partial-stop"
+      ],
+      "pre_state": "/\\ partialCustodyBad = FALSE\n/\\ partialStopBad = FALSE\n/\\ s = [ ledger |-> [status |-> \"intent\", keys |-> 1..2, end |-> 2],\n  stored |-> {1},\n  pc |-> \"recover\",\n  cp |-> 0,\n  wa |-> 2,\n  acknowledged |-> 0,\n  batch |-> {},\n  hi |-> 2,\n  wire |-> {},\n  stop |-> FALSE,\n  accepted |-> FALSE,\n  crashes |-> 1,\n  recoveryBad |-> FALSE,\n  stopBad |-> FALSE,\n  event |-> \"restart\" ]",
+      "last": "/\\ partialCustodyBad = FALSE\n/\\ partialStopBad = FALSE\n/\\ s = [ ledger |-> [status |-> \"intent\", keys |-> 1..2, end |-> 2],\n  stored |-> {1},\n  pc |-> \"halt\",\n  cp |-> 0,\n  wa |-> 2,\n  acknowledged |-> 0,\n  batch |-> {},\n  hi |-> 2,\n  wire |-> {},\n  stop |-> FALSE,\n  accepted |-> FALSE,\n  crashes |-> 1,\n  recoveryBad |-> FALSE,\n  stopBad |-> FALSE,\n  event |-> \"partial-stop\" ]",
+      "edge": {
+        "pre": {
+          "pc": "recover",
+          "cp": 0,
+          "ledger": "intent"
+        },
+        "post": {
+          "pc": "halt",
+          "cp": 0,
+          "ledger": "intent"
+        }
+      }
+    },
+    "reach-terminal-await-stop": {
+      "configuration": {
+        "text": "SPECIFICATION Spec\nCONSTANTS\n Mutation = \"none\"\n Faults = TRUE\n Goal = \"terminal-await-stop\"\n RecheckStop = TRUE\nCHECK_DEADLOCK FALSE\nINVARIANT WitnessAbsent\n",
+        "sha256": "c690ce3c0f17eb79b9ce496ab8872ebd1643d5cc4e156792ce59f32e8a193fa3"
+      },
+      "raw_log_sha256": "0b28617f9cfc191804899955171c0f9d9f61a7112d033eafc165b6506646f23b",
+      "classification": "REACHABILITY",
+      "events": [
+        "init",
+        "write-ahead",
+        "intent",
+        "dispatch",
+        "apply",
+        "response",
+        "ack",
+        "checkpoint",
+        "write-ahead",
+        "await-reconcile-after-stop-check",
+        "stop"
+      ],
+      "pre_state": "/\\ partialCustodyBad = FALSE\n/\\ partialStopBad = FALSE\n/\\ s = [ ledger |-> [status |-> \"acked\", keys |-> 1..1, end |-> 1],\n  stored |-> {1},\n  pc |-> \"guard-wait\",\n  cp |-> 1,\n  wa |-> 2,\n  acknowledged |-> 1,\n  batch |-> 2..2,\n  hi |-> 2,\n  wire |-> {},\n  stop |-> FALSE,\n  accepted |-> FALSE,\n  crashes |-> 0,\n  recoveryBad |-> FALSE,\n  stopBad |-> FALSE,\n  event |-> \"await-reconcile-after-stop-check\" ]",
+      "last": "/\\ partialCustodyBad = FALSE\n/\\ partialStopBad = FALSE\n/\\ s = [ ledger |-> [status |-> \"acked\", keys |-> 1..1, end |-> 1],\n  stored |-> {1},\n  pc |-> \"guard-wait\",\n  cp |-> 1,\n  wa |-> 2,\n  acknowledged |-> 1,\n  batch |-> 2..2,\n  hi |-> 2,\n  wire |-> {},\n  stop |-> TRUE,\n  accepted |-> FALSE,\n  crashes |-> 0,\n  recoveryBad |-> FALSE,\n  stopBad |-> FALSE,\n  event |-> \"stop\" ]",
+      "edge": {
+        "pre": {
+          "pc": "guard-wait",
+          "cp": 1,
+          "ledger": "acked"
+        },
+        "post": {
+          "pc": "guard-wait",
+          "cp": 1,
+          "ledger": "acked"
+        }
+      }
+    },
+    "accept-mismatch": {
+      "configuration": {
+        "text": "SPECIFICATION Spec\nCONSTANTS\n Mutation = \"accept-mismatch\"\n Faults = TRUE\n Goal = \"\"\n RecheckStop = TRUE\nCHECK_DEADLOCK FALSE\nINVARIANT AcceptanceRequiresFinal\n",
+        "sha256": "f677cab8d957710c8784938b9296b87cd2add12a413cdb0b157def8cac2530d6"
+      },
+      "raw_log_sha256": "6a638204771a08b6eb16f2a1d3b770a9a108c9db6eb31bcb6f90f3d7190de581",
+      "classification": "INTENDED_MUTANT",
+      "events": [
+        "init",
+        "write-ahead",
+        "intent",
+        "dispatch",
+        "apply",
+        "response",
+        "ack",
+        "checkpoint",
+        "external-loss",
+        "accept"
+      ],
+      "pre_state": "/\\ partialCustodyBad = FALSE\n/\\ partialStopBad = FALSE\n/\\ s = [ ledger |-> [status |-> \"acked\", keys |-> 1..2, end |-> 2],\n  stored |-> {2},\n  pc |-> \"idle\",\n  cp |-> 2,\n  wa |-> 2,\n  acknowledged |-> 2,\n  batch |-> 1..2,\n  hi |-> 2,\n  wire |-> {},\n  stop |-> FALSE,\n  accepted |-> FALSE,\n  crashes |-> 0,\n  recoveryBad |-> FALSE,\n  stopBad |-> FALSE,\n  event |-> \"external-loss\" ]",
+      "last": "/\\ partialCustodyBad = FALSE\n/\\ partialStopBad = FALSE\n/\\ s = [ ledger |-> [status |-> \"acked\", keys |-> 1..2, end |-> 2],\n  stored |-> {2},\n  pc |-> \"done\",\n  cp |-> 2,\n  wa |-> 2,\n  acknowledged |-> 2,\n  batch |-> 1..2,\n  hi |-> 2,\n  wire |-> {},\n  stop |-> FALSE,\n  accepted |-> TRUE,\n  crashes |-> 0,\n  recoveryBad |-> FALSE,\n  stopBad |-> FALSE,\n  event |-> \"accept\" ]",
+      "edge": {
+        "pre": {
+          "pc": "idle",
+          "cp": 2,
+          "ledger": "acked"
+        },
+        "post": {
+          "pc": "done",
+          "cp": 2,
+          "ledger": "acked"
+        }
+      }
+    },
+    "historical-stop": {
+      "configuration": {
+        "text": "SPECIFICATION Spec\nCONSTANTS\n Mutation = \"none\"\n Faults = TRUE\n Goal = \"\"\n RecheckStop = FALSE\nCHECK_DEADLOCK FALSE\nINVARIANT StopBeforeDispatch\n",
+        "sha256": "e6d088493f9830473c3146f80eb2bcf3e3d03bd66fe7375a6b389b0005061cf5"
+      },
+      "raw_log_sha256": "8ea50a8bc22137a1a207bc3852a3f8773873b92e9cc624c0d312042d0fb0071d",
+      "classification": "HISTORICAL_SOURCE_VIOLATION",
+      "events": [
+        "init",
+        "write-ahead",
+        "intent",
+        "dispatch",
+        "apply",
+        "response",
+        "ack",
+        "checkpoint",
+        "write-ahead",
+        "await-reconcile-after-stop-check",
+        "stop",
+        "intent",
+        "dispatch"
+      ],
+      "pre_state": "/\\ partialCustodyBad = FALSE\n/\\ partialStopBad = FALSE\n/\\ s = [ ledger |-> [status |-> \"intent\", keys |-> 2..2, end |-> 2],\n  stored |-> {1},\n  pc |-> \"intent\",\n  cp |-> 1,\n  wa |-> 2,\n  acknowledged |-> 1,\n  batch |-> 2..2,\n  hi |-> 2,\n  wire |-> {},\n  stop |-> TRUE,\n  accepted |-> FALSE,\n  crashes |-> 0,\n  recoveryBad |-> FALSE,\n  stopBad |-> FALSE,\n  event |-> \"intent\" ]",
+      "last": "/\\ partialCustodyBad = FALSE\n/\\ partialStopBad = FALSE\n/\\ s = [ ledger |-> [status |-> \"intent\", keys |-> 2..2, end |-> 2],\n  stored |-> {1},\n  pc |-> \"sent\",\n  cp |-> 1,\n  wa |-> 2,\n  acknowledged |-> 1,\n  batch |-> 2..2,\n  hi |-> 2,\n  wire |-> {2..2},\n  stop |-> TRUE,\n  accepted |-> FALSE,\n  crashes |-> 0,\n  recoveryBad |-> FALSE,\n  stopBad |-> TRUE,\n  event |-> \"dispatch\" ]",
+      "edge": {
+        "pre": {
+          "pc": "intent",
+          "cp": 1,
+          "ledger": "intent"
+        },
+        "post": {
+          "pc": "sent",
+          "cp": 1,
+          "ledger": "intent"
+        }
+      }
+    },
+    "current-safety": {
+      "configuration": {
+        "text": "SPECIFICATION Spec\nCONSTANTS\n Mutation = \"none\"\n Faults = TRUE\n Goal = \"\"\n RecheckStop = TRUE\nCHECK_DEADLOCK FALSE\nINVARIANT IntentBeforeDispatch\nINVARIANT CheckpointAfterAck\nINVARIANT PartialPendingStops\nINVARIANT PartialPendingCustody\nINVARIANT RecoveryDoesNotCheckpoint\nINVARIANT StopBeforeDispatch\nINVARIANT AcceptanceRequiresFinal\n",
+        "sha256": "1cab463cdfcef31b962b15ddf69aa3ee9884e76b33367da8856af315a2da658a"
+      },
+      "raw_log_sha256": "7d6da2f69aac2ed809052e25daeb2f247be91098a88cd60c95ef21a9554217de",
+      "classification": "CURRENT_SOURCE_BOUNDED_PASS",
+      "outcome": "PASS",
+      "properties": [
+        "IntentBeforeDispatch",
+        "CheckpointAfterAck",
+        "PartialPendingStops",
+        "PartialPendingCustody",
+        "RecoveryDoesNotCheckpoint",
+        "StopBeforeDispatch",
+        "AcceptanceRequiresFinal"
+      ],
+      "states": [
+        [
+          "20634",
+          "5343"
+        ]
+      ]
+    }
+  }
+}

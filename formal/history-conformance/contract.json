@@ -1,0 +1,64 @@
+{
+  "schema": "tokenlayer.history-conformance.ci.v1",
+  "command": [
+    "python3",
+    "-I",
+    "-B",
+    "formal/history-conformance/check.py",
+    "--out",
+    "<artifact-directory>"
+  ],
+  "requires": [
+    "Python>=3.10",
+    "Bun on PATH"
+  ],
+  "corpus": {
+    "path": "formal/history-conformance/corpus.json",
+    "sha256": "fdd6498712be13abf50dc5a53fc54ab48ef98503fc9c58639cca45e876802800"
+  },
+  "success": {
+    "exit": 0,
+    "receipt": "run-*/receipt.json",
+    "complete": true,
+    "not_run": [],
+    "variants": [
+      "checkpoint-first",
+      "ack-missing",
+      "acceptance-bypass",
+      "stop-recheck-removed",
+      "current"
+    ],
+    "current_fixture_count": 7,
+    "stop": {
+      "current": "PASS: refusal before intent/charge/dispatch (RecheckStop=TRUE profile)",
+      "stop-recheck-removed": "OBLIGATION_FAILED STOP_BEFORE_DISPATCH (historical d737a6e stop region)"
+    }
+  },
+  "limits": {
+    "seconds_per_child": 30,
+    "bytes_per_child_file": 4194304,
+    "sequential_children": 5
+  },
+  "retain_artifacts": [
+    "entire output directory",
+    "synthetic scratch paths listed in receipt"
+  ],
+  "separate_required_real_anchors": [
+    "tests/integration/history.it.test.ts",
+    "tests/integration/history-revision.it.test.ts"
+  ],
+  "deletion_gate": "D1 CLOSED on this candidate: no test deletion. Any later replacement needs fresh independent review + mandatory binding/corpus CI + retained real CH/SIGKILL on the same integration; parent owns merge",
+  "model_profile": {
+    "runner": "formal/history/check.py",
+    "current": {
+      "RecheckStop": true,
+      "StopBeforeDispatch": "BOUNDED_PASS"
+    },
+    "historical": {
+      "base": "d737a6e7844a7b13706d394524fa2a55a538c305",
+      "RecheckStop": false,
+      "StopBeforeDispatch": "EXPECTED_VIOLATION"
+    },
+    "tlc": "locked local toolchain.json only; portable/Linux TLC qualification belongs to the shared-tools owner"
+  }
+}
