@@ -1,2 +1,6 @@
 #!/bin/sh
+if [ "$1" = "fable" ]; then
+  shift
+  exec bun "$(dirname "$0")/../src/fable/main.ts" "$@"
+fi
 exec bun "$(dirname "$0")/../src/session/main.ts" "$@"
