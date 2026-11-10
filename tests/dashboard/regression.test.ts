@@ -1,3 +1,5 @@
+import { fakeHub, state } from "../fable/fixtures";
+import { writeFileSync } from "node:fs";
 import { test, expect } from "bun:test";
 import { createHandler, recommend } from "../../src/dashboard/server";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
@@ -41,19 +43,10 @@ test("HTTP writes, replay, validation, isolated history and environment key cana
   const prior = names.map((n) => process.env[n]);
   names.forEach((n, i) => (process.env[n] = canaries[i]));
   let calls = 0;
-  const observations = [
-    { id: "claude-a.json", email: "a", auth_index: "idx-a", cooldowns: [] },
-    { id: "claude-b.json", email: "b", auth_index: "idx-b", cooldowns: [] },
-  ];
-  const hub: any = {
-    observations: async () => observations,
-    metadata: () => ({ form: "null" }),
-    catalog: async () => [],
-    patch: async () => {},
-    request: async () => {
-      calls++;
-    },
-  };
+  const fixture = fakeHub();
+  const hub: any = { ...fixture, request: async () => { calls++; } };
+  const initial = state();
+  writeFileSync(dir + "/state", JSON.stringify(initial));
   const handler = createHandler({
     logins: ["owner"],
     origin: "https://dash.test",
@@ -103,7 +96,7 @@ test("HTTP writes, replay, validation, isolated history and environment key cana
       (
         await request("api/switch", {
           account: "a",
-          mode: "off",
+          on: false,
           strict: true,
           spillover: false,
           opId: "off",
@@ -120,7 +113,7 @@ test("HTTP writes, replay, validation, isolated history and environment key cana
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
-    expect(events).toHaveLength(3);
+    expect(events).toHaveLength(6);
     expect(events.every((e) => e.who === "owner")).toBe(true);
     const empty = createHandler({ logins: [], origin: "x", secret: "x", hub, ch: {} as any });
     expect((await empty(new Request("https://dash.test/", { headers }))).status).toBe(403);

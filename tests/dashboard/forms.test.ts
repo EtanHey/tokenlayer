@@ -8,7 +8,7 @@ async function forms() {
   const forms: any = {};
   for (const id of ['switch', 'counts', 'pressed']) forms['#' + id] = {
     account: { value: 'etanface@gmail.com' }, strict: { checked: false }, spillover: { checked: false },
-    left: { value: '2' }, confirmed: { checked: true }, opId: { value: '' },
+    allowNonFableOnFableAccount: { checked: false }, left: { value: '2' }, confirmed: { checked: true }, opId: { value: '' },
   };
   forms['meta[name="csrf-token"]'] = { content: 'csrf' };
   forms['#retry'] = { hidden: true };
@@ -30,11 +30,11 @@ async function forms() {
   }
   await submit('switch');
   expect(calls.at(-1)).toEqual({ path: '/api/switch', body: {
-    account: 'etanface@gmail.com', mode: 'manual', strict: false, spillover: false,
+    account: 'etanface@gmail.com', on: true, strict: false, spillover: false, allowNonFableOnFableAccount: false,
   } });
-  runInContext('latestState = { state: { mode: "manual" } };', context);
+  runInContext('latestState = { state: { requested: { mode: "manual" } } };', context);
   await submit('switch');
-  expect(calls.at(-1).body.mode).toBe('off');
+  expect(calls.at(-1).body.on).toBe(false);
   await submit('counts');
   expect(calls.at(-1).body).toEqual({ account: 'etanface@gmail.com', left: 2, confirmed: true });
   await submit('pressed');

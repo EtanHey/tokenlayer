@@ -41,7 +41,7 @@ test("GET contracts with fake hub and ClickHouse; invalid writes cannot mutate",
     events: dir + "/events",
     hub: {
       observations: async () => [{ id: "claude-test.json", email: "test", status: "active", cooldowns: [] }],
-      metadata: () => ({ form: "null" }),
+      catalog: async () => ["claude-fable-5-2"],
     } as any,
     ch: { queryJSON: async () => [] },
   });
@@ -69,4 +69,14 @@ test("GET contracts with fake hub and ClickHouse; invalid writes cannot mutate",
   expect((await post("https://dash.test", { mode: "auto", strict: true, spillover: false })).status).toBe(
     400,
   );
+});
+
+test("unsupported methods advertise allowed methods", async () => {
+  const handle = createHandler({ logins: ["owner"], origin: "https://dash.test",
+    secret: "fixture", hub: {} as any, ch: {} as any });
+  const response = await handle(new Request("https://dash.test/api/state", {
+    method: "DELETE", headers: { "Tailscale-User-Login": "owner" },
+  }));
+  expect(response.status).toBe(405);
+  expect(response.headers.get("Allow")).toBe("GET, POST");
 });

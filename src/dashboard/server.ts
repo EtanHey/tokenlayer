@@ -1,9 +1,12 @@
+import { status } from "../fable/status";
+import { migrate } from "../fable/baseline";
+import { restoreOff } from "../fable/off";
 import { existsSync, readFileSync, mkdirSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { defaults, plan, type Observation } from "../fable/core";
-import { Hub, locked, execute, save, event, statePath } from "../fable/io";
+import { defaults, plan, intent, type Observation } from "../fable/core";
+import { Hub, locked, execute, save, event, statePath, observe } from "../fable/io";
 import { resetPressed, type ResetState } from "../fable/reset";
 import { loadEnvFiles } from "../lib/env";
 import { labelHash } from "../lib/hash";
@@ -117,13 +120,11 @@ export function createHandler(o: {
               },
             },
           );
-        if (u.pathname === "/api/state")
-          return json({
-            state: load(),
-            events: history(),
-            coverage,
-            routing: plan(load(), await o.hub.observations()),
-          });
+        if (u.pathname === "/api/state") {
+          const s = await status(load(), o.hub);
+          return json({ state: s, requested: s.requested, applied: s.applied,
+            reason: s.reason, events: history(), coverage, routing: s.policy });
+        }
         if (u.pathname === "/api/accounts") return json(await accounts());
         if (u.pathname === "/api/metrics") {
           if (!["48h", "7d"].includes(u.searchParams.get("window") ?? "48h"))
@@ -164,11 +165,7 @@ export function createHandler(o: {
         if (!body || typeof body !== "object" || Array.isArray(body))
           return json({ error: "Object required" }, 400);
         return await locked(async function writeOperation() {
-          const s = load(),
-            obs = await o.hub.observations(),
-            c = obs.find(function callback4(c) {
-              return c.email === body.account;
-            });
+          let s = load();
           const op = body.opId ?? crypto.randomUUID();
           if (typeof op !== "string" || !op || op.length > 160)
             return json({ error: "Invalid operation" }, 400);
@@ -183,35 +180,33 @@ export function createHandler(o: {
             });
           }
           if (u.pathname === "/api/switch") {
-            if (
-              !["off", "manual"].includes(body.mode) ||
-              typeof body.strict !== "boolean" ||
-              typeof body.spillover !== "boolean" ||
-              typeof body.account !== "string" ||
-              !c
-            )
+            if (typeof body.on !== "boolean" || typeof body.account !== "string" ||
+                [body.strict, body.spillover, body.allowNonFableOnFableAccount]
+                  .some((v) => v !== undefined && typeof v !== "boolean"))
               return json({ error: "Invalid switch" }, 400);
-            if (s.ops[op] === "done") return json({ state: s, opId: op });
-            s.mode = body.mode;
-            s.fableAccount = body.account ?? s.fableAccount;
-            s.strictFableAccount = body.strict;
-            s.spillover = body.spillover;
-            if (!Object.keys(s.baseline).length) {
-              if (obs.length !== 2) return json({ error: "Expected two OAuth accounts" }, 409);
-              for (const c of obs) s.baseline[c.id] = o.hub.metadata(c.id);
+            if (!body.on) {
+              try {
+                await restoreOff(s, o.hub, op, (s) => save(s, path), emit);
+              } catch {
+                return json({ state: s, requested: s.requested, applied: s.applied,
+                  reason: "OFF saved; applies when the hub is reachable" }, 202);
+              }
+            } else {
+              s = await migrate(s, o.hub);
+              const obs = await observe(s, o.hub);
+              if (!obs.some((c) => c.email === body.account))
+                return json({ error: "Unknown account" }, 400);
+              s.mode = "manual";
+              s.fableAccount = body.account;
+              s.strictFableAccount = body.strict ?? false;
+              s.spillover = body.spillover ?? false;
+              s.allowNonFableOnFableAccount = body.allowNonFableOnFableAccount ?? false;
+              s.requested = intent(s);
+              save(s, path);
+              await execute(s, plan(s, obs), o.hub, op, (s) => save(s, path), emit);
             }
-            save(s, path);
-            await execute(
-              s,
-              plan(s, obs).desired,
-              o.hub,
-              op,
-              function callback5(s) {
-                return save(s, path);
-              },
-              emit,
-            );
           } else {
+            const c = (await o.hub.observations()).find((c) => c.email === body.account);
             if (!c) return json({ error: "Unknown account" }, 400);
             if (u.pathname === "/api/resets") {
               if (
@@ -251,6 +246,9 @@ export function createHandler(o: {
           return json({ state: s, opId: op, readback: await accounts() });
         }, path);
       }
+      if (!["GET", "POST"].includes(r.method))
+        return new Response(JSON.stringify({ error: "Method not allowed" }),
+          { status: 405, headers: { Allow: "GET, POST" } });
       return json({ error: "Not found" }, 404);
     } catch {
       return json(
@@ -259,13 +257,6 @@ export function createHandler(o: {
       );
     }
   };
-  function safeMetadata(id: string) {
-    try {
-      return o.hub.metadata(id);
-    } catch {
-      return { error: "OAuth metadata unreadable" };
-    }
-  }
   async function joinAccounts<
     T extends {
       credential: string;
@@ -282,7 +273,7 @@ export function createHandler(o: {
     });
   }
   async function accounts() {
-    return (await o.hub.observations()).map(function callback9(c) {
+    return Promise.all((await o.hub.observations()).map(async function accountReadback(c) {
       return {
         id: c.id,
         email: c.email,
@@ -290,10 +281,11 @@ export function createHandler(o: {
         cooldowns: c.cooldowns,
         weekly: quota(c.quota, "7d"),
         fable: quota(c.model_quotas?.[FABLE_MODEL], "7d_oi"),
-        exclusions: safeMetadata(c.id),
-        exclusionsSource: "persisted OAuth file readback",
+        catalog: await o.hub.catalog(c.id),
+        priority: c.priority ?? null,
+        exclusionsSource: "management API exact catalog and priority",
       };
-    });
+    }));
   }
   async function burn() {
     const rawRows = await o.ch.queryJSON<{
@@ -403,6 +395,10 @@ export function recommend(c: any, thresholds: any = {}, now = Date.now()) {
     account: c.email,
     verdict: stale ? "UNKNOWN" : rule ? "consider" : "wait",
     reason:
+      (rescue ? "weekly cap reached (resets " +
+        new Date(parseTime(c.weekly.reset)).toLocaleString("en-GB", {
+          timeZone: "Asia/Jerusalem", weekday: "short", hour: "2-digit", minute: "2-digit"
+        }) + "). " : "") +
       (rule
         ? rule +
           ": " +
