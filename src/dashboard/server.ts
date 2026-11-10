@@ -18,7 +18,9 @@ export const coverage = [
 ];
 export function quota(q: Observation["quota"], window: string) {
   const signals = Object.fromEntries(
-    Object.entries(q?.signals ?? {}).map(([k, v]) => [k.toLowerCase(), v]),
+    Object.entries(q?.signals ?? {}).map(function callback1([k, v]) {
+      return [k.toLowerCase(), v];
+    }),
   );
   const prefix = "anthropic-ratelimit-unified-" + window + "-";
   const raw = signals[prefix + "utilization"];
@@ -65,9 +67,11 @@ export function createHandler(o: {
           .split("\n")
           .filter(Boolean)
           .slice(-50)
-          .map((x) => JSON.parse(x))
+          .map(function callback2(x) {
+            return JSON.parse(x);
+          })
       : [];
-  };
+  }
   return async function handle(r: Request): Promise<Response> {
     const login = r.headers.get("Tailscale-User-Login") ?? "";
     function json(data: unknown, status = 200) {
@@ -108,17 +112,21 @@ export function createHandler(o: {
             },
           );
         if (u.pathname === "/api/state")
-          return json({ state: load(), events: history(), coverage,
-            routing: plan(load(), await o.hub.observations()) });
+          return json({
+            state: load(),
+            events: history(),
+            coverage,
+            routing: plan(load(), await o.hub.observations()),
+          });
         if (u.pathname === "/api/accounts") return json(await accounts());
         if (u.pathname === "/api/metrics") {
           if (!["48h", "7d"].includes(u.searchParams.get("window") ?? "48h"))
             return json({ error: "Invalid window" }, 400);
           return json({
             rows: await joinAccounts(
-              await o.ch.queryJSON<{ credential: string }>(
-                metricsSQL(u.searchParams.get("window") === "7d" ? 168 : 48),
-              ),
+              await o.ch.queryJSON<{
+                credential: string;
+              }>(metricsSQL(u.searchParams.get("window") === "7d" ? 168 : 48)),
             ),
             freshness: await o.ch.queryJSON(
               "SELECT max(ts) AS last_at FROM tokenlayer.proxy_usage",
@@ -127,7 +135,11 @@ export function createHandler(o: {
         }
         if (u.pathname === "/api/burn") return json(await burn());
         if (u.pathname === "/api/recommendation")
-          return json((await accounts()).map((c) => recommend(c, load().thresholds)));
+          return json(
+            (await accounts()).map(function callback3(c) {
+              return recommend(c, load().thresholds);
+            }),
+          );
       }
       if (
         r.method === "POST" &&
@@ -148,7 +160,9 @@ export function createHandler(o: {
         return await locked(async function writeOperation() {
           const s = load(),
             obs = await o.hub.observations(),
-            c = obs.find((c) => c.email === body.account);
+            c = obs.find(function callback4(c) {
+              return c.email === body.account;
+            });
           const op = body.opId ?? crypto.randomUUID();
           if (typeof op !== "string" || !op || op.length > 160)
             return json({ error: "Invalid operation" }, 400);
@@ -161,7 +175,7 @@ export function createHandler(o: {
             appendFileSync(target, JSON.stringify({ ...(e as object), who: login }) + "\n", {
               mode: 0o600,
             });
-          };
+          }
           if (u.pathname === "/api/switch") {
             if (
               !["off", "manual"].includes(body.mode) ||
@@ -181,7 +195,16 @@ export function createHandler(o: {
               for (const c of obs) s.baseline[c.id] = o.hub.metadata(c.id);
             }
             save(s, path);
-            await execute(s, plan(s, obs).desired, o.hub, op, (s) => save(s, path), emit);
+            await execute(
+              s,
+              plan(s, obs).desired,
+              o.hub,
+              op,
+              function callback5(s) {
+                return save(s, path);
+              },
+              emit,
+            );
           } else {
             if (!c) return json({ error: "Unknown account" }, 400);
             if (u.pathname === "/api/resets") {
@@ -212,7 +235,9 @@ export function createHandler(o: {
                 op,
                 true,
                 o.hub,
-                () => save(s, path),
+                function callback6() {
+                  return save(s, path);
+                },
                 emit,
               );
             }
@@ -235,22 +260,34 @@ export function createHandler(o: {
       return { error: "OAuth metadata unreadable" };
     }
   }
-  async function joinAccounts<T extends { credential: string }>(rows: T[]) {
+  async function joinAccounts<
+    T extends {
+      credential: string;
+    },
+  >(rows: T[]) {
     const obs = await o.hub.observations();
-    const emails = new Map(obs.map((c) => [labelHash(c.auth_index), c.email]));
-    return rows.map((r) => ({ ...r, account: emails.get(r.credential) ?? "Unmapped credential" }));
+    const emails = new Map(
+      obs.map(function callback7(c) {
+        return [labelHash(c.auth_index), c.email];
+      }),
+    );
+    return rows.map(function callback8(r) {
+      return { ...r, account: emails.get(r.credential) ?? "Unmapped credential" };
+    });
   }
   async function accounts() {
-    return (await o.hub.observations()).map((c) => ({
-      id: c.id,
-      email: c.email,
-      status: c.status,
-      cooldowns: c.cooldowns,
-      weekly: quota(c.quota, "7d"),
-      fable: quota(c.model_quotas?.[FABLE_MODEL], "7d_oi"),
-      exclusions: safeMetadata(c.id),
-      exclusionsSource: "persisted OAuth file readback",
-    }));
+    return (await o.hub.observations()).map(function callback9(c) {
+      return {
+        id: c.id,
+        email: c.email,
+        status: c.status,
+        cooldowns: c.cooldowns,
+        weekly: quota(c.quota, "7d"),
+        fable: quota(c.model_quotas?.[FABLE_MODEL], "7d_oi"),
+        exclusions: safeMetadata(c.id),
+        exclusionsSource: "persisted OAuth file readback",
+      };
+    });
   }
   async function burn() {
     const rawRows = await o.ch.queryJSON<{
@@ -258,16 +295,14 @@ export function createHandler(o: {
       window: string;
       ts: string;
       utilization: number | null;
-    }>(
-      `SELECT credential, 'weekly' AS window, ts, utilization_7d AS utilization 
+    }>(`SELECT credential, 'weekly' AS window, ts, utilization_7d AS utilization 
  FROM tokenlayer.credentials_snap
  WHERE ts >= now() - INTERVAL 6 HOUR
  UNION ALL SELECT credential, 'fable' AS window, ts,
  toFloat64OrNull(signals['anthropic-ratelimit-unified-7d_oi-utilization']) AS utilization 
  FROM tokenlayer.credentials_snap
  WHERE ts >= now() - INTERVAL 6 HOUR
- ORDER BY credential, window, ts`,
-    );
+ ORDER BY credential, window, ts`);
     const rows = await joinAccounts(rawRows);
     const current = await accounts();
     const groups = new Map<string, typeof rows>();
@@ -279,15 +314,21 @@ export function createHandler(o: {
       estimate: true,
       method: "first-to-last delta",
       rows,
-      projections: [...groups].map(([key, rs]) => {
-        const valid = rs.filter((r) => r.utilization !== null),
+      projections: [...groups].map(function callback12([key, rs]) {
+        const valid = rs.filter(function callback10(r) {
+            return r.utilization !== null;
+          }),
           a = valid[0],
           b = valid.at(-1);
         const hours = a && b ? (parseTime(b.ts) - parseTime(a.ts)) / 3600000 : 0;
         const rate = hours > 0 ? (b!.utilization! - a!.utilization!) / hours : 0;
         const cap =
           rate > 0 ? Date.now() + (Math.max(0, 1 - b!.utilization!) / rate) * 3600000 : null;
-        const reset = parseTime(current.find((c) => c.email === a?.account)?.weekly.reset);
+        const reset = parseTime(
+          current.find(function callback11(c) {
+            return c.email === a?.account;
+          })?.weekly.reset,
+        );
         return {
           key,
           perHour: rate > 0 ? rate : null,
@@ -301,9 +342,7 @@ export function createHandler(o: {
 export function start(page?: (token: string) => string) {
   const env = loadEnvFiles(["~/.config/tokenlayer/hub.env", "~/.config/tokenlayer/clickhouse.env"]);
   if (!env.TOKENLAYER_DASHBOARD_LOGINS?.trim() || !env.TOKENLAYER_DASHBOARD_ORIGIN) {
-    writeErr(
-      "Dashboard requires allowlist and origin; local processes can forge identity headers",
-    );
+    writeErr("Dashboard requires allowlist and origin; local processes can forge identity headers");
     throw Error("Dashboard identity configuration required");
   }
   return Bun.serve({
@@ -313,7 +352,9 @@ export function start(page?: (token: string) => string) {
     fetch: createHandler({
       logins: (env.TOKENLAYER_DASHBOARD_LOGINS ?? "")
         .split(",")
-        .map((x) => x.trim())
+        .map(function callback13(x) {
+          return x.trim();
+        })
         .filter(Boolean),
       origin:
         env.TOKENLAYER_DASHBOARD_ORIGIN ?? "https://locals-macbook-pro.tail5ef6be.ts.net:8448",
@@ -325,7 +366,6 @@ export function start(page?: (token: string) => string) {
   });
 }
 if (import.meta.main) start();
-
 export function parseTime(value: unknown): number {
   if (value === null || value === undefined) return NaN;
   const text = String(value);
