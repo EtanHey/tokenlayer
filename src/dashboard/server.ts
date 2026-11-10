@@ -98,6 +98,12 @@ export function createHandler(o: {
     }
     try {
       if (r.method === "GET") {
+        if (["/app.css", "/app.js"].includes(u.pathname))
+          return new Response(Bun.file(new URL("." + u.pathname, import.meta.url)), {
+            headers: {
+              "Content-Type": u.pathname.endsWith(".css") ? "text/css" : "text/javascript",
+            },
+          });
         if (u.pathname === "/")
           return new Response(
             o.page?.(token(login)) ??
