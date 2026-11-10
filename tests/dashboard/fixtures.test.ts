@@ -1,8 +1,9 @@
-import { test, expect } from 'bun:test';
+import { test, expect, spyOn } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { Hub } from '../../src/fable/io';
 import { createHandler } from '../../src/dashboard/server';
+import { ClickHouse } from '../../src/lib/clickhouse';
 import { labelHash } from '../../src/lib/hash';
 import { createHmac } from 'node:crypto';
 
@@ -20,6 +21,13 @@ test('real Hub fixture: mutating HTTP switch replay, email join and planted key 
   let writes = 0;
   let fail = false;
   const fake = Bun.serve({ port: 0, fetch: async function hubRequest(r) {
+    if (new URL(r.url).pathname === '/') {
+      expect(r.headers.get('X-ClickHouse-Key')).toBe(secrets[2]);
+      if (fail) return new Response(secrets.join(' '), { status: 500 });
+      const sql = await r.text();
+      return new Response(sql.includes('GROUP BY')
+        ? JSON.stringify({ credential: labelHash('index-0'), model: 'claude-fable-5-2' }) + '\n' : '');
+    }
     expect(r.headers.get('Authorization')).toBe('Bearer ' + secrets[0]);
     if (fail) return new Response(secrets.join(' '), { status: 500 });
     if (r.method === 'PATCH') {
@@ -44,10 +52,15 @@ test('real Hub fixture: mutating HTTP switch replay, email join and planted key 
   } });
   const hub = new Hub('http://127.0.0.1:' + fake.port, secrets[0], dir);
   const handler = createHandler({ logins: ['owner'], origin: 'https://dash.test', secret: 'csrf', hub,
-    path: dir + '/state', events: dir + '/events', ch: { queryJSON: async function query(sql) {
-      if (fail) throw Error(secrets[2]);
-      return (sql.includes('GROUP BY') ? [{ credential: labelHash('index-0'), model: 'claude-fable-5-2' }] : []) as any;
-    } } });
+    path: dir + '/state', events: dir + '/events', ch: new ClickHouse({ url: 'http://127.0.0.1:' + fake.port,
+      user: 'fixture', password: secrets[2], database: 'tokenlayer' }) });
+  const output: string[] = [];
+  const stdout = spyOn(process.stdout, 'write').mockImplementation(function capture(chunk: any) {
+    output.push(String(chunk)); return true;
+  });
+  const stderr = spyOn(process.stderr, 'write').mockImplementation(function capture(chunk: any) {
+    output.push(String(chunk)); return true;
+  });
   async function request(path: string, body?: unknown) {
     const response = await handler(new Request('https://dash.test/' + path, {
       method: body ? 'POST' : 'GET', headers: { 'Tailscale-User-Login': 'owner',
@@ -77,7 +90,10 @@ test('real Hub fixture: mutating HTTP switch replay, email join and planted key 
     for (const path of ['switch', 'resets', 'reset-pressed']) {
       expect((await request('api/' + path, { account: 'a', opId: 'error' })).status).toBe(503);
     }
+    for (const secret of secrets) expect(output.join('')).not.toContain(secret);
   } finally {
+    stdout.mockRestore();
+    stderr.mockRestore();
     fake.stop(true);
     rmSync(dir, { recursive: true });
   }
