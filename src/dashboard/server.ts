@@ -16,7 +16,9 @@ export const coverage = [
   "api/<model> paid-key traffic",
 ];
 export function quota(q: Observation["quota"], window: string) {
-  const signals = Object.fromEntries(Object.entries(q?.signals ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
+  const signals = Object.fromEntries(
+    Object.entries(q?.signals ?? {}).map(([k, v]) => [k.toLowerCase(), v]),
+  );
   const prefix = "anthropic-ratelimit-unified-" + window + "-";
   const raw = signals[prefix + "utilization"];
   return {
@@ -28,7 +30,11 @@ export function quota(q: Observation["quota"], window: string) {
   };
 }
 export const metricsSQL = (hours: number) =>
-  `SELECT credential, model, toStartOfHour(ts) AS hour, count() AS requests, sum(total_tokens) AS tokens, countIf(status_code=429) AS errors429 FROM tokenlayer.proxy_usage FINAL WHERE ts >= now() - INTERVAL ${hours} HOUR GROUP BY credential, model, hour ORDER BY hour`;
+  `SELECT credential, model, toStartOfHour(ts) AS hour, count() AS requests,
+ sum(total_tokens) AS tokens, countIf(status_code=429) AS errors429
+ FROM tokenlayer.proxy_usage FINAL
+ WHERE ts >= now() - INTERVAL ${hours} HOUR
+ GROUP BY credential, model, hour ORDER BY hour`;
 export function createHandler(o: {
   logins: string[];
   origin: string;
@@ -40,7 +46,8 @@ export function createHandler(o: {
   page?: (token: string) => string;
 }) {
   const path = o.path ?? statePath();
-  const load = (): ResetState => (existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : defaults());
+  const load = (): ResetState =>
+    existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : defaults();
   const token = (login: string) => createHmac("sha256", o.secret).update(login).digest("hex");
   const history = () => {
     const p =
@@ -81,6 +88,12 @@ export function createHandler(o: {
     }
     try {
       if (r.method === "GET") {
+        if (["/app.css", "/app.js"].includes(u.pathname))
+          return new Response(Bun.file(new URL("." + u.pathname, import.meta.url)), {
+            headers: {
+              "Content-Type": u.pathname.endsWith(".css") ? "text/css" : "text/javascript",
+            },
+          });
         if (u.pathname === "/")
           return new Response(
             o.page?.(token(login)) ??
@@ -90,11 +103,12 @@ export function createHandler(o: {
                 "Content-Type": "text/html",
                 "Cache-Control": "no-store",
                 "Content-Security-Policy":
-                  "default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
+                  "default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'",
               },
             },
           );
-        if (u.pathname === "/api/state") return json({ state: load(), events: history(), coverage });
+        if (u.pathname === "/api/state")
+          return json({ state: load(), events: history(), coverage });
         if (u.pathname === "/api/accounts") return json(await accounts());
         if (u.pathname === "/api/metrics") {
           if (!["48h", "7d"].includes(u.searchParams.get("window") ?? "48h"))
@@ -105,14 +119,19 @@ export function createHandler(o: {
                 metricsSQL(u.searchParams.get("window") === "7d" ? 168 : 48),
               ),
             ),
-            freshness: await o.ch.queryJSON("SELECT max(ts) AS last_at FROM tokenlayer.proxy_usage"),
+            freshness: await o.ch.queryJSON(
+              "SELECT max(ts) AS last_at FROM tokenlayer.proxy_usage",
+            ),
           });
         }
         if (u.pathname === "/api/burn") return json(await burn());
         if (u.pathname === "/api/recommendation")
           return json((await accounts()).map((c) => recommend(c, load().thresholds)));
       }
-      if (r.method === "POST" && ["/api/switch", "/api/resets", "/api/reset-pressed"].includes(u.pathname)) {
+      if (
+        r.method === "POST" &&
+        ["/api/switch", "/api/resets", "/api/reset-pressed"].includes(u.pathname)
+      ) {
         if (!r.headers.get("Content-Type")?.startsWith("application/json"))
           return json({ error: "JSON required" }, 415);
         const raw = await r.text();
@@ -138,7 +157,9 @@ export function createHandler(o: {
               process.env.TOKENLAYER_FABLE_EVENTS ??
               join(homedir(), ".local/state/tokenlayer/fable/events.jsonl");
             mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-            appendFileSync(target, JSON.stringify({ ...(e as object), who: login }) + "\n", { mode: 0o600 });
+            appendFileSync(target, JSON.stringify({ ...(e as object), who: login }) + "\n", {
+              mode: 0o600,
+            });
           };
           if (u.pathname === "/api/switch") {
             if (
@@ -164,7 +185,10 @@ export function createHandler(o: {
             if (!c) return json({ error: "Unknown account" }, 400);
             if (u.pathname === "/api/resets") {
               if (
-                !(body.left === null || (Number.isInteger(body.left) && body.left >= 0 && body.left <= 3)) ||
+                !(
+                  body.left === null ||
+                  (Number.isInteger(body.left) && body.left >= 0 && body.left <= 3)
+                ) ||
                 typeof body.confirmed !== "boolean"
               )
                 return json({ error: "Invalid count" }, 400);
@@ -180,7 +204,16 @@ export function createHandler(o: {
               });
             } else {
               if (!c.auth_index || !body.opId) return json({ error: "Operation id required" }, 400);
-              await resetPressed(s, body.account, c.auth_index, op, true, o.hub, () => save(s, path), emit);
+              await resetPressed(
+                s,
+                body.account,
+                c.auth_index,
+                op,
+                true,
+                o.hub,
+                () => save(s, path),
+                emit,
+              );
             }
           }
           return json({ state: s, opId: op, readback: await accounts() });
@@ -188,7 +221,10 @@ export function createHandler(o: {
       }
       return json({ error: "Not found" }, 404);
     } catch {
-      return json({ error: "Dashboard operation unavailable; retry with the same operation id" }, 503);
+      return json(
+        { error: "Dashboard operation unavailable; retry with the same operation id" },
+        503,
+      );
     }
   };
   function safeMetadata(id: string) {
@@ -222,7 +258,14 @@ export function createHandler(o: {
       ts: string;
       utilization: number | null;
     }>(
-      `SELECT credential, 'weekly' AS window, ts, utilization_7d AS utilization FROM tokenlayer.credentials_snap WHERE ts >= now() - INTERVAL 6 HOUR UNION ALL SELECT credential, 'fable' AS window, ts, toFloat64OrNull(signals['anthropic-ratelimit-unified-7d_oi-utilization']) AS utilization FROM tokenlayer.credentials_snap WHERE ts >= now() - INTERVAL 6 HOUR ORDER BY credential, window, ts`,
+      `SELECT credential, 'weekly' AS window, ts, utilization_7d AS utilization 
+ FROM tokenlayer.credentials_snap
+ WHERE ts >= now() - INTERVAL 6 HOUR
+ UNION ALL SELECT credential, 'fable' AS window, ts,
+ toFloat64OrNull(signals['anthropic-ratelimit-unified-7d_oi-utilization']) AS utilization 
+ FROM tokenlayer.credentials_snap
+ WHERE ts >= now() - INTERVAL 6 HOUR
+ ORDER BY credential, window, ts`,
     );
     const rows = await joinAccounts(rawRows);
     const current = await accounts();
@@ -241,12 +284,14 @@ export function createHandler(o: {
           b = valid.at(-1);
         const hours = a && b ? (parseTime(b.ts) - parseTime(a.ts)) / 3600000 : 0;
         const rate = hours > 0 ? (b!.utilization! - a!.utilization!) / hours : 0;
-        const cap = rate > 0 ? Date.now() + (Math.max(0, 1 - b!.utilization!) / rate) * 3600000 : null;
+        const cap =
+          rate > 0 ? Date.now() + (Math.max(0, 1 - b!.utilization!) / rate) * 3600000 : null;
         const reset = parseTime(current.find((c) => c.email === a?.account)?.weekly.reset);
         return {
           key,
           perHour: rate > 0 ? rate : null,
-          projectedCapAt: cap && Number.isFinite(reset) && cap < reset ? new Date(cap).toISOString() : null,
+          projectedCapAt:
+            cap && Number.isFinite(reset) && cap < reset ? new Date(cap).toISOString() : null,
         };
       }),
     };
@@ -255,7 +300,9 @@ export function createHandler(o: {
 export function start(page?: (token: string) => string) {
   const env = loadEnvFiles(["~/.config/tokenlayer/hub.env", "~/.config/tokenlayer/clickhouse.env"]);
   if (!env.TOKENLAYER_DASHBOARD_LOGINS?.trim() || !env.TOKENLAYER_DASHBOARD_ORIGIN) {
-    console.warn("Dashboard requires allowlist and origin; local processes can forge identity headers");
+    console.warn(
+      "Dashboard requires allowlist and origin; local processes can forge identity headers",
+    );
     throw Error("Dashboard identity configuration required");
   }
   return Bun.serve({
@@ -267,7 +314,8 @@ export function start(page?: (token: string) => string) {
         .split(",")
         .map((x) => x.trim())
         .filter(Boolean),
-      origin: env.TOKENLAYER_DASHBOARD_ORIGIN ?? "https://locals-macbook-pro.tail5ef6be.ts.net:8446",
+      origin:
+        env.TOKENLAYER_DASHBOARD_ORIGIN ?? "https://locals-macbook-pro.tail5ef6be.ts.net:8446",
       secret: crypto.randomUUID(),
       hub: new Hub(env.TOKENLAYER_HUB_URL ?? "http://127.0.0.1:8317", env.CLIPROXY_MGMT_KEY ?? ""),
       ch: ClickHouse.fromEnv(env),
@@ -300,7 +348,9 @@ export function recommend(c: any, thresholds: any = {}, now = Date.now()) {
     : "Natural reset time could not be parsed; 36 h heuristic unavailable.";
   const rule = refill ? "(a) Fable-cap refill" : rescue ? "(b) Weekly-cap rescue" : null;
   const refund =
-    f === null ? "refund unknown, check Settings > Usage" : `maximum refund ${Math.round(f * 100)}% of week`;
+    f === null
+      ? "refund unknown, check Settings > Usage"
+      : `maximum refund ${Math.round(f * 100)}% of week`;
   const stale = refill ? c.fable.stale : rescue ? c.weekly.stale : c.weekly.stale || c.fable.stale;
   return {
     account: c.email,
