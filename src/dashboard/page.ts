@@ -18,10 +18,12 @@ export function page(token: string) {
 </header>
 <section>
 <h2>Fable split</h2>
-<p>Changes apply to hub routing. Current exclusions below are read back from OAuth metadata.</p>
+<p>Changes apply to hub routing. Catalogs and priorities below are read back from the management API.</p>
+<p id="applied">Fable split: UNKNOWN</p>
+<p id="applied-reason"></p>
 <form id="switch">
 <input type="hidden" name="mode" value="off">
-<button id="toggle" type="submit" aria-pressed="false">Fable split: OFF</button>
+<button id="toggle" type="submit" aria-pressed="false">Turn Fable split ON</button>
 <label>Fable account <select name="account" class="account">
 </select>
 </label>
@@ -31,6 +33,8 @@ export function page(token: string) {
 (other models use the other account)</label>
 <label>
 <input type="checkbox" name="spillover"> Allow spillover at cap (the second account may serve Fable)</label>
+<label><input type="checkbox" name="allowNonFableOnFableAccount">
+Allow non-Fable on the Fable account (override its reserve)</label>
 </details>
 </form>
 </section>
@@ -51,9 +55,8 @@ Recovery clears proxy cooldowns; it does not reset Anthropic entitlement.</p>
 <label>Account <select name="account" class="account">
 </select>
 </label>
-<label>Operation id <input name="opId" readonly>
+<input type="hidden" name="opId">
 <button type="button" id="retry" hidden>Retry same op</button>
-</label>
 <p id="reset-facts">Select an account to see its reset facts.</p>
 <button>I pressed it — recover proxy and subtract one reset</button>
 </form>

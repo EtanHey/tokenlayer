@@ -151,3 +151,7 @@ meter {
   grid-column: 1 / -1;
   margin-top: 8px;
 }
+
+#toggle[aria-pressed="false"] { background: #59616b; color: white; }
+
+[hidden] { display: none !important; }

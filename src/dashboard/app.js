@@ -66,9 +66,7 @@ function meter(card, name, q) {
   );
 }
 function exclusions(c) {
-  if (c.exclusions.error) return c.email + ": readback unavailable";
-  const values = c.exclusions.list || [];
-  return c.email + ": " + (values.length ? values.join(", ") + " excluded" : "no exclusions");
+  return c.email + ": " + c.catalog.length + " available models · priority " + (c.priority ?? "baseline");
 }
 async function refresh() {
   if (inflight) return;
@@ -90,7 +88,7 @@ async function refresh() {
     });
     if (a) {
       latestAccounts = a;
-      $("#mode").textContent = "OAuth file readback: " + a.map(exclusions).join(" · ");
+      $("#mode").textContent = "Management API readback: " + a.map(exclusions).join(" · ");
       $("#accounts").replaceChildren();
       for (const c of a) {
         const card = text("article", "");
@@ -164,6 +162,7 @@ async function refresh() {
           a?.[0]?.email;
         f.strict.checked = s.state.strictFableAccount;
         f.spillover.checked = s.state.spillover;
+        f.allowNonFableOnFableAccount.checked = s.state.allowNonFableOnFableAccount;
         ready = true;
       }
       $("#inventory").textContent = Object.entries(s.state.resets || {})
@@ -211,12 +210,7 @@ async function refresh() {
           return Object.assign(
             text(
               "p",
-              x.account +
-                " · " +
-                x.verdict +
-                " · maximum refund " +
-                (x.worthPctOfWeek === null ? "unknown" : x.worthPctOfWeek + "%") +
-                " of week",
+              x.account + " · " + x.verdict + " · " + x.reason,
             ),
             { title: x.reason },
           );
@@ -239,20 +233,7 @@ async function refresh() {
         );
     });
     updateFacts();
-    if (s && a) {
-      const mismatch = a.some(function differs(c) {
-        return (
-          c.exclusions.error ||
-          JSON.stringify([...(c.exclusions.list || [])].sort()) !==
-            JSON.stringify([...(s.routing.desired[c.id] || [])].sort())
-        );
-      });
-      $("#mismatch").textContent = mismatch
-        ? "Warning: saved intent differs from OAuth readback. Routing is unconfirmed."
-        : s.state.mode === "manual" && s.routing.reason !== "partition"
-          ? "Warning: saved ON intent is suspended: " + s.routing.reason
-          : "";
-    }
+    if (s) $("#mismatch").textContent = ["ON", "OFF"].includes(s.applied) ? "" : s.reason;
     $("#notice").textContent = "Updated " + time(new Date().toISOString());
   } finally {
     inflight = false;
@@ -331,6 +312,7 @@ for (const [id, path] of [
       !confirm(
         id === "pressed"
           ? "Confirm you already pressed a reset in Claude?"
+          : id === "switch" ? "Change Fable split routing for " + e.target.account.value + "?"
           : "Confirm this change?",
       )
     )
@@ -339,9 +321,10 @@ for (const [id, path] of [
       body = { account: f.account.value };
     if (id === "switch")
       Object.assign(body, {
-        mode: latestState?.state.mode === "manual" ? "off" : "manual",
+        on: latestState?.state.requested?.mode !== "manual",
         strict: f.strict.checked,
         spillover: f.spillover.checked,
+        allowNonFableOnFableAccount: f.allowNonFableOnFableAccount.checked,
       });
     if (id === "counts")
       Object.assign(body, { left: Number(f.left.value), confirmed: f.confirmed.checked });
@@ -363,9 +346,15 @@ for (const [id, path] of [
     }
   };
 function updateToggle() {
-  const on = latestState?.state.mode === "manual";
-  $("#toggle").textContent = "Fable split: " + (on ? "ON" : "OFF");
-  $("#toggle").setAttribute("aria-pressed", String(on));
+  const applied = latestState?.applied ?? "UNKNOWN";
+  const on = latestState?.requested?.mode === "manual";
+  $("#applied").textContent = "Fable split: " + applied;
+  $("#applied-reason").textContent = applied === "ON_WAIT_AT_CAP"
+    ? "Fable paused at its cap on " + latestState.state.fableAccount +
+      ": press a reset in Claude when you want more"
+    : ["ON", "OFF"].includes(applied) ? "" : latestState?.reason;
+  $("#toggle").textContent = on ? "Turn OFF" : "Turn Fable split ON";
+  $("#toggle").setAttribute("aria-pressed", String(applied === "ON"));
 }
 function updateFacts() {
   const account = $("#pressed").account.value;

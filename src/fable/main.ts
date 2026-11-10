@@ -1,3 +1,4 @@
+import { status } from "./status";
 import { resetPressed, type ResetState } from "./reset";
 import { shipBestEffort } from "./events";
 import { ClickHouse } from "../lib/clickhouse";
@@ -164,43 +165,7 @@ async function tick() {
       return;
     }
     if (command === "status") {
-      // A persisted confirmation is historical. Status independently re-reads actual routing.
-      try {
-        const beforeMigration = JSON.stringify(s);
-        s = await migrate(s, hub);
-        if (JSON.stringify(s) !== beforeMigration) save(s);
-        const obs =
-            s.mode === "off"
-              ? await offReadback(s, hub)
-              : await observe(s, hub),
-          p = plan(s, obs);
-        const { allowed, same } = await import("./core");
-        const confirmed = obs.every(
-          (c) =>
-            s.mode === "off" ||
-            (same(
-              c.catalog!,
-              allowed(s.baseline[c.id].models, p.desired[c.id]),
-            ) &&
-              (c.priority ?? null) === p.desired[c.id].priority),
-        );
-        s.applied =
-          confirmed && !s.pending
-            ? p.applied
-            : s.pending
-              ? "APPLYING"
-              : "UNKNOWN";
-        s.reason = confirmed ? p.reason : "routing not confirmed";
-        s.policy = {
-          desired: p.desired,
-          exceptions: p.exceptions,
-          reserve: p.reserve,
-        };
-      } catch {
-        s.applied = "UNKNOWN";
-        s.reason = "readback unavailable or inventory changed";
-      }
-      s.requested = intent(s);
+      s = await status(s, hub);
       const desired = (p: typeof s.policy) =>
         p && {
           ...p,
