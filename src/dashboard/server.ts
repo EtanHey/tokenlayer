@@ -3,7 +3,9 @@ import { spillEnabled } from "../fable/core";
 import { status } from "../fable/status";
 import { migrate } from "../fable/baseline";
 import { restoreOff } from "../fable/off";
-import { existsSync, readFileSync, mkdirSync, appendFileSync, readdirSync, writeFileSync, renameSync, chmodSync } from "node:fs";
+import {
+  existsSync, readFileSync, mkdirSync, appendFileSync, readdirSync, writeFileSync, renameSync, chmodSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { createHmac, timingSafeEqual } from "node:crypto";

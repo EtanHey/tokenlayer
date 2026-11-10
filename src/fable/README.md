@@ -34,8 +34,8 @@ actual API observations. The daemon replans every 30 seconds; upstream failures
 between ticks can interrupt availability.
 
 WAIT_AT_CAP applies only to a real Fable cap (7d_oi rejected or at fableCapAt)
-with spillover off (or auto without confirmed zero). A model cooldown alone is transient: B serves Fable regardless
-of spillover, applied is DEGRADED, and the reason identifies the failure. Stale
+with spillover off (or auto without confirmed zero). A model cooldown alone is
+transient: B serves Fable regardless of spillover, applied is DEGRADED, and the reason identifies the failure. Stale
 but present signals on A also allow B to serve Fable. NO_UPSTREAM leaves both
 catalogs unrestricted for that model. RESERVE_CONFLICT is the explicit D2 override
 of the last-route rule for non-Fable. Missing weekly data or stale B observations
