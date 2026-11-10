@@ -7,7 +7,7 @@ import { Hub, locked, execute, save, event, statePath } from "../fable/io";
 import { resetPressed, type ResetState } from "../fable/reset";
 import { loadEnvFiles } from "../lib/env";
 import { labelHash } from "../lib/hash";
-import { writeErr, sanitizeOutput } from "../lib/egress";
+import { writeErr } from "../lib/egress";
 import { ClickHouse } from "../lib/clickhouse";
 const STALE_MS = 300000;
 const FABLE_MODEL = "claude-fable-5-2";
@@ -75,7 +75,7 @@ export function createHandler(o: {
   return async function handle(r: Request): Promise<Response> {
     const login = r.headers.get("Tailscale-User-Login") ?? "";
     function json(data: unknown, status = 200) {
-      return new Response(sanitizeOutput(JSON.stringify(data)), {
+      return new Response(JSON.stringify(data), {
         status,
         headers: {
           "Content-Type": "application/json",
