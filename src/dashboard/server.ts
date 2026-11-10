@@ -7,6 +7,7 @@ import { Hub, locked, execute, save, event, statePath } from "../fable/io";
 import { resetPressed, type ResetState } from "../fable/reset";
 import { loadEnvFiles } from "../lib/env";
 import { labelHash } from "../lib/hash";
+import { writeErr, sanitizeOutput } from "../lib/egress";
 import { ClickHouse } from "../lib/clickhouse";
 const STALE_MS = 300000;
 const FABLE_MODEL = "claude-fable-5-2";
@@ -29,12 +30,13 @@ export function quota(q: Observation["quota"], window: string) {
     stale: !q?.observed_at || Date.now() - Date.parse(q.observed_at) > STALE_MS,
   };
 }
-export const metricsSQL = (hours: number) =>
-  `SELECT credential, model, toStartOfHour(ts) AS hour, count() AS requests,
+export function metricsSQL(hours: number) {
+  return `SELECT credential, model, toStartOfHour(ts) AS hour, count() AS requests,
  sum(total_tokens) AS tokens, countIf(status_code=429) AS errors429
  FROM tokenlayer.proxy_usage FINAL
  WHERE ts >= now() - INTERVAL ${hours} HOUR
  GROUP BY credential, model, hour ORDER BY hour`;
+}
 export function createHandler(o: {
   logins: string[];
   origin: string;
@@ -46,10 +48,13 @@ export function createHandler(o: {
   page?: (token: string) => string;
 }) {
   const path = o.path ?? statePath();
-  const load = (): ResetState =>
-    existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : defaults();
-  const token = (login: string) => createHmac("sha256", o.secret).update(login).digest("hex");
-  const history = () => {
+  function load(): ResetState {
+    return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : defaults();
+  }
+  function token(login: string) {
+    return createHmac("sha256", o.secret).update(login).digest("hex");
+  }
+  function history() {
     const p =
       o.events ??
       process.env.TOKENLAYER_FABLE_EVENTS ??
@@ -63,10 +68,10 @@ export function createHandler(o: {
           .map((x) => JSON.parse(x))
       : [];
   };
-  return async (r: Request): Promise<Response> => {
+  return async function handle(r: Request): Promise<Response> {
     const login = r.headers.get("Tailscale-User-Login") ?? "";
-    const json = (data: unknown, status = 200) =>
-      new Response(JSON.stringify(data), {
+    function json(data: unknown, status = 200) {
+      return new Response(sanitizeOutput(JSON.stringify(data)), {
         status,
         headers: {
           "Content-Type": "application/json",
@@ -74,6 +79,7 @@ export function createHandler(o: {
           "X-Content-Type-Options": "nosniff",
         },
       });
+    }
     if (!login || !o.logins.includes(login)) return json({ error: "Forbidden" }, 403);
     const u = new URL(r.url);
     if (r.method === "POST") {
@@ -102,7 +108,8 @@ export function createHandler(o: {
             },
           );
         if (u.pathname === "/api/state")
-          return json({ state: load(), events: history(), coverage });
+          return json({ state: load(), events: history(), coverage,
+            routing: plan(load(), await o.hub.observations()) });
         if (u.pathname === "/api/accounts") return json(await accounts());
         if (u.pathname === "/api/metrics") {
           if (!["48h", "7d"].includes(u.searchParams.get("window") ?? "48h"))
@@ -138,14 +145,14 @@ export function createHandler(o: {
         }
         if (!body || typeof body !== "object" || Array.isArray(body))
           return json({ error: "Object required" }, 400);
-        return await locked(async () => {
+        return await locked(async function writeOperation() {
           const s = load(),
             obs = await o.hub.observations(),
             c = obs.find((c) => c.email === body.account);
           const op = body.opId ?? crypto.randomUUID();
           if (typeof op !== "string" || !op || op.length > 160)
             return json({ error: "Invalid operation" }, 400);
-          const emit = (e: unknown) => {
+          function emit(e: unknown) {
             const target =
               o.events ??
               process.env.TOKENLAYER_FABLE_EVENTS ??
@@ -294,7 +301,7 @@ export function createHandler(o: {
 export function start(page?: (token: string) => string) {
   const env = loadEnvFiles(["~/.config/tokenlayer/hub.env", "~/.config/tokenlayer/clickhouse.env"]);
   if (!env.TOKENLAYER_DASHBOARD_LOGINS?.trim() || !env.TOKENLAYER_DASHBOARD_ORIGIN) {
-    console.warn(
+    writeErr(
       "Dashboard requires allowlist and origin; local processes can forge identity headers",
     );
     throw Error("Dashboard identity configuration required");
@@ -302,14 +309,14 @@ export function start(page?: (token: string) => string) {
   return Bun.serve({
     hostname: "127.0.0.1",
     maxRequestBodySize: 8192,
-    port: Number(env.TOKENLAYER_DASHBOARD_PORT ?? 8446),
+    port: Number(env.TOKENLAYER_DASHBOARD_PORT ?? 8448),
     fetch: createHandler({
       logins: (env.TOKENLAYER_DASHBOARD_LOGINS ?? "")
         .split(",")
         .map((x) => x.trim())
         .filter(Boolean),
       origin:
-        env.TOKENLAYER_DASHBOARD_ORIGIN ?? "https://locals-macbook-pro.tail5ef6be.ts.net:8446",
+        env.TOKENLAYER_DASHBOARD_ORIGIN ?? "https://locals-macbook-pro.tail5ef6be.ts.net:8448",
       secret: crypto.randomUUID(),
       hub: new Hub(env.TOKENLAYER_HUB_URL ?? "http://127.0.0.1:8317", env.CLIPROXY_MGMT_KEY ?? ""),
       ch: ClickHouse.fromEnv(env),
