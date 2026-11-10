@@ -1,165 +1,99 @@
 import { expect, test } from "bun:test";
-import { metadata, plan, defaults, equivalent } from "../../src/fable/core";
-const now = Date.now();
-const signals = (u: number) => ({
-  observed_at: new Date(now).toISOString(),
-  signals: {
-    "Anthropic-Ratelimit-Unified-7d-Utilization": String(u),
-    "Anthropic-Ratelimit-Unified-7d-Status": "allowed",
-    "Anthropic-Ratelimit-Unified-7d_oi-Utilization": "0.2",
-    "Anthropic-Ratelimit-Unified-7d_oi-Status": "allowed",
-  },
-});
-const a = {
-  id: "a",
-  name: "a",
-  email: "a",
-  status: "active",
-  disabled: false,
-  unavailable: false,
-  cooldowns: [],
-  quota: signals(0.2),
-  model_quotas: { "claude-fable-5-2": signals(0.2) },
-};
-const b = { ...a, id: "b", name: "b", email: "b" };
-const s = () => ({
-  ...defaults(),
-  mode: "manual" as const,
-  fableAccount: "a",
-  baseline: { a: metadata({}), b: metadata({}) },
-});
-test("metadata discards all other keys; v8.0.45 file.go:497–505 / helpers.go:76–85 absent equals null", () => {
-  expect(metadata({ access_token: "PRIVATE", disabled: false })).toEqual({
-    form: "absent",
-    disabled: false,
-  });
-  expect(equivalent(metadata({}), metadata({ excluded_models: null }))).toBe(
-    true,
-  );
-  expect(equivalent(metadata({ excluded_models: ["x"] }), metadata({}))).toBe(
-    false,
-  );
-});
-test("every policy row and fail-open", () => {
-  expect(plan({ ...s(), mode: "off" }, [a, b], now).desired.a).toEqual([]);
-  expect(plan(s(), [a, b], now).desired.a).toContain("claude-opus-*");
-  expect(plan(s(), [a, b], now).desired.b).toEqual(["claude-fable-*"]);
-  expect(
-    plan({ ...s(), strictFableAccount: false }, [a, b], now).desired.a,
-  ).toEqual([]);
-  const bad = { ...b, status: "error" };
-  expect(plan(s(), [a, bad], now).desired.a).toEqual([]);
-  const capped = {
-    ...a,
-    model_quotas: {
-      "claude-fable-5-2": {
-        ...signals(0.2),
-        signals: {
-          ...signals(0.2).signals,
-          "Anthropic-Ratelimit-Unified-7d_oi-Utilization": "1",
-        },
-      },
-    },
-  };
-  expect(plan(s(), [capped, b], now).desired.b).toEqual(["claude-fable-*"]);
-  expect(plan({ ...s(), spillover: true }, [capped, b], now).desired.b).toEqual(
-    [],
-  );
-  expect(
-    plan({ ...s(), spillover: true }, [{ ...a, status: "error" }, b], now)
-      .desired.b,
-  ).toEqual([]);
-  expect(plan(s(), [{ ...a, status: "error" }, bad], now).desired.b).toEqual(
-    [],
-  );
-  expect(plan(s(), [{ ...a, quota: null }, b], now).reason).toBe(
-    "unreadable or stale signals",
-  );
-  expect(
-    plan(
-      s(),
-      [{ ...a, quota: { ...signals(0.2), observed_at: "2000-01-01" } }, b],
-      now,
-    ).desired.b,
-  ).toEqual([]);
-  expect(
-    plan(
-      { ...s(), thresholds: { fableCapAt: 0.99, weeklyExhaustedAt: 0.1 } },
-      [a, b],
-      now,
-    ).desired.a,
-  ).toEqual([]);
-  expect(() => plan({ ...s(), mode: "auto" }, [a, b], now)).toThrow(
-    "not enabled yet",
-  );
-});
-test("unusable, rejected, cooldown scopes, unknown Fable and empty inventory", () => {
-  const future = new Date(now + 60000).toISOString();
-  for (const patch of [
+import { allowed, plan, usable, type Observation } from "../../src/fable/core";
+import { models, state, observed } from "./fixtures";
+
+test("mode table preserves every available model except documented reserve/wait conflicts", () => {
+  const now = Date.now();
+  const variants: Partial<Observation>[] = [
+    {},
     { disabled: true },
     { status: "error" },
-    {
-      quota: {
-        ...signals(0.2),
-        signals: {
-          ...signals(0.2).signals,
-          "Anthropic-Ratelimit-Unified-7d-Status": "rejected",
-        },
-      },
-    },
-    { cooldowns: [{ scope: "credential", retry_at: future }] },
-  ]) {
-    const result = plan(s(), [{ ...a, ...patch } as typeof a, b], now);
-    expect(result.desired.a).toEqual([]);
-    expect(result.desired.b).toEqual(["claude-fable-*"]);
-  }
+    { unavailable: true },
+    { cooldowns: [{ scope: "credential", remaining_seconds: 60 }] },
+    ...models.map((model_key) => ({
+      cooldowns: [{ scope: "model", model_key, remaining_seconds: 60 }],
+    })),
+  ];
+  let rows = 0;
+  for (const mode of ["off", "manual"] as const)
+    for (const strict of [false, true])
+      for (const spillover of [false, true])
+        for (const override of [false, true])
+          for (const reserve of [false, true])
+            for (const swap of [false, true])
+              for (const av of variants)
+                for (const bv of variants) {
+                  const s = {
+                    ...state(),
+                    mode,
+                    strictFableAccount: strict,
+                    spillover,
+                    fableAccount: swap ? "b" : "a",
+                    allowNonFableOnFableAccount: override,
+                  };
+                  const obs = [
+                    { ...observed("a", reserve ? 0.7 : 0.2), ...av },
+                    { ...observed("b"), ...bv },
+                  ];
+                  const p = plan(s, obs, now);
+                  for (const model of models) {
+                    if (
+                      p.exceptions[model] ||
+                      !obs.some((c) => usable(s, c, model, now))
+                    )
+                      continue;
+                    expect(
+                      obs.some(
+                        (c) =>
+                          usable(s, c, model, now) &&
+                          allowed(models, p.desired[c.id]).includes(model),
+                      ),
+                    ).toBe(true);
+                  }
+                  rows++;
+                }
+  expect(rows).toBe(4096);
+});
+test("reserve defaults, persisted override, conservative fallback and stale weekly fail-open", () => {
+  const s = state();
+  expect(s.strictFableAccount).toBe(false);
+  expect(s.fableReserveOnA).toBe(true);
+  const a = { ...observed("a", 0.5), model_quotas: {} };
+  const p = plan(s, [a, observed("b")]);
+  expect(p.reserve).toEqual({
+    nonFableEstimate: 0.5,
+    triggered: true,
+    confidence: "conservative",
+  });
+  expect(p.desired.a.excluded_models).toContain(models[1]);
+  const override = plan({ ...s, allowNonFableOnFableAccount: true }, [
+    a,
+    observed("b"),
+  ]);
+  expect(override.desired.a.excluded_models).toBeNull();
+  const stale = plan(s, [
+    { ...a, quota: { ...a.quota!, observed_at: "2000-01-01" } },
+    observed("b"),
+  ]);
+  expect(stale.applied).toBe("UNKNOWN");
+  expect(stale.desired.a).toEqual({ excluded_models: null, priority: null });
+});
+test("cap wait, spillover, no upstream, literal model matching and unsupported auto", () => {
+  const s = state(),
+    a = observed("a", 0.2, 1),
+    b = observed("b");
+  expect(plan(s, [a, b]).applied).toBe("ON_WAIT_AT_CAP");
   expect(
-    plan(
-      s(),
-      [
-        {
-          ...a,
-          cooldowns: [
-            { scope: "model", model_key: "claude-opus-5-5", retry_at: future },
-          ],
-        } as any,
-        b,
-      ],
-      now,
-    ).reason,
-  ).toBe("partition");
+    plan({ ...s, spillover: true }, [a, b]).desired.b.excluded_models,
+  ).toBeNull();
+  const p = plan(s, [
+    { ...a, disabled: true },
+    { ...b, disabled: true },
+  ]);
+  expect(p.exceptions[models[0]]).toBe("NO_UPSTREAM");
+  expect(p.desired.b.excluded_models).toBeNull();
   expect(
-    plan(
-      { ...s(), spillover: true },
-      [
-        {
-          ...a,
-          cooldowns: [
-            { scope: "model", model_key: "claude-fable-5-2", retry_at: future },
-          ],
-        } as any,
-        b,
-      ],
-      now,
-    ).desired.b,
-  ).toEqual([]);
-  expect(plan(s(), [{ ...a, model_quotas: {} }, b], now).reason).toBe(
-    "unreadable or stale signals",
-  );
-  expect(
-    plan(
-      s(),
-      [
-        {
-          ...a,
-          model_quotas: {
-            "claude-fable-5-2": { ...signals(0.2), signals: {} },
-          },
-        },
-        b,
-      ],
-      now,
-    ).reason,
-  ).toBe("unreadable or stale signals");
-  expect(plan(s(), [], now).desired).toEqual({ a: [], b: [] });
+    allowed(["x.1", "xa1"], { excluded_models: ["x.1"], priority: null }),
+  ).toEqual(["xa1"]);
+  expect(() => plan({ ...s, mode: "auto" }, [a, b])).toThrow("not enabled");
 });

@@ -1,29 +1,6 @@
 import { test, expect } from "bun:test";
-import { defaults, metadata } from "../../src/fable/core";
-import { execute, locked } from "../../src/fable/io";
-
-test("unchanged target does not persist or create an operation", async () => {
-  const s = { ...defaults(), baseline: { a: metadata({}) } };
-  let saves = 0;
-  await execute(
-    s,
-    { a: [] },
-    {
-      metadata: () => metadata({}),
-      catalog: async () => [],
-      patch: async () => {
-        throw Error("unexpected write");
-      },
-    },
-    "idle",
-    () => {
-      saves++;
-    },
-    () => {},
-  );
-  expect(saves).toBe(0);
-  expect(s.ops).toEqual({});
-});
+import { locked, Hub } from "../../src/fable/io";
+import { readFileSync, readdirSync } from "node:fs";
 test("two concurrent writers never interleave", async () => {
   const { mkdtempSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
@@ -42,5 +19,27 @@ test("two concurrent writers never interleave", async () => {
     expect(seen).toEqual([1, 1, 2, 2]);
   } finally {
     rmSync(dir, { recursive: true });
+  }
+});
+
+test("Fable source never references credential-file directory", () => {
+  for (const path of readdirSync("src/fable")) {
+    if (path.endsWith(".ts"))
+      expect(readFileSync("src/fable/" + path, "utf8")).not.toContain(
+        ".cli-proxy-api",
+      );
+  }
+});
+test("Hub rejects HTTP 200 with empty models", async () => {
+  const server = Bun.serve({
+    port: 0,
+    fetch: () => Response.json({ models: [] }),
+  });
+  try {
+    await expect(
+      new Hub(server.url.origin, "test").catalog("known"),
+    ).rejects.toThrow("empty");
+  } finally {
+    server.stop(true);
   }
 });
