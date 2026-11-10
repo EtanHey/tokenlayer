@@ -85,7 +85,7 @@ jobs:
     permissions: { contents: read }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Raise only after green main; refuse concurrent updates
+      - name: Report proposed ratchet floor (green main only; no direct push)
         env:
           MEDIAN: ${{ needs.ci.outputs.median }}
         run: |
@@ -95,4 +95,7 @@ jobs:
             echo '```diff' >> "$GITHUB_STEP_SUMMARY"
             git diff -- ratchet/rows.json >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Apply it with a normal PR; protected main rejects direct pushes (GH006).' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Ratchet floor unchanged.' >> "$GITHUB_STEP_SUMMARY"
           fi
