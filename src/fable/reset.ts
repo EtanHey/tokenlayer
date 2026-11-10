@@ -44,7 +44,8 @@ export async function resetPressed(
             ? Math.max(0, prior.left - 1)
             : null,
         confirmedByEtan: confirmed && !!prior?.confirmedByEtan,
-        confirmedZero: prior?.confirmedZero || (confirmed && prior?.confirmedByEtan && (prior.left === 1 || prior.left === 0)),
+        confirmedZero: prior?.confirmedZero ||
+          (confirmed && prior?.confirmedByEtan && (prior.left === 1 || prior.left === 0)),
       };
     }
     const before = (await hub.observations()).find(
