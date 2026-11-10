@@ -10,6 +10,8 @@ import {
   type Plan,
   type Fields,
 } from "./core";
+import { expansionOrder } from "./transitions";
+import { restoreOff } from "./off";
 import { save, event } from "./storage";
 export { save, event, statePath, locked } from "./storage";
 export class Hub {
@@ -61,6 +63,19 @@ export class Hub {
       throw Error("catalog unreadable or empty");
     return [...new Set<string>(models)].sort();
   }
+  async registry(): Promise<string[]> {
+    const r = await this.request<{ models: { id: string }[] }>(
+      "GET",
+      "/routing/model-definitions/claude",
+    );
+    if (
+      !Array.isArray(r.models) ||
+      !r.models.length ||
+      r.models.some((m) => typeof m.id !== "string")
+    )
+      throw Error("catalog unreadable or empty");
+    return r.models.map((m) => m.id);
+  }
   async patch(id: string, fields: Partial<Fields>) {
     await this.request("PATCH", "/credentials/fields", { name: id, ...fields });
   }
@@ -68,6 +83,7 @@ export class Hub {
 export interface ExecutorHub {
   observations(): Promise<Observation[]>;
   catalog(id: string): Promise<string[]>;
+  registry(): Promise<string[]>;
   patch(id: string, fields: Partial<Fields>): Promise<void>;
 }
 /** Inventory is checked around catalog reads; the final observation happens after their last await. */
@@ -100,6 +116,7 @@ export async function execute(
   emit = event,
   proof?: { target: string; fields: Fields },
 ) {
+  if (!proof && s.mode === "off") return restoreOff(s, hub, op, persist, emit);
   s.requested = intent(s);
   const ids = Object.keys(s.baseline);
   const expected = (id: string, fields: Fields) =>
@@ -208,7 +225,7 @@ export async function execute(
       persist(s);
     };
     // Phase 1: remove obsolete exclusions everywhere. Retain only concrete restrictions still desired.
-    for (const id of ids) {
+    for (const id of expansionOrder(s, obs, p.desired)) {
       const current = obs.find((c) => c.id === id)!.catalog!;
       const wanted = expected(id, p.desired[id]);
       const expanded = [...new Set([...current, ...wanted])];

@@ -69,13 +69,17 @@ export function fakeHub() {
     obs,
     rules,
     calls,
+    registry: async () => [...models],
     observations: async () => structuredClone(obs),
     catalog: async (id: string) => models.filter((m) => !blocked(rules[id], m)),
     patch: async (id: string, fields: Partial<Fields>) => {
       calls.push({ id, fields });
       if ("excluded_models" in fields) rules[id] = fields.excluded_models ?? [];
-      if ("priority" in fields)
-        obs.find((c) => c.id === id)!.priority = fields.priority;
+      if ("priority" in fields) {
+        const c = obs.find((c) => c.id === id)!;
+        if (fields.priority === null) delete c.priority;
+        else c.priority = fields.priority;
+      }
     },
   };
 }

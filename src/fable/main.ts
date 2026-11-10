@@ -6,6 +6,7 @@ import { writeOut, writeErr } from "../lib/egress";
 import { existsSync, readFileSync } from "node:fs";
 import { loadEnvFiles } from "../lib/env";
 import { defaults, plan, intent } from "./core";
+import { restoreOff, offReadback } from "./off";
 import { migrate, adopt } from "./baseline";
 import { Hub, statePath, save, locked, execute, observe } from "./io";
 const args = process.argv.slice(2),
@@ -69,6 +70,49 @@ async function tick() {
     let s: ResetState = existsSync(statePath())
       ? JSON.parse(readFileSync(statePath(), "utf8"))
       : defaults();
+    if (
+      flags.has("--allow-non-fable-on-fable-account") &&
+      flags.has("--protect-fable-reserve")
+    )
+      throw Error("conflicting reserve options");
+    if (command === "run" && s.requested?.mode === "off") s.mode = "off";
+    if (command === "off" || (command === "run" && s.mode === "off")) {
+      try {
+        let confirmed = false;
+        if (command === "run" && s.applied === "OFF" && !s.pending) {
+          try {
+            await offReadback(s, hub);
+            confirmed = true;
+          } catch {
+            /* Restore on drift. */
+          }
+        }
+        if (!confirmed)
+          await restoreOff(s, hub, s.pending?.op ?? crypto.randomUUID());
+      } catch (error) {
+        if (
+          command === "off" &&
+          error instanceof Error &&
+          error.message === "hub transport failure"
+        ) {
+          writeErr(
+            "OFF requested and saved; it will apply as soon as the hub is reachable",
+          );
+          process.exitCode = 3;
+          return;
+        }
+        throw error;
+      }
+      await shipBestEffort(ClickHouse.fromEnv(env), writeErr);
+      writeOut(
+        JSON.stringify({
+          requested: s.requested,
+          applied: s.applied,
+          reason: s.reason,
+        }),
+      );
+      return;
+    }
     if (command === "baseline") {
       if (resetAction !== "adopt" || !flags.get("--credential"))
         throw Error("baseline adopt requires credential");
@@ -125,15 +169,20 @@ async function tick() {
         const beforeMigration = JSON.stringify(s);
         s = await migrate(s, hub);
         if (JSON.stringify(s) !== beforeMigration) save(s);
-        const obs = await observe(s, hub),
+        const obs =
+            s.mode === "off"
+              ? await offReadback(s, hub)
+              : await observe(s, hub),
           p = plan(s, obs);
         const { allowed, same } = await import("./core");
         const confirmed = obs.every(
           (c) =>
-            same(
+            s.mode === "off" ||
+            (same(
               c.catalog!,
               allowed(s.baseline[c.id].models, p.desired[c.id]),
-            ) && (c.priority ?? null) === p.desired[c.id].priority,
+            ) &&
+              (c.priority ?? null) === p.desired[c.id].priority),
         );
         s.applied =
           confirmed && !s.pending
@@ -152,7 +201,27 @@ async function tick() {
         s.reason = "readback unavailable or inventory changed";
       }
       s.requested = intent(s);
-      writeOut(JSON.stringify(s));
+      const desired = (p: typeof s.policy) =>
+        p && {
+          ...p,
+          desired: Object.entries(p.desired).map(([id, fields], index) => ({
+            account: index,
+            email: s.baseline[id]?.email,
+            ...fields,
+          })),
+        };
+      writeOut(
+        JSON.stringify({
+          requested: s.requested,
+          applied: s.applied,
+          reason: s.reason,
+          policy: desired(s.policy),
+          pending: s.pending && {
+            op: s.pending.op,
+            plan: { ...s.pending.plan, ...desired(s.pending.plan) },
+          },
+        }),
+      );
       return;
     }
     if (!["off", "set", "plan", "run"].includes(command ?? ""))
@@ -228,6 +297,9 @@ async function tick() {
 }
 const safeReasons = [
   "hub transport failure",
+  "OFF readback unconfirmed",
+  "conflicting reserve options",
+  "third credential adoption refused",
   "controller busy",
   "account not found",
   "thresholds are plan-only",

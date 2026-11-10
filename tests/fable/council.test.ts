@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { plan, type State } from "../../src/fable/core";
+import { plan, allowed, usable, type State } from "../../src/fable/core";
 import { execute } from "../../src/fable/io";
 import { models, state, observed, fakeHub } from "./fixtures";
 const now = Date.now();
@@ -26,10 +26,11 @@ const cooling = (id: string, model: string) => ({
     },
   ],
 });
-test("MUST-1 A: Fable-only cooldown is a labelled degraded wait, never ON", () => {
+test("MUST-1 A: non-cap Fable cooldown routes through B even without spillover", () => {
   const p = plan(state(), [cooling("a", models[0]), observed("b")], now);
   expect(p.applied).toBe("DEGRADED");
-  expect(p.exceptions[models[0]]).toBe("FABLE_WAIT");
+  expect(allowed(models, p.desired.b)).toContain(models[0]);
+  expect(p.reason).toContain("transient");
 });
 test("MUST-1 B: strict lifts only Opus after B's Opus cooldown", () => {
   const p = plan(
@@ -40,15 +41,17 @@ test("MUST-1 B: strict lifts only Opus after B's Opus cooldown", () => {
   expect(blocked(exclusions(p, "a"), models[1])).toBe(false);
   expect(blocked(exclusions(p, "a"), models[2])).toBe(true);
 });
-test("MUST-2: N=.75 leaves .25 after reset; default reserve prevents more non-Fable", () => {
-  expect(1 - 0.75).toBe(0.25);
+test("MUST-2: reserve protects healthy A at N=.55 when B fails", () => {
   const p = plan(
     state(),
-    [observed("a", 1, 0.5), { ...observed("b"), status: "error" }],
+    [observed("a", 0.8, 0.5), { ...observed("b"), status: "error" }],
     now,
   );
   expect(blocked(exclusions(p, "a"), models[1])).toBe(true);
   expect(p.applied).toBe("DEGRADED");
+  expect(p.exceptions[models[1]]).toBe("RESERVE_CONFLICT");
+  expect(usable(state(), observed("a", 0.8, 0.5), models[0])).toBe(true);
+  expect(allowed(models, p.desired.a)).toContain(models[0]);
 });
 // Remaining executor cases share this real in-process hub state, including exact catalogs.
 test("MUST-3: OFF from strict clears both exclusions and both priorities", async () => {

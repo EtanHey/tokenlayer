@@ -29,8 +29,7 @@ export type Intent = {
 };
 export type Applied =
   "OFF" | "APPLYING" | "ON" | "ON_WAIT_AT_CAP" | "DEGRADED" | "UNKNOWN";
-export type Exception =
-  "WAIT_AT_CAP" | "NO_UPSTREAM" | "FABLE_WAIT" | "RESERVE_CONFLICT";
+export type Exception = "WAIT_AT_CAP" | "NO_UPSTREAM" | "RESERVE_CONFLICT";
 export type Plan = {
   desired: Record<string, Fields>;
   applied: Applied;
@@ -138,7 +137,12 @@ export function inventory(s: State, obs: Observation[]) {
     })
   );
 }
-export function quotaWindow(q: Observation["quota"], key: string, now: number) {
+export function quotaWindow(
+  q: Observation["quota"],
+  key: string,
+  now: number,
+  fresh = true,
+) {
   const age = now - Date.parse(q?.observed_at ?? "");
   const sig = Object.fromEntries(
     Object.entries(q?.signals ?? {}).map(([k, v]) => [k.toLowerCase(), v]),
@@ -150,7 +154,7 @@ export function quotaWindow(q: Observation["quota"], key: string, now: number) {
   if (
     !Number.isFinite(age) ||
     age < -60000 ||
-    age > 300000 ||
+    (fresh && age > 300000) ||
     !Number.isFinite(u) ||
     u < 0 ||
     !status
@@ -242,7 +246,9 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
             (Date.parse(x.retry_at ?? "") > now ||
               (x.remaining_seconds ?? 0) > 0),
         );
-      return !blocked && !w;
+      // A stale-but-present observation is a transient loss of A, so B remains eligible (R1).
+      const staleA = c === a && quotaWindow(c.quota, "7d", now, false);
+      return !blocked && !w && !staleA;
     })
   )
     return {
@@ -266,28 +272,40 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
       m,
       now,
     );
+  let transient = false;
   for (const model of [...new Set(potential.flatMap((c) => c.catalog))].filter(
     (m) => m.startsWith("claude-"),
   )) {
     const au = can(a, model),
       bu = can(b, model);
     if (isFable(model)) {
+      const signals = Object.fromEntries(
+        Object.entries(fableQuota(a)?.signals ?? {}).map(([key, value]) => [
+          key.toLowerCase(),
+          value,
+        ]),
+      );
+      const prefix = "anthropic-ratelimit-unified-7d_oi-";
       const cap =
-        !!fable && (fable.rejected || fable.u >= s.thresholds.fableCapAt);
+        signals[prefix + "status"] === "rejected" ||
+        Number(signals[prefix + "utilization"]) >= s.thresholds.fableCapAt;
       if (!au && !bu) {
         p.exceptions[model] = "NO_UPSTREAM";
         continue;
       }
-      if (au || !s.spillover) {
+      if (au || (cap && !s.spillover)) {
         (desired[b.id].excluded_models ??= []).push(model);
-        if (!au) p.exceptions[model] = cap ? "WAIT_AT_CAP" : "FABLE_WAIT";
+        if (!au) p.exceptions[model] = "WAIT_AT_CAP";
       }
-      if (!au && !cap) p.applied = "DEGRADED";
-    } else if (reserve) {
+      if (!au && !cap) {
+        p.applied = "DEGRADED";
+        transient = true;
+      }
+    } else if (!au && !bu) p.exceptions[model] = "NO_UPSTREAM";
+    else if (reserve) {
       (desired[a.id].excluded_models ??= []).push(model);
       if (!bu) p.exceptions[model] = "RESERVE_CONFLICT";
-    } else if (!au && !bu) p.exceptions[model] = "NO_UPSTREAM";
-    else if (s.strictFableAccount && bu)
+    } else if (s.strictFableAccount && bu)
       (desired[a.id].excluded_models ??= []).push(model);
   }
   const fableOnB = s.baseline[b.id].models.filter(isFable);
@@ -303,5 +321,19 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
     p.reason = "non-Fable paused on Fable account to keep Fable room";
   else if (exceptions.length) p.reason = [...new Set(exceptions)].join(", ");
   else if (reserve) p.reason = "Fable reserve protected on A";
+  if (transient) {
+    const cause = a.disabled
+      ? "disabled"
+      : a.status !== "active"
+        ? "credential failure"
+        : a.unavailable
+          ? "unavailable"
+          : !week || !fable
+            ? "stale or unreadable signals"
+            : week.rejected || week.u >= s.thresholds.weeklyExhaustedAt
+              ? "weekly exhausted"
+              : "cooldown";
+    p.reason = `transient Fable unavailability on A (${cause}); Fable routed via B; ${p.reason}`;
+  }
   return p;
 }

@@ -37,7 +37,7 @@ const attestedModels = [
   "claude-sonnet-5",
   "claude-sonnet-5-5",
 ];
-const digest = (c: Observation) =>
+export const digest = (c: Observation) =>
   createHash("sha256")
     .update(JSON.stringify([c.id, c.name, c.auth_index, c.email]))
     .digest("hex");
@@ -64,17 +64,19 @@ export function baseline(
 export async function migrate(
   raw: Partial<State>,
   hub: ExecutorHub,
+  authority = { identities: attested, models: attestedModels },
 ): Promise<State> {
   const s = { ...defaults(), ...raw } as State;
   if (raw.schemaVersion === 2 && Object.keys(s.baseline).length) return s;
   const obs = await hub.observations();
-  if (obs.length !== 2 || obs.some((c) => !attested.has(digest(c))))
+  if (obs.length !== 2 || obs.some((c) => !authority.identities.has(digest(c))))
     throw Error("credential inventory changed; adopt baseline");
   const catalogs = await Promise.all(obs.map((c) => hub.catalog(c.id)));
   if (
+    s.mode !== "off" &&
     catalogs.some(
       (models) =>
-        !models.length || models.some((m) => !attestedModels.includes(m)),
+        !models.length || models.some((m) => !authority.models.includes(m)),
     )
   )
     throw Error("baseline catalog changed; adopt baseline");
@@ -86,7 +88,7 @@ export async function migrate(
       c.id,
       baseline(
         c,
-        attestedModels,
+        authority.models,
         "lead-attested 2026-11-10 (booleans: no excluded_models/excluded-models/priority keys; disabled false)",
       ),
     ]),
@@ -115,6 +117,12 @@ export async function adopt(s: State, hub: ExecutorHub, name: string) {
     (c) => c.id === name || c.name === name,
   );
   if (!before) throw Error("credential not found");
+  if (
+    Object.keys(s.baseline).length >= 2 &&
+    !s.baseline[before.id] &&
+    !Object.values(s.baseline).some((b) => b.email === before.email)
+  )
+    throw Error("third credential adoption refused");
   await hub.patch(before.id, { excluded_models: null, priority: null });
   const models = await hub.catalog(before.id);
   const after = (await hub.observations()).find((c) => c.id === before.id);

@@ -19,22 +19,32 @@ conflict is DEGRADED. `set --allow-non-fable-on-fable-account` persists an overr
 account when `--account` is omitted.
 
 `tokenlayer fable off` restores both fields to null on both credentials without
-the dashboard or daemon. Absent and null have equivalent runtime meaning on the
-attested installed hub version. `status --json` exposes requested intent,
+the dashboard or daemon. It durably saves requested OFF before contacting the
+hub. If unreachable, it exits 3 with the saved-request message; the daemon applies
+OFF on its next reachable tick and never reasserts ON over requested OFF. OFF
+nulls both rules on both baseline identities, then checks current catalogs against
+the current registry and each other, plus priority field absence. Added or retired
+models never require baseline adoption for OFF. Identity checks still apply.
+Absent and null have equivalent runtime meaning on the attested installed hub
+version. `status --json` uses indexed account arrays for desired maps (including
+pending plans), omits the private baseline inventory, and exposes requested intent,
 independently observed applied status, a reason, and any pending operation.
 APPLYING/UNKNOWN never imply confirmed ON. Interrupted operations replan from
 actual API observations. The daemon replans every 30 seconds; upstream failures
 between ticks can interrupt availability.
 
-Explicit exceptions are WAIT_AT_CAP (no spillover), NO_UPSTREAM (no exclusions
-for that model), a DEGRADED FABLE_WAIT when A fails and spillover is off, and a
-DEGRADED RESERVE_CONFLICT. With spillover on, B can serve Fable when A fails.
-Unreadable weekly observations restore baseline policy and result in UNKNOWN.
+WAIT_AT_CAP applies only to a real Fable cap (7d_oi rejected or at fableCapAt)
+with spillover off. A model cooldown alone is transient: B serves Fable regardless
+of spillover, applied is DEGRADED, and the reason identifies the failure. Stale
+but present signals on A also allow B to serve Fable. NO_UPSTREAM leaves both
+catalogs unrestricted for that model. RESERVE_CONFLICT is the explicit D2 override
+of the last-route rule for non-Fable. Missing weekly data or stale B observations
+restore baseline policy and result in UNKNOWN.
 
 Baseline import is limited to the digests of the exact lead-attested Nov 10
 inventory (name/id, auth_index, email). It runs under the shared kernel lock and
 records full model catalogs and provenance. Legacy pending operations are
-replanned, not blindly replayed. Replacement inventory refuses all policy writes.
+replanned, not blindly replayed. Replacement inventory refuses ON policy writes and OFF refuses changed identity bindings.
 `tokenlayer fable baseline adopt --credential <exact-name>` explicitly clears
 both fields on that credential, reads its full catalog, and binds a new baseline.
 Adopt each unrecognized identity before policy writes. This command is an explicit

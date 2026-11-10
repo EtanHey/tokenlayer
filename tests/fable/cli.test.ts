@@ -22,6 +22,10 @@ test("real CLI set/override/protect/off/adopt/status use API-only readbacks", as
             (id) => ({ id }),
           ),
         });
+      if (url.pathname.includes("model-definitions"))
+        return Response.json({
+          models: (await hub.registry()).map((id) => ({ id })),
+        });
       if (req.method === "PATCH") {
         const body = (await req.json()) as Fields & { name: string };
         await hub.patch(body.name, body);
@@ -71,6 +75,12 @@ test("real CLI set/override/protect/off/adopt/status use API-only readbacks", as
     const status = await run("status", "--json");
     expect(status.requested.mode).toBe("off");
     expect(status.applied).toBe("OFF");
+    expect(Array.isArray(status.policy.desired)).toBe(true);
+    expect(
+      status.policy.desired.map((x: { account: number }) => x.account),
+    ).toEqual([0, 1]);
+    expect(status.baseline).toBeUndefined();
+    expect(JSON.stringify(status)).not.toContain("auth_index");
     expect(hub.calls.length).toBe(n);
     // A replacement must be explicitly re-adopted and loses the old identity binding.
     hub.obs[1].auth_index = "new-index";
