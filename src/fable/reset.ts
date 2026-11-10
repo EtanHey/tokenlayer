@@ -1,6 +1,6 @@
 import type { State, Observation } from "./core";
 export type ResetState = State & {
-  resets?: Record<string, { left: number | null; confirmedByEtan: boolean }>;
+  resets?: Record<string, { left: number | null; confirmedByEtan: boolean; confirmedZero?: boolean }>;
   resetOps?: Record<
     string,
     {
@@ -37,6 +37,7 @@ export async function resetPressed(
   if (["recovered", "not_needed"].includes(s.resetOps[op]?.recovery)) return;
   if (!s.resetOps[op]) {
     if (!skipCount) {
+      // An unconfirmed press cannot establish zero: auto waits until the count is confirmed.
       const prior = s.resets[account];
       s.resets[account] = {
         left:
@@ -44,6 +45,8 @@ export async function resetPressed(
             ? Math.max(0, prior.left - 1)
             : null,
         confirmedByEtan: confirmed && !!prior?.confirmedByEtan,
+        confirmedZero: prior?.confirmedZero ||
+          (confirmed && prior?.confirmedByEtan && (prior.left === 1 || prior.left === 0)),
       };
     }
     const before = (await hub.observations()).find(

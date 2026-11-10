@@ -1,7 +1,11 @@
+import { arrangement, outsideDelta, sessionsSQL } from "./advice";
+import { spillEnabled } from "../fable/core";
 import { status } from "../fable/status";
 import { migrate } from "../fable/baseline";
 import { restoreOff } from "../fable/off";
-import { existsSync, readFileSync, mkdirSync, appendFileSync } from "node:fs";
+import {
+  existsSync, readFileSync, mkdirSync, appendFileSync, readdirSync, writeFileSync, renameSync, chmodSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -53,6 +57,27 @@ export function createHandler(o: {
   page?: (token: string) => string;
 }) {
   const path = o.path ?? statePath();
+  const observations = new Map<string, { at: number; weekly: number | null; fable: number | null }>();
+  const outside = new Map<string, { at: string; delta: number; window: string }[]>();
+  const outsidePath = join(dirname(path), "outside-use.json");
+  if (existsSync(outsidePath)) {
+    // Display-only history: a corrupt file must never stop the dashboard from starting.
+    try {
+      const stored = JSON.parse(readFileSync(outsidePath, "utf8"));
+      for (const [key, value] of stored.observations ?? []) observations.set(key, value);
+      for (const [key, value] of stored.outside ?? []) outside.set(key, value.slice(-20));
+    } catch {
+      observations.clear();
+      outside.clear();
+    }
+  }
+  function persistOutside() {
+    mkdirSync(dirname(outsidePath), { recursive: true });
+    const temp = outsidePath + ".tmp";
+    writeFileSync(temp, JSON.stringify({ observations: [...observations], outside: [...outside] }), { mode: 0o600 });
+    chmodSync(temp, 0o600);
+    renameSync(temp, outsidePath);
+  }
   function load(): ResetState {
     return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : defaults();
   }
@@ -140,13 +165,23 @@ export function createHandler(o: {
             ),
           });
         }
+        if (u.pathname === "/api/sessions") {
+          const window = u.searchParams.get("window") ?? "3h";
+          if (!["3h", "24h"].includes(window)) return json({ error: "Invalid window" }, 400);
+          const rows = await o.ch.queryJSON<any>(sessionsSQL(window === "24h" ? 24 : 3));
+          const obs = await o.hub.observations();
+          return json({ rows: rows.map(row => ({ ...row,
+            sessionFile: resolveSession(row.session_id),
+            accounts: row.credentials.map((hash: string) =>
+              obs.find(c => labelHash(c.auth_index) === hash)?.email ?? "Unmapped credential")
+          })) });
+        }
         if (u.pathname === "/api/burn") return json(await burn());
-        if (u.pathname === "/api/recommendation")
-          return json(
-            (await accounts()).map(function callback3(c) {
-              return recommend(c, load().thresholds);
-            }),
-          );
+        if (u.pathname === "/api/recommendation") {
+          const current = await accounts();
+          return json({ arrangement: arrangement(current),
+            recommendations: current.map(c => recommend(c, load().thresholds)) });
+        }
       }
       if (
         r.method === "POST" &&
@@ -181,9 +216,11 @@ export function createHandler(o: {
           }
           if (u.pathname === "/api/switch") {
             if (typeof body.on !== "boolean" || typeof body.account !== "string" ||
-                [body.strict, body.spillover, body.allowNonFableOnFableAccount]
+                [body.strict, body.allowNonFableOnFableAccount]
                   .some((v) => v !== undefined && typeof v !== "boolean"))
               return json({ error: "Invalid switch" }, 400);
+            if (body.spillover !== undefined && body.spillover !== "auto" && typeof body.spillover !== "boolean")
+              return json({ error: "Invalid spillover" }, 400);
             if (!body.on) {
               try {
                 await restoreOff(s, o.hub, op, (s) => save(s, path), emit);
@@ -199,7 +236,7 @@ export function createHandler(o: {
               s.mode = "manual";
               s.fableAccount = body.account;
               s.strictFableAccount = body.strict ?? false;
-              s.spillover = body.spillover ?? false;
+              s.spillover = body.spillover ?? "auto";
               s.allowNonFableOnFableAccount = body.allowNonFableOnFableAccount ?? false;
               s.requested = intent(s);
               save(s, path);
@@ -218,7 +255,8 @@ export function createHandler(o: {
               )
                 return json({ error: "Invalid count" }, 400);
               s.resets ??= {};
-              s.resets[body.account] = { left: body.left, confirmedByEtan: body.confirmed };
+              s.resets[body.account] = { left: body.left, confirmedByEtan: body.confirmed,
+                confirmedZero: body.left === 0 && body.confirmed };
               save(s, path);
               emit({
                 at: new Date().toISOString(),
@@ -274,13 +312,43 @@ export function createHandler(o: {
   }
   async function accounts() {
     return Promise.all((await o.hub.observations()).map(async function accountReadback(c) {
+      const weekly = quota(c.quota, "7d"), fable = quota(c.model_quotas?.[FABLE_MODEL], "7d_oi");
+      const at = Math.max(Date.parse(weekly.observed_at ?? ""), Date.parse(fable.observed_at ?? ""));
+      const hash = labelHash(c.auth_index);
+      const prior = observations.get(hash);
+      if (Number.isFinite(at) && (!prior || at > prior.at)) {
+        // Claim the interval before awaiting ClickHouse so concurrent GETs cannot sample it twice.
+        observations.set(hash, { at, weekly: weekly.utilization, fable: fable.utilization });
+        if (prior) {
+          const rows = await o.ch.queryJSON<{ requests: number }>(`SELECT count() AS requests
+ FROM tokenlayer.proxy_usage FINAL WHERE credential = '${hash}'
+ AND ts > fromUnixTimestamp64Milli(${prior.at}) AND ts <= fromUnixTimestamp64Milli(${at})
+ SETTINGS max_execution_time=5`);
+          for (const window of ["weekly", "fable"] as const) {
+            const delta = outsideDelta(prior[window], window === "weekly" ? weekly.utilization : fable.utilization,
+              Number(rows[0]?.requests ?? NaN));
+            if (delta !== null) outside.set(hash, [...(outside.get(hash) ?? []),
+              { at: new Date(prior.at).toISOString(), delta, window }].slice(-20));
+          }
+        }
+        persistOutside();
+      }
+      const state = load();
+      const reset = state.resets?.[c.email ?? c.id];
+      const other = Object.values(state.baseline).find(b => b.email !== c.email)?.email ?? "the other account";
       return {
+        outside: outside.get(hash) ?? [],
+        outsideCoverage: coverage,
+        resets: reset,
+        capPolicy: spillEnabled(state, c.email ?? c.id) ? `At the cap: spills to ${other}` :
+          reset?.left == null ? "count unknown: waiting; confirm your reset count to allow spill" :
+          `At the cap: wait for your reset (${reset.left} left)`,
         id: c.id,
         email: c.email,
         status: c.status,
         cooldowns: c.cooldowns,
-        weekly: quota(c.quota, "7d"),
-        fable: quota(c.model_quotas?.[FABLE_MODEL], "7d_oi"),
+        weekly,
+        fable,
         catalog: await o.hub.catalog(c.id),
         priority: c.priority ?? null,
         exclusionsSource: "management API exact catalog and priority",
@@ -411,4 +479,16 @@ export function recommend(c: any, thresholds: any = {}, now = Date.now()) {
     worthPctOfWeek: f === null ? null : Math.round(f * 100),
     hoursToReset: Number.isFinite(hours) ? hours : null,
   };
+}
+
+export function resolveSession(id: string) {
+  if (!/^[a-zA-Z0-9-]{1,100}$/.test(id)) return null;
+  const root = join(homedir(), ".claude/projects");
+  try {
+    for (const dir of readdirSync(root).slice(0, 1000)) {
+      const file = join(root, dir, id + ".jsonl");
+      if (existsSync(file)) return file;
+    }
+  } catch {}
+  return null;
 }

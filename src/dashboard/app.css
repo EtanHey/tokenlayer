@@ -155,3 +155,9 @@ meter {
 #toggle[aria-pressed="false"] { background: #59616b; color: white; }
 
 [hidden] { display: none !important; }
+
+#sessions { overflow-x: auto; }
+#sessions table { border-collapse: collapse; font-size: .8rem; }
+#sessions td, #sessions th { padding: .5rem; text-align: left; overflow-wrap: anywhere; min-width: 5rem; }
+#sessions table { min-width: 68rem; table-layout: fixed; width: 100%; }
+#sessions td:first-child, #sessions th:first-child { width: 22rem; }

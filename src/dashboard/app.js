@@ -94,6 +94,10 @@ async function refresh() {
         const card = text("article", "");
         card.append(text("h2", c.email), text("p", c.status));
         meter(card, "Weekly", c.weekly);
+        card.append(text("p", c.capPolicy));
+        for (const event of c.outside || []) card.append(text("p",
+          "Outside the hub: +" + event.delta.toFixed(1) + "% " + event.window + " since " + time(event.at)));
+        card.append(text("small", "Hub cannot see claude.ai, Claude apps or M4 direct mode."));
         meter(card, "Fable cap (of the 50% allowance)", c.fable);
         card.append(
           text("p", exclusions(c)),
@@ -155,13 +159,10 @@ async function refresh() {
         const f = $("#switch");
         f.mode.value = s.state.mode;
         f.account.value =
-          s.state.fableAccount ||
-          a?.find(function preferred(c) {
-            return c.email.includes("etanface");
-          })?.email ||
+          r?.arrangement?.account || s.state.fableAccount ||
           a?.[0]?.email;
         f.strict.checked = s.state.strictFableAccount;
-        f.spillover.checked = s.state.spillover;
+        f.spillover.value = String(s.state.spillover);
         f.allowNonFableOnFableAccount.checked = s.state.allowNonFableOnFableAccount;
         ready = true;
       }
@@ -204,9 +205,10 @@ async function refresh() {
           }),
       );
     }
+    if (r) $("#arrangement").textContent = r.arrangement.reason;
     if (r)
       $("#recommendation").replaceChildren(
-        ...r.map(function callback11(x) {
+        ...r.recommendations.map(function callback11(x) {
           return Object.assign(
             text(
               "p",
@@ -323,7 +325,7 @@ for (const [id, path] of [
       Object.assign(body, {
         on: latestState?.state.requested?.mode !== "manual",
         strict: f.strict.checked,
-        spillover: f.spillover.checked,
+        spillover: f.spillover.value === "auto" ? "auto" : f.spillover.value === "true",
         allowNonFableOnFableAccount: f.allowNonFableOnFableAccount.checked,
       });
     if (id === "counts")
@@ -385,3 +387,28 @@ $("#retry").onclick = async function retry() {
     $("#notice").textContent = e.message;
   }
 };
+
+async function refreshSessions() {
+  try {
+    const data = await api("sessions?window=" + $("#session-window").value);
+    const table = document.createElement("table");
+    const head = document.createElement("tr");
+    for (const name of [
+      "Session", "Requests", "Total tokens", "Output tokens", "Fable share", "Account", "First / last"
+    ])
+      head.append(text("th", name));
+    table.append(head);
+    for (const row of data.rows) {
+      const tr = document.createElement("tr");
+      for (const value of [
+        [row.sessionFile || row.machine, row.harness, row.project, row.cwd].filter(Boolean).join(" · "),
+        row.requests, row.tokens, row.output_tokens, row.fable_pct + "%", row.accounts.join(", "),
+        time(row.first_at) + " / " + time(row.last_at)
+      ]) tr.append(text("td", String(value)));
+      table.append(tr);
+    }
+    $("#sessions").replaceChildren(table);
+  } catch { $("#sessions").textContent = "Per-thread consumption unavailable"; }
+}
+$("#session-window").onchange = refreshSessions;
+refreshSessions();

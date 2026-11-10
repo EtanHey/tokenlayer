@@ -21,6 +21,7 @@ export function page(token: string) {
 <p>Changes apply to hub routing. Catalogs and priorities below are read back from the management API.</p>
 <p id="applied">Fable split: UNKNOWN</p>
 <p id="applied-reason"></p>
+<p id="arrangement"></p>
 <form id="switch">
 <input type="hidden" name="mode" value="off">
 <button id="toggle" type="submit" aria-pressed="false">Turn Fable split ON</button>
@@ -32,7 +33,8 @@ export function page(token: string) {
 <input type="checkbox" name="strict"> Reserve Fable account for Fable
 (other models use the other account)</label>
 <label>
-<input type="checkbox" name="spillover"> Allow spillover at cap (the second account may serve Fable)</label>
+Cap policy <select name="spillover"><option value="auto">Automatic: wait while resets remain</option>
+<option value="false">Always wait</option><option value="true">Always spill</option></select></label>
 <label><input type="checkbox" name="allowNonFableOnFableAccount">
 Allow non-Fable on the Fable account (override its reserve)</label>
 </details>
@@ -86,6 +88,23 @@ Recovery clears proxy cooldowns; it does not reset Anthropic entitlement.</p>
 <p id="errors">
 </p>
 <small>Each account / model has separate request and token series. Hub telemetry only.</small>
+</section>
+<section>
+<h2>Per-thread consumption</h2>
+<label>Window <select id="session-window"><option value="3h">3 hours</option>
+<option value="24h">24 hours</option></select></label>
+<div id="sessions"></div>
+</section>
+<section>
+<h2>What changed</h2>
+<p>count unknown: waiting; confirm your reset count to allow spill</p>
+<p>Before today, when one account used up its Fable allowance, the proxy wrongly paused that whole account,
+ and with your other account already used up, every Claude request on both Macs would have failed.
+ Now only Fable pauses on that account; Opus, Sonnet and Haiku keep working.</p>
+<p>The old proxy key had been printed into an agent's log, so anyone who could read that log could have used
+ your Claude accounts through the proxy; it has now been switched off. It had to wait only until every running
+ app had moved to the new key, and the logs showed they all moved within seconds, so there was no need to
+ wait for Thursday.</p>
 </section>
 <section>
 <h2>Coverage</h2>

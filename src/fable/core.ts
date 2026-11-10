@@ -21,7 +21,7 @@ export type Intent = {
   mode: "off" | "manual" | "auto";
   fableAccount: string;
   strictFableAccount: boolean;
-  spillover: boolean;
+  spillover: boolean | "auto";
   fableReserveOnA: boolean;
   reserveFraction: number;
   reserveMargin: number;
@@ -49,6 +49,7 @@ export type State = Intent & {
   baseline: Record<string, Baseline>;
   thresholds: { fableCapAt: number; weeklyExhaustedAt: number };
   ops: Record<string, string>;
+  resets?: Record<string, { left: number | null; confirmedByEtan: boolean; confirmedZero?: boolean }>;
   policy?: Pick<Plan, "desired" | "exceptions" | "reserve">;
   pending?: { op: string; plan: Plan };
 };
@@ -79,7 +80,7 @@ export const defaults = (): State => {
     mode: "off",
     fableAccount: "",
     strictFableAccount: false,
-    spillover: false,
+    spillover: "auto",
     fableReserveOnA: true,
     reserveFraction: 0.5,
     reserveMargin: 0.05,
@@ -201,6 +202,12 @@ export function usable(
       (!!fable && !fable.rejected && fable.u < s.thresholds.fableCapAt))
   );
 }
+export function spillEnabled(s: State, account: string) {
+  if (s.spillover !== "auto") return s.spillover;
+  const reset = s.resets?.[account];
+  return reset?.left === 0 && reset.confirmedByEtan ||
+    reset?.left === null && reset.confirmedZero === true;
+}
 export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
   if (s.mode === "auto") throw Error("auto not enabled yet");
   const desired = Object.fromEntries(
@@ -293,7 +300,7 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
         p.exceptions[model] = "NO_UPSTREAM";
         continue;
       }
-      if (au || (cap && !s.spillover)) {
+      if (au || (cap && !spillEnabled(s, a.email ?? a.id))) {
         (desired[b.id].excluded_models ??= []).push(model);
         if (!au) p.exceptions[model] = "WAIT_AT_CAP";
       }
