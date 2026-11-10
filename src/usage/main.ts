@@ -3,7 +3,8 @@ installErrorHandlers();
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { serialize, snapshot, staleSnapshot } from './snapshot';
+import { enrich, parseHistory } from './projection';
+import { serialize, staleSnapshot } from './snapshot';
 
 const remote = '. ~/.config/tokenlayer/hub.env; printf \'Authorization: Bearer %s\\n\' "$CLIPROXY_MGMT_KEY" | curl -fsS -m 10 -H @- http://127.0.0.1:8317/v8/management/credentials';
 const dir = join(homedir(), '.config/tokenlayer');
@@ -16,7 +17,17 @@ try {
   try {
     const body = await new Response(proc.stdout).text();
     if (await proc.exited !== 0) throw new Error('hub unavailable');
-    value = snapshot(JSON.parse(body));
+    let history: ReturnType<typeof parseHistory> = [];
+    const historyPath = join(dir, 'usage-history.jsonl');
+    try { history = parseHistory(await readFile(historyPath, 'utf8')); } catch {}
+    const enriched = enrich(JSON.parse(body), history);
+    const { history: nextHistory, ...published } = enriched;
+    const historyTmp = `${historyPath}.${process.pid}.tmp`;
+    try {
+      await writeFile(historyTmp, nextHistory.map(s => JSON.stringify(s)).join('\n') + '\n', {mode:0o600});
+      await rename(historyTmp, historyPath);
+    } finally { await rm(historyTmp, {force:true}); }
+    value = published;
   } finally { clearTimeout(timer); }
 } catch {
   try {
