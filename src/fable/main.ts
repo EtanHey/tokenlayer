@@ -34,6 +34,7 @@ while (args.length) {
       "--no-strict",
       "--spillover",
       "--no-spillover",
+      "--auto-spillover",
       "--weekly-exhausted-at",
       "--fable-cap-at",
     ].includes(k)
@@ -48,6 +49,7 @@ while (args.length) {
         "--protect-fable-reserve",
         "--strict",
         "--spillover",
+        "--auto-spillover",
         "--unconfirmed",
         "--confirmed",
         "--skip-count",
@@ -210,6 +212,7 @@ async function tick() {
       if (flags.has("--" + flag)) s[key] = true;
       if (flags.has("--no-" + flag)) s[key] = false;
     }
+    if (flags.has("--auto-spillover")) s.spillover = "auto";
     for (const [key, flag] of [
       ["weeklyExhaustedAt", "--weekly-exhausted-at"],
       ["fableCapAt", "--fable-cap-at"],
