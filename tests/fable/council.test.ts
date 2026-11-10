@@ -68,17 +68,20 @@ test("MUST-4: crash after B100 cannot save ON; restart resumes", async () => {
   const s = state(),
     hub = fakeHub();
   let killed = false;
+  let durable = structuredClone(s);
   const persist = () => {
     if (!killed && hub.obs[1].priority === 100) {
       killed = true;
       throw Error("killed");
     }
+    if (!killed) durable = structuredClone(s);
   };
   await expect(
     run(s, plan(s, hub.obs, now), hub, "crash", persist),
   ).rejects.toThrow("killed");
   expect(s.applied).not.toBe("ON");
-  const restarted = JSON.parse(JSON.stringify(s));
+  expect(durable.applied).toBe("APPLYING");
+  const restarted = structuredClone(durable);
   await run(restarted, plan(restarted, hub.obs, now), hub, "crash");
   expect(restarted.applied).toBe("ON");
   expect(hub.rules.b).toEqual(["claude-fable-*"]);
