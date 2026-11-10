@@ -44,3 +44,22 @@ Stop using `launchctl bootout gui/$(id -u)/com.tokenlayer.usage`.
 Verify two successful timestamps more than 60 seconds apart and mode 644. Scan the
 file and log for email/auth markers and compare the key prefix on M1 without printing
 or transferring it. Never paste raw credentials responses into logs or reports.
+
+## Weekly and Fable projections
+
+Accounts also publish `weekly_pct`, `weekly_status`, `weekly_resets_at`,
+`fable_pct`, `fable_status`, `fable_resets_at`, and `observed_at` (weekly observation).
+`weekly_observed_at` and `fable_observed_at` distinguish each passive observation.
+Percentages use 0–100 with one decimal of precision; missing values remain null.
+Fable comes specifically from `model_quotas["claude-fable-5-2"]` and its `7d_oi` headers.
+
+`usage-history.jsonl`, beside the snapshot, retains two hours of content-free,
+hashed-account observations. Duplicate observation timestamps do not add samples.
+`burn_weekly_pct_per_hour` and `burn_fable_pct_per_hour` use the first and last
+distinct observations within the last hour, requiring at least 15 minutes.
+A reset change or utilization decrease starts a new series. Positive burn projects
+`projected_weekly_empty_at` and `projected_fable_cap_at`; otherwise they are null.
+The top-level `projection` identifies this linear method. Projection uses observation
+time rather than poll time and is an estimate, not a promised exhaustion time.
+Consumers must check `stale` and observation ages. An outage preserves validated
+published fields and marks the snapshot stale; it does not invent observations.

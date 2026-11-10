@@ -89,9 +89,29 @@ export function staleSnapshot(input: unknown) {
       || typeof a.active !== 'boolean' || typeof a.disabled !== 'boolean'
       || typeof a.priority !== 'number' || !Number.isFinite(a.priority)
       || !['allowed', 'rejected', 'unknown'].includes(a.status as string)) throw new Error('invalid snapshot account');
-    return { label: a.label, active: a.active, five_hour: window(a.five_hour), weekly: window(a.weekly), status: a.status, priority: a.priority, disabled: a.disabled };
+    const extra: Record<string, unknown> = {};
+    for (const key of ['weekly_pct','fable_pct','burn_weekly_pct_per_hour','burn_fable_pct_per_hour']) {
+      if (!(key in a)) continue;
+      const n = a[key];
+      if (n !== null && (typeof n !== 'number' || !Number.isFinite(n)
+        || (key.endsWith('_pct') && (n < 0 || n > 100)))) throw new Error('invalid projection number');
+      extra[key] = n;
+    }
+    for (const key of ['weekly_resets_at','fable_resets_at','observed_at','weekly_observed_at',
+      'fable_observed_at','projected_weekly_empty_at','projected_fable_cap_at']) {
+      if (key in a) extra[key] = date(a[key]);
+    }
+    for (const key of ['weekly_status','fable_status']) {
+      if (!(key in a)) continue;
+      if (a[key] !== null && !['allowed','allowed_warning','rejected'].includes(a[key] as string))
+        throw new Error('invalid projection status');
+      extra[key] = a[key];
+    }
+    return { ...extra, label: a.label, active: a.active, five_hour: window(a.five_hour), weekly: window(a.weekly), status: a.status, priority: a.priority, disabled: a.disabled };
   });
-  return { generated_at, source: 'cliproxy-hub', stale: true, accounts, last_error: 'hub unavailable' };
+  const method = 'linear over last 60 min of hub quota observations';
+  if ('projection' in previous && previous.projection !== method) throw new Error('invalid projection method');
+  return { ...('projection' in previous ? {projection:method} : {}), generated_at, source: 'cliproxy-hub', stale: true, accounts, last_error: 'hub unavailable' };
 }
 export function serialize(value: unknown): string {
   return JSON.stringify(redactDeep(value)) + '\n';
