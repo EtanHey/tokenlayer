@@ -1,3 +1,7 @@
+import { resetPressed, type ResetState } from "./reset";
+import { shipBestEffort } from "./events";
+import { ClickHouse } from "../lib/clickhouse";
+import { event } from "./io";
 import { writeOut, writeErr } from "../lib/egress";
 import { existsSync, readFileSync } from "node:fs";
 import { loadEnvFiles } from "../lib/env";
@@ -5,11 +9,17 @@ import { defaults, plan, type State, type Observation } from "./core";
 import { Hub, statePath, save, locked, execute } from "./io";
 const args = process.argv.slice(2),
   command = args.shift();
+const resetAction = command === "resets" ? args.shift() : undefined;
 const flags = new Map<string, string>();
 while (args.length) {
   const k = args.shift()!;
   if (
     ![
+      "--op-id",
+      "--unconfirmed",
+      "--skip-count",
+      "--left",
+      "--confirmed",
       "--account",
       "--strict",
       "--no-strict",
@@ -22,15 +32,23 @@ while (args.length) {
     throw Error("unknown option");
   flags.set(
     k,
-    k.startsWith("--no-") || ["--strict", "--spillover"].includes(k)
+    k.startsWith("--no-") ||
+      [
+        "--strict",
+        "--spillover",
+        "--unconfirmed",
+        "--confirmed",
+        "--skip-count",
+      ].includes(k)
       ? "true"
       : (args.shift() ?? ""),
   );
 }
 const env = loadEnvFiles(
-  (process.env.TOKENLAYER_ENV_FILES ?? "~/.config/tokenlayer/hub.env").split(
-    ":",
-  ),
+  (
+    process.env.TOKENLAYER_ENV_FILES ??
+    "~/.config/tokenlayer/hub.env:~/.config/tokenlayer/clickhouse.env"
+  ).split(":"),
 );
 const hub = new Hub(
   env.TOKENLAYER_HUB_URL ?? "http://127.0.0.1:8317",
@@ -38,9 +56,52 @@ const hub = new Hub(
 );
 async function tick() {
   return locked(async () => {
-    const s: State = existsSync(statePath())
+    const s: ResetState = existsSync(statePath())
       ? JSON.parse(readFileSync(statePath(), "utf8"))
       : defaults();
+    if (command === "resets") {
+      const account = flags.get("--account"),
+        left = Number(flags.get("--left"));
+      if (
+        resetAction !== "set" ||
+        !account ||
+        !flags.has("--left") ||
+        !Number.isInteger(left) ||
+        left < 0 ||
+        !flags.has("--confirmed")
+      )
+        throw Error(
+          "resets set requires account, nonnegative left and confirmed",
+        );
+      if (!(await hub.observations()).some((c) => c.email === account))
+        throw Error("account not found");
+      s.resets ??= {};
+      s.resets[account] = { left, confirmedByEtan: true };
+      save(s);
+      return;
+    }
+    if (command === "reset-pressed") {
+      const account = flags.get("--account"),
+        op = flags.get("--op-id");
+      if (!account || !op)
+        throw Error("reset-pressed requires account and op-id");
+      const c = (await hub.observations()).find((c) => c.email === account);
+      if (!c?.auth_index) throw Error("account not found");
+      await resetPressed(
+        s,
+        account,
+        c.auth_index,
+        op,
+        !flags.has("--unconfirmed"),
+        hub,
+        () => save(s),
+        event,
+        flags.has("--skip-count"),
+      );
+      await shipBestEffort(ClickHouse.fromEnv(env), writeErr);
+      writeOut(JSON.stringify(s.resetOps![op]));
+      return;
+    }
     if (command === "status") {
       writeOut(JSON.stringify(s));
       return;
@@ -98,6 +159,7 @@ async function tick() {
     }
     if (JSON.stringify(s) !== before) save(s);
     await execute(s, p.desired, hub, crypto.randomUUID());
+    await shipBestEffort(ClickHouse.fromEnv(env), writeErr);
     writeOut(JSON.stringify({ mode: s.mode, reason: p.reason }));
   });
 }
