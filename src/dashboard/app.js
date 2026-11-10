@@ -1,10 +1,14 @@
-const $ = (s) => document.querySelector(s),
-  text = (tag, value) => {
-    const e = document.createElement(tag);
-    e.textContent = value;
-    return e;
-  },
-  csrf = $('meta[name="csrf-token"]').content;
+function $(s) {
+  return document.querySelector(s);
+}
+function text(tag, value) {
+  const e = document.createElement(tag);
+  e.textContent = value;
+  return e;
+}
+const csrf = $('meta[name="csrf-token"]').content;
+let latestState = null,
+  latestAccounts = [];
 let ready = false,
   inflight = false,
   retryBody = null;
@@ -72,13 +76,20 @@ async function refresh() {
   const paths = ["state", "accounts", "metrics?window=48h", "burn", "recommendation"];
   const panels = ["#events", "#accounts", "#chart", "#freshness", "#recommendation"];
   try {
-    const results = await Promise.allSettled(paths.map((p) => api(p)));
-    results.forEach((result, i) => {
+    const results = await Promise.allSettled(
+      paths.map(function callback1(p) {
+        return api(p);
+      }),
+    );
+    results.forEach(function callback2(result, i) {
       if (result.status === "rejected")
         $(panels[i]).textContent = paths[i] + ": " + result.reason.message;
     });
-    const [s, a, m, b, r] = results.map((x) => (x.status === "fulfilled" ? x.value : null));
+    const [s, a, m, b, r] = results.map(function callback3(x) {
+      return x.status === "fulfilled" ? x.value : null;
+    });
     if (a) {
+      latestAccounts = a;
       $("#mode").textContent = "OAuth file readback: " + a.map(exclusions).join(" · ");
       $("#accounts").replaceChildren();
       for (const c of a) {
@@ -92,7 +103,17 @@ async function refresh() {
             "p",
             "Cooldowns: " +
               (c.cooldowns?.length
-                ? c.cooldowns.map((x) => x.model || "Account").join(", ")
+                ? c.cooldowns
+                    .map(function cooldown(x) {
+                      return (
+                        x.scope +
+                        " · " +
+                        (x.model_key || "all models") +
+                        " · retry " +
+                        time(x.retry_at)
+                      );
+                    })
+                    .join("; ")
                 : "none"),
           ),
         );
@@ -102,8 +123,12 @@ async function refresh() {
               "p",
               "Estimated cap: " +
                 (b.projections
-                  .filter((p) => p.key.startsWith(c.email))
-                  .map((p) => time(p.projectedCapAt))
+                  .filter(function callback4(p) {
+                    return p.key.startsWith(c.email);
+                  })
+                  .map(function callback5(p) {
+                    return time(p.projectedCapAt);
+                  })
                   .join(", ") || "insufficient observations"),
             ),
           );
@@ -117,38 +142,57 @@ async function refresh() {
           opt.value = c.email;
           select.append(opt);
         }
-        if (a.some((c) => c.email === prior)) select.value = prior;
+        if (
+          a.some(function callback6(c) {
+            return c.email === prior;
+          })
+        )
+          select.value = prior;
       }
     }
     if (s) {
+      latestState = s;
+      updateToggle();
       if (!ready) {
         const f = $("#switch");
         f.mode.value = s.state.mode;
-        f.account.value = s.state.fableAccount || a?.[0]?.email;
+        f.account.value =
+          s.state.fableAccount ||
+          a?.find(function preferred(c) {
+            return c.email.includes("etanface");
+          })?.email ||
+          a?.[0]?.email;
         f.strict.checked = s.state.strictFableAccount;
         f.spillover.checked = s.state.spillover;
         ready = true;
       }
       $("#inventory").textContent = Object.entries(s.state.resets || {})
-        .map(
-          ([email, v]) =>
+        .map(function callback7([email, v]) {
+          return (
             email +
             ": " +
             (v.left ?? "unknown") +
             " left" +
-            (v.confirmedByEtan ? " · confirmed" : " · unconfirmed"),
-        )
+            (v.confirmedByEtan ? " · confirmed" : " · unconfirmed")
+          );
+        })
         .join("\n");
       $("#recovery").textContent = Object.values(s.state.resetOps || {})
-        .map((v) => v.recovery + " " + v.hint)
+        .map(function callback8(v) {
+          return v.recovery + " " + v.hint;
+        })
         .join("\n");
-      $("#coverage").replaceChildren(...s.coverage.map((x) => text("li", x)));
+      $("#coverage").replaceChildren(
+        ...s.coverage.map(function callback9(x) {
+          return text("li", x);
+        }),
+      );
       $("#events").replaceChildren(
         ...s.events
           .slice()
           .reverse()
-          .map((x) =>
-            text(
+          .map(function callback10(x) {
+            return text(
               "p",
               time(x.at) +
                 " · " +
@@ -157,19 +201,57 @@ async function refresh() {
                 x.stage +
                 " " +
                 (x.status || ""),
-            ),
-          ),
+            );
+          }),
       );
     }
     if (r)
       $("#recommendation").replaceChildren(
-        text("h2", "Reset recommendation"),
-        ...r.map((x) => text("p", x.account + " · " + x.reason)),
+        ...r.map(function callback11(x) {
+          return Object.assign(
+            text(
+              "p",
+              x.account +
+                " · " +
+                x.verdict +
+                " · maximum refund " +
+                (x.worthPctOfWeek === null ? "unknown" : x.worthPctOfWeek + "%") +
+                " of week",
+            ),
+            { title: x.reason },
+          );
+        }),
       );
     if (m) {
       $("#freshness").textContent = "Drain latest: " + time(m.freshness[0]?.last_at);
-      $("#errors").textContent = "429s: " + m.rows.reduce((n, x) => n + Number(x.errors429), 0);
+      $("#errors").textContent =
+        "429s: " +
+        m.rows.reduce(function callback12(n, x) {
+          return n + Number(x.errors429);
+        }, 0);
       draw(m.rows);
+    }
+    results.forEach(function stamp(result, i) {
+      const panel = $(panels[i]);
+      if (result.status === "fulfilled")
+        panel.append(
+          Object.assign(text("small", "As of " + time(Date.now())), { className: "as-of" }),
+        );
+    });
+    updateFacts();
+    if (s && a) {
+      const mismatch = a.some(function differs(c) {
+        return (
+          c.exclusions.error ||
+          JSON.stringify([...(c.exclusions.list || [])].sort()) !==
+            JSON.stringify([...(s.routing.desired[c.id] || [])].sort())
+        );
+      });
+      $("#mismatch").textContent = mismatch
+        ? "Warning: saved intent differs from OAuth readback. Routing is unconfirmed."
+        : s.state.mode === "manual" && s.routing.reason !== "partition"
+          ? "Warning: saved ON intent is suspended: " + s.routing.reason
+          : "";
     }
     $("#notice").textContent = "Updated " + time(new Date().toISOString());
   } finally {
@@ -192,8 +274,15 @@ function draw(rows) {
       svg.setAttribute("viewBox", "0 0 600 100");
       svg.setAttribute("role", "img");
       svg.setAttribute("aria-label", field + " over 48 hours");
-      const max = Math.max(1, ...rs.map((r) => Number(r[field])));
-      const times = rows.map((r) => Date.parse(r.hour.replace(" ", "T") + "Z"));
+      const max = Math.max(
+        1,
+        ...rs.map(function callback13(r) {
+          return Number(r[field]);
+        }),
+      );
+      const times = rows.map(function callback14(r) {
+        return Date.parse(r.hour.replace(" ", "T") + "Z");
+      });
       const start = Math.min(...times);
       const end = Math.max(...times) + 3600000;
       box.append(
@@ -206,10 +295,12 @@ function draw(rows) {
             " to " +
             time(end) +
             " · 429s " +
-            rs.reduce((n, r) => n + Number(r.errors429), 0),
+            rs.reduce(function callback15(n, r) {
+              return n + Number(r.errors429);
+            }, 0),
         ),
       );
-      rs.forEach((r, i) => {
+      rs.forEach(function callback16(r, i) {
         const bar = document.createElementNS(svg.namespaceURI, "rect");
         bar.setAttribute(
           "x",
@@ -248,7 +339,7 @@ for (const [id, path] of [
       body = { account: f.account.value };
     if (id === "switch")
       Object.assign(body, {
-        mode: f.mode.value,
+        mode: latestState?.state.mode === "manual" ? "off" : "manual",
         strict: f.strict.checked,
         spillover: f.spillover.checked,
       });
@@ -271,9 +362,30 @@ for (const [id, path] of [
       if (id === "pressed") $("#retry").hidden = false;
     }
   };
+function updateToggle() {
+  const on = latestState?.state.mode === "manual";
+  $("#toggle").textContent = "Fable split: " + (on ? "ON" : "OFF");
+  $("#toggle").setAttribute("aria-pressed", String(on));
+}
+function updateFacts() {
+  const account = $("#pressed").account.value;
+  const c = latestAccounts.find(function selected(c) {
+    return c.email === account;
+  });
+  const count = latestState?.state.resets?.[account];
+  $("#reset-facts").textContent =
+    account +
+    " · " +
+    (count?.left ?? "unknown") +
+    " resets left · " +
+    "weekly reset " +
+    time(c?.weekly.reset) +
+    " · Fable reset " +
+    time(c?.fable.reset);
+}
+$("#pressed").account.onchange = updateFacts;
 refresh();
 setInterval(refresh, 30000);
-
 $("#retry").onclick = async function retry() {
   try {
     await api("reset-pressed", retryBody);

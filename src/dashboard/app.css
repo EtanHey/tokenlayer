@@ -125,3 +125,29 @@ select {
 meter {
   accent-color: #479f8a;
 }
+
+#toggle {
+  display: block;
+  width: 100%;
+  font-size: 30px;
+  font-weight: 700;
+  padding: 24px;
+}
+#toggle[aria-pressed="true"] {
+  background: #75c6a2;
+}
+#recommendation {
+  border: 0;
+  opacity: 0.75;
+  font-size: 13px;
+}
+#mismatch:not(:empty) {
+  border-left: 4px solid #c69b49;
+  padding: 12px;
+}
+
+.as-of {
+  display: block;
+  grid-column: 1 / -1;
+  margin-top: 8px;
+}

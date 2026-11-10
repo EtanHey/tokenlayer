@@ -13,35 +13,32 @@ export function page(token: string) {
 <small>TOKENLAYER / HOME HUB</small>
 <h1>Fable account status</h1>
 <p>Fable routing, reset inventory and the usage the hub can see.</p>
+<p id="mismatch" role="alert"></p>
 <span id="mode">Loading current routing…</span>
 </header>
-<p role="status" id="notice">
-</p>
-<div id="accounts" class="grid">
-</div>
-<section id="recommendation" aria-label="Reset recommendation">
-</section>
 <section>
-<h2>The switch</h2>
+<h2>Fable split</h2>
 <p>Changes apply to hub routing. Current exclusions below are read back from OAuth metadata.</p>
 <form id="switch">
-<label>Mode <select name="mode">
-<option value="off">Off</option>
-<option value="manual">Manual</option>
-<option disabled>Auto · next week</option>
-</select>
-</label>
+<input type="hidden" name="mode" value="off">
+<button id="toggle" type="submit" aria-pressed="false">Fable split: OFF</button>
 <label>Fable account <select name="account" class="account">
 </select>
 </label>
+<details><summary>Advanced</summary>
 <label>
-<input type="checkbox" name="strict" checked> Reserve Fable account for Fable
+<input type="checkbox" name="strict"> Reserve Fable account for Fable
 (other models use the other account)</label>
 <label>
 <input type="checkbox" name="spillover"> Allow spillover at cap (the second account may serve Fable)</label>
-<button>Apply routing</button>
+</details>
 </form>
 </section>
+
+<p role="status" id="notice">
+</p>
+<aside id="recommendation" aria-label="Reset hint">
+</aside>
 <section>
 <h2>Reset guidance</h2>
 <p>
@@ -54,10 +51,11 @@ Recovery clears proxy cooldowns; it does not reset Anthropic entitlement.</p>
 <label>Account <select name="account" class="account">
 </select>
 </label>
-<label>Operation id <input name="opId" readonly hidden>
+<label>Operation id <input name="opId" readonly>
 <button type="button" id="retry" hidden>Retry same op</button>
 </label>
-<button>Clear proxy cooldowns and subtract one reset</button>
+<p id="reset-facts">Select an account to see its reset facts.</p>
+<button>I pressed it — recover proxy and subtract one reset</button>
 </form>
 <pre id="recovery">
 </pre>
@@ -75,6 +73,7 @@ Recovery clears proxy cooldowns; it does not reset Anthropic entitlement.</p>
 <pre id="inventory">
 </pre>
 </section>
+<div id="accounts" class="grid"></div>
 <section>
 <h2>Last 48 hours</h2>
 <p id="freshness">
