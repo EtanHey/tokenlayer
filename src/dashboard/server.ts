@@ -61,9 +61,15 @@ export function createHandler(o: {
   const outside = new Map<string, { at: string; delta: number; window: string }[]>();
   const outsidePath = join(dirname(path), "outside-use.json");
   if (existsSync(outsidePath)) {
-    const stored = JSON.parse(readFileSync(outsidePath, "utf8"));
-    for (const [key, value] of stored.observations) observations.set(key, value);
-    for (const [key, value] of stored.outside) outside.set(key, value.slice(-20));
+    // Display-only history: a corrupt file must never stop the dashboard from starting.
+    try {
+      const stored = JSON.parse(readFileSync(outsidePath, "utf8"));
+      for (const [key, value] of stored.observations ?? []) observations.set(key, value);
+      for (const [key, value] of stored.outside ?? []) outside.set(key, value.slice(-20));
+    } catch {
+      observations.clear();
+      outside.clear();
+    }
   }
   function persistOutside() {
     mkdirSync(dirname(outsidePath), { recursive: true });

@@ -80,3 +80,17 @@ test('page includes both complete plain-language explanations and unknown-count 
     "moved within seconds, so there was no need to wait for Thursday.");
   expect(text).toContain('count unknown: waiting; confirm your reset count to allow spill');
 });
+
+test('a corrupt outside-use.json never stops the dashboard from starting', () => {
+  const dir = mkdtempSync(tmpdir() + '/outside-corrupt-');
+  writeFileSync(dir + '/state', JSON.stringify(state()));
+  writeFileSync(dir + '/outside-use.json', '{not json');
+  const hub = new Hub('http://127.0.0.1:9', 'fixture');
+  const ch = { queryJSON: async <T>(): Promise<T[]> => [] as T[] };
+  try {
+    expect(() => createHandler({ logins: ['owner'], origin: 'https://dash.test', secret: 'fixture',
+      hub, ch, path: dir + '/state' })).not.toThrow();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
