@@ -1,6 +1,14 @@
-import { readFileSync, existsSync, writeFileSync, renameSync } from "node:fs";
+import {
+  readFileSync,
+  existsSync,
+  writeFileSync,
+  renameSync,
+  openSync,
+  closeSync,
+  fsyncSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import type { ClickHouse } from "../lib/clickhouse";
 const hash = (line: Buffer | string) =>
@@ -28,7 +36,19 @@ export async function shipEvents(
   if (end <= cursor.offset) return;
   const persist = () => {
     writeFileSync(cursorPath + ".tmp", JSON.stringify(cursor), { mode: 0o600 });
+    const fd = openSync(cursorPath + ".tmp", "r");
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     renameSync(cursorPath + ".tmp", cursorPath);
+    const dir = openSync(dirname(cursorPath), "r");
+    try {
+      fsyncSync(dir);
+    } finally {
+      closeSync(dir);
+    }
   };
   cursor.pendingEnd = end;
   persist();
