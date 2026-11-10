@@ -31,3 +31,18 @@ test('sessions queries bounded fixed windows', () => {
   expect(sessionsSQL(24)).toContain('LIMIT 10');
   expect(() => sessionsSQL(12)).toThrow();
 });
+
+test('arrangement pins account and reason for today, Friday, Sunday and stale data', () => {
+  const today = arrangement([c('h', 1, 1), c('e', .46, .39)]);
+  expect(today.account).toBe('h');
+  expect(today.reason).toContain('until h resets');
+  const friday = arrangement([c('h', 0, 0), c('e', .95, .95)]);
+  expect(friday.account).toBe('e');
+  expect(friday.reason).toContain('until e resets');
+  const sunday = arrangement([c('h', 0, 0), c('e', 0, 0)]);
+  expect(sunday.account).toBe('h');
+  expect(sunday.reason).toContain('Fable → h. Best combined');
+  const stale = c('h', 0, 0);
+  stale.weekly.stale = true;
+  expect(arrangement([stale, c('e', 0, 0)]).reason).toContain('data stale');
+});

@@ -300,7 +300,7 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
         p.exceptions[model] = "NO_UPSTREAM";
         continue;
       }
-      if (!spillEnabled(s, a.email ?? a.id) && (au || cap)) {
+      if (au || (cap && !spillEnabled(s, a.email ?? a.id))) {
         (desired[b.id].excluded_models ??= []).push(model);
         if (!au) p.exceptions[model] = "WAIT_AT_CAP";
       }

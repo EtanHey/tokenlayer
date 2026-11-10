@@ -17,6 +17,9 @@ export function arrangement(accounts: Account[], now = Date.now()) {
   const time = when && Number.isFinite(when.getTime()) ? when.toLocaleString("en-GB", {
     timeZone: "Asia/Jerusalem", weekday: "short", hour: "2-digit", minute: "2-digit"
   }) : "its weekly reset";
+  const stale = next && (next.status !== "active" || next.weekly.stale || next.fable.stale ||
+    next.weekly.utilization === null || next.fable.utilization === null);
+  if (stale) return { keepOff: true, account, reason: `Keep OFF: ${account} data stale; recheck Usage.` };
   return { keepOff, account, reason: keepOff
     ? `Keep OFF until ${account ?? "the other account"} resets ${time}, ` +
       `then Fable → ${account ?? "recheck Usage"}. ` +

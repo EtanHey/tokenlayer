@@ -97,6 +97,7 @@ Recovery clears proxy cooldowns; it does not reset Anthropic entitlement.</p>
 </section>
 <section>
 <h2>What changed</h2>
+<p>count unknown: waiting; confirm your reset count to allow spill</p>
 <p>Before today, when one account used up its Fable allowance, the proxy wrongly paused that whole account,
  and with your other account already used up, every Claude request on both Macs would have failed.
  Now only Fable pauses on that account; Opus, Sonnet and Haiku keep working.</p>

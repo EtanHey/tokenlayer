@@ -3,7 +3,7 @@ import { spillEnabled } from "../fable/core";
 import { status } from "../fable/status";
 import { migrate } from "../fable/baseline";
 import { restoreOff } from "../fable/off";
-import { existsSync, readFileSync, mkdirSync, appendFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, appendFileSync, readdirSync, writeFileSync, renameSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -57,6 +57,19 @@ export function createHandler(o: {
   const path = o.path ?? statePath();
   const observations = new Map<string, { at: number; weekly: number | null; fable: number | null }>();
   const outside = new Map<string, { at: string; delta: number; window: string }[]>();
+  const outsidePath = join(dirname(path), "outside-use.json");
+  if (existsSync(outsidePath)) {
+    const stored = JSON.parse(readFileSync(outsidePath, "utf8"));
+    for (const [key, value] of stored.observations) observations.set(key, value);
+    for (const [key, value] of stored.outside) outside.set(key, value.slice(-20));
+  }
+  function persistOutside() {
+    mkdirSync(dirname(outsidePath), { recursive: true });
+    const temp = outsidePath + ".tmp";
+    writeFileSync(temp, JSON.stringify({ observations: [...observations], outside: [...outside] }), { mode: 0o600 });
+    chmodSync(temp, 0o600);
+    renameSync(temp, outsidePath);
+  }
   function load(): ResetState {
     return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : defaults();
   }
@@ -296,6 +309,8 @@ export function createHandler(o: {
       const hash = labelHash(c.auth_index);
       const prior = observations.get(hash);
       if (Number.isFinite(at) && (!prior || at > prior.at)) {
+        // Claim the interval before awaiting ClickHouse so concurrent GETs cannot sample it twice.
+        observations.set(hash, { at, weekly: weekly.utilization, fable: fable.utilization });
         if (prior) {
           const rows = await o.ch.queryJSON<{ requests: number }>(`SELECT count() AS requests
  FROM tokenlayer.proxy_usage FINAL WHERE credential = '${hash}'
@@ -308,7 +323,7 @@ export function createHandler(o: {
               { at: new Date(prior.at).toISOString(), delta, window }].slice(-20));
           }
         }
-        observations.set(hash, { at, weekly: weekly.utilization, fable: fable.utilization });
+        persistOutside();
       }
       const state = load();
       const reset = state.resets?.[c.email ?? c.id];
@@ -318,7 +333,8 @@ export function createHandler(o: {
         outsideCoverage: coverage,
         resets: reset,
         capPolicy: spillEnabled(state, c.email ?? c.id) ? `At the cap: spills to ${other}` :
-          `At the cap: wait for your reset (${reset?.left ?? "UNKNOWN"} left)`,
+          reset?.left == null ? "count unknown: waiting; confirm your reset count to allow spill" :
+          `At the cap: wait for your reset (${reset.left} left)`,
         id: c.id,
         email: c.email,
         status: c.status,

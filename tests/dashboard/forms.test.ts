@@ -8,7 +8,8 @@ async function forms() {
   const forms: any = {};
   for (const id of ['switch', 'counts', 'pressed']) forms['#' + id] = {
     account: { value: 'etanface@gmail.com' }, strict: { checked: false }, spillover: { value: "false" },
-    allowNonFableOnFableAccount: { checked: false }, left: { value: '2' }, confirmed: { checked: true }, opId: { value: '' },
+    allowNonFableOnFableAccount: { checked: false },
+    left: { value: '2' }, confirmed: { checked: true }, opId: { value: '' },
   };
   forms['meta[name="csrf-token"]'] = { content: 'csrf' };
   forms['#session-window'] = { value: '3h' };
@@ -25,7 +26,8 @@ async function forms() {
     },
   };
   createContext(context);
-  const source = readFileSync('src/dashboard/app.js', 'utf8').replace(/^refresh\(\);$/m, '').replace(/^refreshSessions\(\);$/m, '');
+  const source = readFileSync('src/dashboard/app.js', 'utf8')
+    .replace(/^refresh\(\);$/m, '').replace(/^refreshSessions\(\);$/m, '');
   runInContext(source + '\nrefresh = async function refreshed() {};', context);
   async function submit(id: string) {
     await forms['#' + id].onsubmit({ preventDefault: function preventDefault() {}, target: forms['#' + id] });

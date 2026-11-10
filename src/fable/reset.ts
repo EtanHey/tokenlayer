@@ -37,6 +37,7 @@ export async function resetPressed(
   if (["recovered", "not_needed"].includes(s.resetOps[op]?.recovery)) return;
   if (!s.resetOps[op]) {
     if (!skipCount) {
+      // An unconfirmed press cannot establish zero: auto waits until the count is confirmed.
       const prior = s.resets[account];
       s.resets[account] = {
         left:
