@@ -151,6 +151,11 @@ export async function execute(
       !s.pending &&
       !Object.values(s.ops).includes("pending")
     ) {
+      s.policy = {
+        desired: p.desired,
+        exceptions: p.exceptions,
+        reserve: p.reserve,
+      };
       s.applied = p.applied;
       s.reason = p.reason;
       persist(s);
@@ -266,6 +271,11 @@ export async function execute(
     obs = await observe(s, hub);
     p = decide(obs);
     if (!matches(p, obs)) throw Error("policy changed; retry required");
+    s.policy = {
+      desired: p.desired,
+      exceptions: p.exceptions,
+      reserve: p.reserve,
+    };
     s.applied = p.applied;
     s.reason = p.reason;
     s.ops[op] = "done";

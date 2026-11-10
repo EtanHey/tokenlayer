@@ -142,6 +142,11 @@ async function tick() {
               ? "APPLYING"
               : "UNKNOWN";
         s.reason = confirmed ? p.reason : "routing not confirmed";
+        s.policy = {
+          desired: p.desired,
+          exceptions: p.exceptions,
+          reserve: p.reserve,
+        };
       } catch {
         s.applied = "UNKNOWN";
         s.reason = "readback unavailable or inventory changed";

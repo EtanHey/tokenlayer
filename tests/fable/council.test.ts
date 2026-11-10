@@ -81,7 +81,7 @@ test("MUST-4: crash after B100 cannot save ON; restart resumes", async () => {
   const restarted = JSON.parse(JSON.stringify(s));
   await run(restarted, plan(restarted, hub.obs, now), hub, "crash");
   expect(restarted.applied).toBe("ON");
-  expect(hub.rules.b).toEqual([models[0]]);
+  expect(hub.rules.b).toEqual(["claude-fable-*"]);
 });
 test("SHOULD-1: replacement under same email refuses every write", async () => {
   const s = state(),

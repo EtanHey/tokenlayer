@@ -50,6 +50,7 @@ export type State = Intent & {
   baseline: Record<string, Baseline>;
   thresholds: { fableCapAt: number; weeklyExhaustedAt: number };
   ops: Record<string, string>;
+  policy?: Pick<Plan, "desired" | "exceptions" | "reserve">;
   pending?: { op: string; plan: Plan };
 };
 export function intent(s: Intent): Intent {
@@ -118,6 +119,10 @@ export function inventory(s: State, obs: Observation[]) {
   return (
     obs.length === 2 &&
     Object.keys(s.baseline).length === 2 &&
+    same(
+      Object.keys(s.baseline),
+      obs.map((c) => c.id),
+    ) &&
     obs.every((c) => {
       const b = s.baseline[c.id];
       return (
@@ -126,6 +131,8 @@ export function inventory(s: State, obs: Observation[]) {
         b.name === c.name &&
         b.auth_index === c.auth_index &&
         b.email === c.email &&
+        b.excluded_models === null &&
+        b.priority === null &&
         b.models.length > 0
       );
     })
@@ -283,6 +290,12 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
     else if (s.strictFableAccount && bu)
       (desired[a.id].excluded_models ??= []).push(model);
   }
+  const fableOnB = s.baseline[b.id].models.filter(isFable);
+  if (
+    fableOnB.length &&
+    fableOnB.every((m) => desired[b.id].excluded_models?.includes(m))
+  )
+    desired[b.id].excluded_models = ["claude-fable-*"];
   const exceptions = Object.values(p.exceptions);
   if (exceptions.some((x) => x !== "WAIT_AT_CAP")) p.applied = "DEGRADED";
   else if (exceptions.includes("WAIT_AT_CAP")) p.applied = "ON_WAIT_AT_CAP";
