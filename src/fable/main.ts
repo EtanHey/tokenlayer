@@ -1,4 +1,5 @@
 import { status } from "./status";
+import { reconcile } from "./recovery";
 import { resetPressed, type ResetState } from "./reset";
 import { shipBestEffort } from "./events";
 import { ClickHouse } from "../lib/clickhouse";
@@ -79,6 +80,13 @@ async function tick() {
     )
       throw Error("conflicting reserve options");
     if (command === "run" && s.requested?.mode === "off") s.mode = "off";
+    if (command === "run" || command === "reconcile") {
+      await reconcile(s, hub, () => save(s));
+      if (command === "reconcile") {
+        writeOut(JSON.stringify({ recovery: Object.values(s.recovery ?? {}).map(r => ({ result: r.result, checkedAt: r.checkedAt, attempt: r.attempted?.outcome })) }));
+        return;
+      }
+    }
     if (command === "off" || (command === "run" && s.mode === "off")) {
       try {
         let confirmed = false;
@@ -192,7 +200,7 @@ async function tick() {
       return;
     }
     if (!["off", "set", "plan", "run"].includes(command ?? ""))
-      throw Error("fable status|off|set --account <email>|plan|run");
+      throw Error("fable status|off|set --account <email>|plan|run|reconcile");
     const before = JSON.stringify(s);
     if (
       command !== "plan" &&

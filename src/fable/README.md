@@ -60,3 +60,34 @@ The executor's optional proof hook fixes writes to one non-Fable credential and
 always reports UNKNOWN. It is for bounded operational receipts, not a CLI mode.
 
 An unconfirmed reset press makes the count UNKNOWN: auto waits until the count is confirmed.
+
+`fable run` reconciles external Claude usage-page resets even while policy is OFF.
+For adopted, active Claude OAuth credentials with only long quota cooldowns
+(at least one hour remaining), it checks usage metadata through the hub API-call
+endpoint at most once per three minutes per credential. The check time is saved
+before I/O, including failures, so restarts retain the cadence. It never reads
+OAuth secrets or logs upstream bodies/headers.
+
+Recovery requires validated shared weekly headroom (at most 50% used): either a
+same-window drop of at least 50 percentage points from a prior observation of
+90% or more, or a naturally advanced reset window. A present exhausted or invalid
+five-hour window prevents recovery; null/missing windows remain UNKNOWN. No
+Fable-only meter is inferred from `7d_oi`. Disabled credentials, auth failures,
+short throttles, unchanged usage and ambiguous evidence do not release caches.
+Identity and quota/cooldown observations are rechecked after metadata awaits.
+
+Only the exact credential's local routing cooldown is reset. Durable attempt
+allowance evidence suppresses repeated clears on the same allowance, including
+new real quota errors and ambiguous attempts. Readback records `cleared` or
+`unconfirmed`; neither proves a successful inference. Superseded passive quota
+snapshots become UNKNOWN for policy decisions until new upstream observations
+arrive, restoring normal routing instead of reapplying a stale rejection.
+Reset inventory is never decremented or confirmed by reconciliation.
+
+`tokenlayer fable reconcile` performs one pass with the same cadence and safety
+checks. `status` and dry-run `plan` never trigger reconciliation. If conservative
+evidence rules prevent automatic recovery after a known human reset, use
+`tokenlayer fable reset-pressed --account <email> --op-id <unique-id>` to report
+that press and attempt local recovery; reuse its operation id on retry. This
+manual command updates reset bookkeeping, unless `--skip-count` is supplied for
+recovery of an already-accounted press. No command presses Anthropic's reset.
