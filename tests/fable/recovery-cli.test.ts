@@ -75,3 +75,41 @@ for (const mode of ["off", "manual"] as const) test(`spawned ${mode} daemon reco
     p.kill(); await p.exited; server.stop(true); rmSync(dir, { recursive: true });
   }
 });
+
+test("G1 spawned daemon clears a directly recovered Fable cap below 90% shared usage", async () => {
+  const hub = fakeHub(), s = state(), dir = mkdtempSync(tmpdir() + "/fable-direct-recovery-");
+  const reset = new Date(Date.now() + 3 * 86400000).toISOString(), c = hub.obs[0];
+  c.cooldowns = [{ scope: "model", model_key: "claude-fable-5-2", reason: "quota", retry_at: reset }];
+  Object.assign(c.model_quotas!["claude-fable-5-2"].signals!, {
+    "Anthropic-Ratelimit-Unified-7d-Utilization": "0.55",
+    "Anthropic-Ratelimit-Unified-7d-Reset": String(Date.parse(reset) / 1000),
+    "Anthropic-Ratelimit-Unified-7d_oi-Status": "rejected",
+    "Anthropic-Ratelimit-Unified-7d_oi-Utilization": "1",
+  });
+  writeFileSync(dir + "/state", JSON.stringify(s));
+  const attempts: unknown[] = [];
+  const server = Bun.serve({ port: 0, async fetch(req) {
+    const path = new URL(req.url).pathname;
+    if (path.endsWith("/requests/api-call")) return Response.json({ status_code: 200, body: JSON.stringify({
+      seven_day: { utilization: 2, resets_at: reset }, five_hour: null,
+      limits: [
+        { kind: "weekly_all", percent: 2, resets_at: reset, scope: null },
+        { kind: "weekly_scoped", percent: 0, resets_at: reset, scope: { model: { id: null, display_name: "Fable" }, surface: null } },
+      ],
+    }) });
+    if (path.endsWith("/routing/cooldown/reset")) {
+      attempts.push(await req.json()); c.cooldowns = []; return Response.json({ status: "ok" });
+    }
+    if (req.method === "PATCH") { const body = await req.json() as Fields & { name: string }; await hub.patch(body.name, body); return Response.json({ status: "ok" }); }
+    return Response.json({ files: hub.obs.map(c => ({ ...c, provider: "claude", account_type: "oauth" })) });
+  } });
+  const p = Bun.spawn([process.execPath, "src/fable/main.ts", "reconcile"], { env: { ...process.env, TOKENLAYER_ENV_FILES: "", TOKENLAYER_HUB_URL: server.url.origin, CLICKHOUSE_URL: server.url.origin, CLIPROXY_MGMT_KEY: "fixture", TOKENLAYER_FABLE_STATE: dir + "/state", TOKENLAYER_FABLE_EVENTS: dir + "/events" }, stdout: "pipe", stderr: "pipe" });
+  try {
+    const [code, , err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    expect(code).toBe(0); expect(err).toBe("");
+    expect(attempts).toEqual([{ auth_index: "a" }]);
+    expect(JSON.parse(readFileSync(dir + "/state", "utf8")).recovery.a.result).toBe("cleared");
+  } finally {
+    p.kill(); await p.exited; server.stop(true); rmSync(dir, { recursive: true });
+  }
+});

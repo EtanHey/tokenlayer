@@ -68,24 +68,44 @@ endpoint at most once per three minutes per credential. The check time is saved
 before I/O, including failures, so restarts retain the cadence. It never reads
 OAuth secrets or logs upstream bodies/headers.
 
-Recovery requires validated shared weekly headroom (at most 50% used): either a
-same-window drop of at least 50 percentage points from a prior observation of
-90% or more, or a naturally advanced reset window. A present exhausted or invalid
-five-hour window prevents recovery; null/missing windows remain UNKNOWN. No
-Fable-only meter is inferred from `7d_oi`. Disabled credentials, auth failures,
+When the provider returns a usable `limits[]` list, recovery uses the snapshot
+that latched each cooldown: `model_quotas[model_key]` for model scope, `quota` for
+credential scope. A rejected header status or utilization of at least 99% marks
+an exhausted meter. Its `7d` headers map to `weekly_all`, and `7d_oi` to every
+`weekly_scoped` entry, regardless of display name. Every exhausted meter must now
+report at most 50% usage, and no entry may report 95% or more. A snapshot without
+an exhausted meter cannot prove recovery, even when all provider meters are low.
+Every list entry needs a string kind, a finite numeric percent in [0, 100], and
+a valid ISO reset time in the future; one malformed or stale entry makes the
+whole list unusable and the check UNKNOWN, with no reset attempt.
+An empty list or a list without a needed meter refuses recovery.
+A cooled model with no saved quota snapshot blocks recovery for the credential.
+Only the `7d` and `7d_oi` headers select exhausted meters; representative-claim
+and five-hour headers do not select them.
+
+Only an absent or null list retains the shared-weekly fallback: a same-window
+drop of at least 50 percentage points from a prior observation of 90% or more,
+or a naturally advanced reset window, with at most 50% currently used.
+A present exhausted or invalid five-hour window prevents recovery on both paths;
+null/missing windows remain UNKNOWN. Disabled credentials, auth failures,
 short throttles, unchanged usage and ambiguous evidence do not release caches.
 Identity and quota/cooldown observations are rechecked after metadata awaits.
 
 Only the exact credential's local routing cooldown is reset. Durable attempt
-allowance evidence suppresses repeated clears on the same allowance, including
-new real quota errors and ambiguous attempts. Readback records `cleared` or
+snapshot hashes allow only one direct-meter attempt per latching snapshot, across
+restarts and ambiguous attempts. A new rejection snapshot can qualify again in
+the same weekly window; the fallback still suppresses repeats by allowance.
+Direct recovery permits at most three attempts per credential per validated
+weekly reset window, persisting the count before each POST across restarts.
+Readback records `cleared` or
 `unconfirmed`; neither proves a successful inference. Superseded passive quota
 snapshots become UNKNOWN for policy decisions until new upstream observations
 arrive, restoring normal routing instead of reapplying a stale rejection.
 Reset inventory is never decremented or confirmed by reconciliation.
 An unconfirmed clear retains cap policy while its quota cooldown remains active.
-Natural weekly advancement permits one attempt, not proof that a separate Fable
-meter recovered. A reset that moves the weekly window early requires the manual fallback.
+On the fallback path, natural weekly advancement permits one attempt without
+proving that a separate Fable meter recovered; an early window move requires
+the manual fallback. Direct-meter evidence does not depend on the window moving.
 
 `tokenlayer fable reconcile` performs one pass with the same cadence and safety
 checks. `status` and dry-run `plan` never trigger reconciliation. If conservative
