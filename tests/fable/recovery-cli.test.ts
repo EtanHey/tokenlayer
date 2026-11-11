@@ -10,6 +10,7 @@ for (const mode of ["off", "manual"] as const) test(`spawned ${mode} daemon reco
   for (const c of hub.obs) {
     c.cooldowns = [{ scope: "model", model_key: "claude-fable-5-2", reason: "quota", retry_at: reset }];
     c.quota!.signals!["Anthropic-Ratelimit-Unified-7d-Utilization"] = "0.98";
+    c.quota!.signals!["Anthropic-Ratelimit-Unified-7d-Status"] = "allowed_warning";
     c.quota!.signals!["Anthropic-Ratelimit-Unified-7d-Reset"] = String(Date.parse(reset) / 1000);
     c.model_quotas!["claude-fable-5-2"].signals!["Anthropic-Ratelimit-Unified-7d_oi-Status"] = "rejected";
   }

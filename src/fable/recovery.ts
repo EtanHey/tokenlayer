@@ -14,29 +14,34 @@ function window(v: unknown): Window | null {
   const reset = Date.parse(v.resets_at);
   const date = v.resets_at.slice(0, 10), day = Date.parse(date + "T00:00:00Z");
   if (!Number.isFinite(day) || new Date(day).toISOString().slice(0, 10) !== date) return null;
-  return Number.isFinite(reset) ? { utilization: v.utilization / 100, reset } : null;
+  return Number.isFinite(reset) ? { utilization: v.utilization / 100, reset: Math.floor(reset / 1000) * 1000 } : null;
 }
 function prior(c: Observation, now: number): Window | null {
   const q = c.quota, at = Date.parse(q?.observed_at ?? "");
   const sig = Object.fromEntries(Object.entries(q?.signals ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
   const p = "anthropic-ratelimit-unified-7d-", raw = sig[p + "utilization"], reset = sig[p + "reset"];
   const numeric = (v: string | undefined) => typeof v === "string" && /^\d+(?:\.\d+)?$/.test(v) ? Number(v) : NaN;
-  const u = numeric(raw), r = numeric(reset) * 1000;
+  const u = numeric(raw), r = Math.floor(numeric(reset)) * 1000;
   if (!Number.isFinite(at) || at > now || !Number.isFinite(u) || u < 0 || u > 1 ||
-      !Number.isFinite(r) || r <= at || !["allowed", "rejected"].includes(sig[p + "status"])) return null;
+      !Number.isFinite(r) || r <= at || !["allowed", "allowed_warning", "rejected"].includes(sig[p + "status"])) return null;
   return { utilization: u, reset: r };
+}
+function quotaError(c: Observation) {
+  const message = c.status_message ?? "";
+  if (message === "quota exhausted" || message.startsWith("rate_limit_error:")) return true;
+  try { return JSON.parse(message)?.error?.type === "rate_limit_error"; } catch { return false; }
 }
 function candidate(s: State, c: Observation, now: number) {
   const b = s.baseline[c.id];
   return !!c.auth_index && !!b && b.id === c.id && b.auth_index === c.auth_index &&
-    b.name === c.name && b.email === c.email && c.status === "active" && !c.disabled &&
+    b.name === c.name && b.email === c.email && (c.status === "active" || c.status === "error" && quotaError(c)) && !c.disabled &&
     Array.isArray(c.cooldowns) && c.cooldowns.length > 0 && c.cooldowns.every(x =>
       x.reason === "quota" && (x.scope === "credential" || x.scope === "model" && !!x.model_key) &&
       Date.parse(x.retry_at ?? "") - now >= 3600000);
 }
 const snapshot = (c: Observation) => JSON.stringify([
-  c.id, c.name, c.email, c.auth_index, c.status, c.disabled, c.unavailable,
-  c.cooldowns, c.quota, c.model_quotas,
+  c.id, c.name, c.email, c.auth_index, c.status, c.status_message, c.disabled, c.unavailable,
+  c.cooldowns?.map(({ remaining_seconds, ...stable }) => stable), c.quota, c.model_quotas,
 ]);
 const identity = (a: Observation, b: Observation) =>
   a.id === b.id && a.auth_index === b.auth_index && a.name === b.name && a.email === b.email;

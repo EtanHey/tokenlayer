@@ -62,7 +62,7 @@ always reports UNKNOWN. It is for bounded operational receipts, not a CLI mode.
 An unconfirmed reset press makes the count UNKNOWN: auto waits until the count is confirmed.
 
 `fable run` reconciles external Claude usage-page resets even while policy is OFF.
-For adopted, active Claude OAuth credentials with only long quota cooldowns
+For adopted Claude OAuth credentials (active or explicitly quota-errored) with only long quota cooldowns
 (at least one hour remaining), it checks usage metadata through the hub API-call
 endpoint at most once per three minutes per credential. The check time is saved
 before I/O, including failures, so restarts retain the cadence. It never reads

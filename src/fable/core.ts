@@ -13,6 +13,7 @@ export type RecoveryCheck = {
 };
 export type Observation = Credential & {
   email?: string;
+  status_message?: string;
   catalog?: string[];
   model_quotas?: Record<string, NonNullable<Credential["quota"]>>;
 };

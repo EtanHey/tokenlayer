@@ -124,3 +124,19 @@ test("replacement in post-reset readback cannot be certified cleared", async () 
   f.hub.request = async (...args) => { const result = await request(...args); if (args[1].endsWith("/reset")) f.c.auth_index = "replacement"; return result; };
   await f.run(); expect(f.s.recovery!.a.result).toBe("unconfirmed");
 });
+
+test("usage window subsecond formatting and countdown drift do not hide a reset", async () => {
+  const f = fixture(), r = Date.parse(reset);
+  f.c.quota!.signals!["Anthropic-Ratelimit-Unified-7d-Reset"] = String(Math.floor(r / 1000));
+  f.during = async () => { (f.c.cooldowns![0] as {remaining_seconds?: number}).remaining_seconds = 7000; };
+  await f.run(); expect(f.posts).toBe(1);
+});
+
+for (const message of ["quota exhausted", "rate_limit_error: Account rate limit exceeded", '{"error":{"type":"rate_limit_error"}}']) test("quota-exhausted error status can recover while auth errors remain blocked", async () => {
+  const f = fixture();
+  Object.assign(f.c, {status: "error", status_message: message, unavailable: true});
+  f.c.cooldowns!.forEach(c => Object.assign(c, {http_status: 429}));
+  const request = f.hub.request;
+  f.hub.request = async (...args) => { const result = await request(...args); if(args[1].endsWith("/reset")) f.c.status = "active"; return result; };
+  await f.run(); expect(f.posts).toBe(1); expect(f.s.recovery!.a.result).toBe("cleared");
+});
