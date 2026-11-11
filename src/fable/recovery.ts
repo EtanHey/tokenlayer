@@ -26,6 +26,35 @@ function prior(c: Observation, now: number): Window | null {
       !Number.isFinite(r) || r <= at || !["allowed", "allowed_warning", "rejected"].includes(sig[p + "status"])) return null;
   return { utilization: u, reset: r };
 }
+type Meter = Window & { kind: string };
+function limits(v: unknown): Meter[] | null {
+  if (!Array.isArray(v)) return null;
+  const meters: Meter[] = [];
+  for (const entry of v) {
+    if (!object(entry) || typeof entry.kind !== "string") return null;
+    const parsed = window({ utilization: entry.percent, resets_at: entry.resets_at });
+    if (!parsed) return null;
+    meters.push({ ...parsed, kind: entry.kind });
+  }
+  return meters;
+}
+function recovered(c: Observation, meters: Meter[], superseded: string[]) {
+  if (meters.some(m => m.utilization >= 0.95)) return false;
+  return c.cooldowns!.every(cooldown => {
+    const q = cooldown.scope === "model" ? c.model_quotas?.[cooldown.model_key!] : c.quota;
+    if (!q || superseded.includes(quotaKey(q))) return false;
+    const sig = Object.fromEntries(Object.entries(q.signals ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
+    const exhausted = ["7d", "7d_oi"].filter(m => {
+      const p = `anthropic-ratelimit-unified-${m}-`, u = sig[p + "utilization"];
+      return sig[p + "status"] === "rejected" || typeof u === "string" &&
+        /^\d+(?:\.\d+)?$/.test(u) && Number.isFinite(Number(u)) && Number(u) >= 0.99;
+    });
+    return exhausted.length > 0 && exhausted.every(m => {
+      const current = meters.filter(x => x.kind === (m === "7d" ? "weekly_all" : "weekly_scoped"));
+      return current.length > 0 && current.every(x => x.utilization <= 0.5);
+    });
+  });
+}
 function quotaError(c: Observation) {
   const message = c.status_message ?? "";
   if (message === "quota exhausted" || message.startsWith("rate_limit_error:")) return true;
@@ -66,13 +95,20 @@ export async function reconcile(s: State, hub: RecoveryHub, persist: () => void,
       const body: unknown = JSON.parse(response.body);
       if (!object(body)) throw Error();
       const week = window(body.seven_day), five = window(body.five_hour), before = prior(c, now);
-      if (!week || week.reset <= clock() || clock() - now > 60000 || !before ||
+      if (!week || week.reset <= clock() || clock() - now > 60000 ||
           body.five_hour != null && (!five || five.reset <= clock() || five.utilization >= 1)) throw Error();
-      const dropped = week.reset === before.reset && before.utilization >= 0.9 && before.utilization - week.utilization >= 0.5;
-      const advanced = week.reset > before.reset && before.reset <= clock();
-      const repeat = r.attempted && (week.reset < r.attempted.reset ||
-        week.reset === r.attempted.reset && r.attempted.utilization - week.utilization < 0.5);
-      if (week.utilization > 0.5 || !(dropped || advanced) || repeat) { r.result = "unchanged"; persist(); continue; }
+      const meters = limits(body.limits);
+      let eligible: boolean;
+      if (meters) eligible = recovered(c, meters, r.superseded ?? []);
+      else {
+        if (!before) throw Error();
+        const dropped = week.reset === before.reset && before.utilization >= 0.9 && before.utilization - week.utilization >= 0.5;
+        const advanced = week.reset > before.reset && before.reset <= clock();
+        const repeat = r.attempted && (week.reset < r.attempted.reset ||
+          week.reset === r.attempted.reset && r.attempted.utilization - week.utilization < 0.5);
+        eligible = week.utilization <= 0.5 && !!(dropped || advanced) && !repeat;
+      }
+      if (!eligible) { r.result = "unchanged"; persist(); continue; }
       const refreshed = await hub.observations();
       const latest = refreshed.find(x => x.id === c.id);
       // This check is after the LAST await before the reset. No intervening network/persist await.
