@@ -201,7 +201,7 @@ export function usable(
   model: string,
   now = Date.now(),
 ) {
-  c = currentQuota(s, c);
+  c = currentQuota(s, c, now);
   const week = quotaWindow(c.quota, "7d", now);
   const fable = quotaWindow(fableQuota(c), "7d_oi", now);
   return (
@@ -224,7 +224,7 @@ export function spillEnabled(s: State, account: string) {
     reset?.left === null && reset.confirmedZero === true;
 }
 export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
-  obs = obs.map((c) => currentQuota(s, c));
+  obs = obs.map((c) => currentQuota(s, c, now));
   if (s.mode === "auto") throw Error("auto not enabled yet");
   const desired = Object.fromEntries(
     Object.keys(s.baseline).map((id) => [
@@ -362,9 +362,11 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
 }
 
 /** A local cache clear cannot certify allowance. Old passive snapshots become UNKNOWN. */
-function currentQuota(s: State, c: Observation): Observation {
+function currentQuota(s: State, c: Observation, now: number): Observation {
   const r = s.recovery?.[c.id];
   if (r?.index !== c.auth_index || !r?.superseded) return c;
+  if (c.cooldowns?.some(x => x.reason === "quota" &&
+      (Date.parse(x.retry_at ?? "") > now || (x.remaining_seconds ?? 0) > 0))) return c;
   const fresh = (q: Observation["quota"]) => r.superseded!.includes(quotaKey(q)) ? undefined : q;
   return { ...c, quota: fresh(c.quota), model_quotas: Object.fromEntries(
     Object.entries(c.model_quotas ?? {}).filter(([, q]) => fresh(q)),

@@ -83,6 +83,9 @@ new real quota errors and ambiguous attempts. Readback records `cleared` or
 snapshots become UNKNOWN for policy decisions until new upstream observations
 arrive, restoring normal routing instead of reapplying a stale rejection.
 Reset inventory is never decremented or confirmed by reconciliation.
+An unconfirmed clear retains cap policy while its quota cooldown remains active.
+Natural weekly advancement permits one attempt, not proof that a separate Fable
+meter recovered. A reset that moves the weekly window early requires the manual fallback.
 
 `tokenlayer fable reconcile` performs one pass with the same cadence and safety
 checks. `status` and dry-run `plan` never trigger reconciliation. If conservative

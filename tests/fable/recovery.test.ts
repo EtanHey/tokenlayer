@@ -67,6 +67,8 @@ for (const five_hour of [{ utilization: 100, resets_at: reset }, { utilization: 
 for (const change of [
   (c: Observation) => { c.disabled = true; },
   (c: Observation) => { c.status = "error"; },
+  (c: Observation) => { c.status = "error"; c.status_message = '{"error":{"type":"authentication_error"}}'; },
+  (c: Observation) => { c.status = "error"; c.status_message = "rate_limit_error: quota"; c.cooldowns![0].retry_at = new Date(now + 60000).toISOString(); },
   (c: Observation) => { c.cooldowns![0].reason = "rate_limit"; },
   (c: Observation) => { c.cooldowns![0].scope = "auth"; },
   (c: Observation) => { c.cooldowns![0].retry_at = new Date(now + 60000).toISOString(); },
@@ -100,6 +102,17 @@ test("new real quota error on same allowance cannot trigger another recovery aft
   f.restart(); f.advance(); f.c.quota!.observed_at = new Date(now).toISOString();
   await f.run(); expect(f.checks).toBe(2); expect(f.posts).toBe(1);
   expect(f.s.recovery!.a.attempted!.outcome).toBe("unconfirmed");
+});
+test("failed clear retains cap evidence and WAIT_AT_CAP without spilling to B", async () => {
+  const f = fixture(); f.clear = false;
+  f.c.quota!.observed_at = new Date(now - 2 * 86400000).toISOString();
+  expect(plan(f.s, f.obs, now).applied).toBe("ON_WAIT_AT_CAP");
+  await f.run();
+  expect(f.s.recovery!.a.result).toBe("unconfirmed");
+  expect(f.c.cooldowns).toHaveLength(1);
+  const after = plan(f.s, f.obs, now);
+  expect(after.applied).toBe("ON_WAIT_AT_CAP");
+  expect(after.desired.b.excluded_models).toEqual(["claude-fable-*"]);
 });
 test("natural reset advancement with fresh headroom qualifies", async () => {
   const f = fixture();
