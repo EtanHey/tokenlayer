@@ -1,6 +1,19 @@
 import type { Credential } from "../steer/types";
+import { createHash } from "node:crypto";
+export const quotaKey = (q: Observation["quota"]) =>
+  createHash("sha256").update(JSON.stringify([q?.observed_at,
+    Object.entries(q?.signals ?? {}).map(([k, v]) => [k.toLowerCase(), v]).sort(),
+  ])).digest("hex");
+export type RecoveryCheck = {
+  index: string;
+  checkedAt: number;
+  result: "checked" | "unknown" | "unchanged" | "stale" | "attempted" | "cleared" | "unconfirmed";
+  attempted?: { reset: number; utilization: number; outcome: "attempted" | "cleared" | "unconfirmed" };
+  superseded?: string[];
+};
 export type Observation = Credential & {
   email?: string;
+  status_message?: string;
   catalog?: string[];
   model_quotas?: Record<string, NonNullable<Credential["quota"]>>;
 };
@@ -49,6 +62,7 @@ export type State = Intent & {
   baseline: Record<string, Baseline>;
   thresholds: { fableCapAt: number; weeklyExhaustedAt: number };
   ops: Record<string, string>;
+  recovery?: Record<string, RecoveryCheck>;
   resets?: Record<string, { left: number | null; confirmedByEtan: boolean; confirmedZero?: boolean }>;
   policy?: Pick<Plan, "desired" | "exceptions" | "reserve">;
   pending?: { op: string; plan: Plan };
@@ -187,6 +201,7 @@ export function usable(
   model: string,
   now = Date.now(),
 ) {
+  c = currentQuota(s, c, now);
   const week = quotaWindow(c.quota, "7d", now);
   const fable = quotaWindow(fableQuota(c), "7d_oi", now);
   return (
@@ -209,6 +224,7 @@ export function spillEnabled(s: State, account: string) {
     reset?.left === null && reset.confirmedZero === true;
 }
 export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
+  obs = obs.map((c) => currentQuota(s, c, now));
   if (s.mode === "auto") throw Error("auto not enabled yet");
   const desired = Object.fromEntries(
     Object.keys(s.baseline).map((id) => [
@@ -343,4 +359,16 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
     p.reason = `transient Fable unavailability on A (${cause}); Fable routed via B; ${p.reason}`;
   }
   return p;
+}
+
+/** A local cache clear cannot certify allowance. Old passive snapshots become UNKNOWN. */
+function currentQuota(s: State, c: Observation, now: number): Observation {
+  const r = s.recovery?.[c.id];
+  if (r?.index !== c.auth_index || !r?.superseded) return c;
+  if (c.cooldowns?.some(x => x.reason === "quota" &&
+      (Date.parse(x.retry_at ?? "") > now || (x.remaining_seconds ?? 0) > 0))) return c;
+  const fresh = (q: Observation["quota"]) => r.superseded!.includes(quotaKey(q)) ? undefined : q;
+  return { ...c, quota: fresh(c.quota), model_quotas: Object.fromEntries(
+    Object.entries(c.model_quotas ?? {}).filter(([, q]) => fresh(q)),
+  ) };
 }
