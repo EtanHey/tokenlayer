@@ -9,6 +9,7 @@ export type RecoveryCheck = {
   checkedAt: number;
   result: "checked" | "unknown" | "unchanged" | "stale" | "attempted" | "cleared" | "unconfirmed";
   attempted?: { reset: number; utilization: number; outcome: "attempted" | "cleared" | "unconfirmed" };
+  directAttempts?: { reset: number; count: number };
   superseded?: string[];
 };
 export type Observation = Credential & {

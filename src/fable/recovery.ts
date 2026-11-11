@@ -27,13 +27,13 @@ function prior(c: Observation, now: number): Window | null {
   return { utilization: u, reset: r };
 }
 type Meter = Window & { kind: string };
-function limits(v: unknown): Meter[] | null {
+function limits(v: unknown, now: number): Meter[] | null {
   if (!Array.isArray(v)) return null;
   const meters: Meter[] = [];
   for (const entry of v) {
     if (!object(entry) || typeof entry.kind !== "string") return null;
     const parsed = window({ utilization: entry.percent, resets_at: entry.resets_at });
-    if (!parsed) return null;
+    if (!parsed || parsed.reset <= now) return null;
     meters.push({ ...parsed, kind: entry.kind });
   }
   return meters;
@@ -97,9 +97,11 @@ export async function reconcile(s: State, hub: RecoveryHub, persist: () => void,
       const week = window(body.seven_day), five = window(body.five_hour), before = prior(c, now);
       if (!week || week.reset <= clock() || clock() - now > 60000 ||
           body.five_hour != null && (!five || five.reset <= clock() || five.utilization >= 1)) throw Error();
-      const meters = limits(body.limits);
+      const meters = limits(body.limits, clock());
+      if (body.limits != null && !meters) throw Error();
+      const directCount = r.directAttempts?.reset === week.reset ? r.directAttempts.count : 0;
       let eligible: boolean;
-      if (meters) eligible = recovered(c, meters, r.superseded ?? []);
+      if (meters) eligible = directCount < 3 && recovered(c, meters, r.superseded ?? []);
       else {
         if (!before) throw Error();
         const dropped = week.reset === before.reset && before.utilization >= 0.9 && before.utilization - week.utilization >= 0.5;
@@ -117,6 +119,7 @@ export async function reconcile(s: State, hub: RecoveryHub, persist: () => void,
         r.result = "stale"; persist(); continue;
       }
       r.attempted = { ...week, outcome: "attempted" };
+      if (meters) r.directAttempts = { reset: week.reset, count: directCount + 1 };
       r.superseded = [...new Set([...(r.superseded ?? []), ...[c.quota, ...Object.values(c.model_quotas ?? {})].filter(Boolean).map(quotaKey)])].slice(-100);
       r.result = "attempted";
       persist();

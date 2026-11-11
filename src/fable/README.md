@@ -76,9 +76,14 @@ an exhausted meter. Its `7d` headers map to `weekly_all`, and `7d_oi` to every
 report at most 50% usage, and no entry may report 95% or more. A snapshot without
 an exhausted meter cannot prove recovery, even when all provider meters are low.
 Every list entry needs a string kind, a finite numeric percent in [0, 100], and
-a valid ISO reset time; one malformed entry makes the whole list unusable.
+a valid ISO reset time in the future; one malformed or stale entry makes the
+whole list unusable and the check UNKNOWN, with no reset attempt.
+An empty list or a list without a needed meter refuses recovery.
+A cooled model with no saved quota snapshot blocks recovery for the credential.
+Only the `7d` and `7d_oi` headers select exhausted meters; representative-claim
+and five-hour headers do not select them.
 
-A missing or unusable list retains the shared-weekly fallback: a same-window
+Only an absent or null list retains the shared-weekly fallback: a same-window
 drop of at least 50 percentage points from a prior observation of 90% or more,
 or a naturally advanced reset window, with at most 50% currently used.
 A present exhausted or invalid five-hour window prevents recovery on both paths;
@@ -90,6 +95,8 @@ Only the exact credential's local routing cooldown is reset. Durable attempt
 snapshot hashes allow only one direct-meter attempt per latching snapshot, across
 restarts and ambiguous attempts. A new rejection snapshot can qualify again in
 the same weekly window; the fallback still suppresses repeats by allowance.
+Direct recovery permits at most three attempts per credential per validated
+weekly reset window, persisting the count before each POST across restarts.
 Readback records `cleared` or
 `unconfirmed`; neither proves a successful inference. Superseded passive quota
 snapshots become UNKNOWN for policy decisions until new upstream observations

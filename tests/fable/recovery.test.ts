@@ -203,13 +203,13 @@ for (const malformed of [
   [{ kind: "weekly_scoped", percent: 140, resets_at: reset }],
   [{ kind: "weekly_scoped", percent: 0, resets_at: "2027-02-30T00:00:00Z" }],
   [{ kind: 1, percent: 0, resets_at: reset }], {},
-]) test(`unusable limits preserve legacy drop and repeat rules: ${JSON.stringify(malformed)}`, async () => {
+]) test(`present unusable limits stay UNKNOWN: ${JSON.stringify(malformed)}`, async () => {
   const f = fixture(); f.usage(0, { limits: [...(Array.isArray(malformed) ? malformed : []), ...limits()] });
   if (!Array.isArray(malformed)) f.usage(0, { limits: malformed });
-  await f.run(); expect(f.posts).toBe(1);
+  await f.run(); expect(f.posts).toBe(0); expect(f.s.recovery!.a.result).toBe("unknown");
   f.c.cooldowns = [{ scope: "model", model_key: models[0], reason: "quota", retry_at: reset }];
   f.c.model_quotas![models[0]].observed_at = new Date(now + 1000).toISOString();
-  f.restart(); f.advance(); await f.run(); expect(f.posts).toBe(1);
+  f.restart(); f.advance(); await f.run(); expect(f.posts).toBe(0); expect(f.s.recovery!.a.result).toBe("unknown");
 });
 test("latching model snapshot wins over the credential's current quota", async () => {
   const f = fixture(); f.c.model_quotas![models[0]] = structuredClone(f.c.model_quotas![models[0]]);
@@ -248,4 +248,55 @@ test("unconfirmed direct attempt is durable before reset I/O and cannot repeat a
 });
 for (const five_hour of [{ utilization: 100, resets_at: reset }, { utilization: "0", resets_at: reset }]) test("direct meters do not bypass five-hour refusals", async () => {
   const f = fixture(); f.usage(0, { limits: limits(0), five_hour }); await f.run(); expect(f.posts).toBe(0);
+});
+
+async function rejectAgain(f: ReturnType<typeof fixture>, tick: number) {
+  f.c.cooldowns = [{ scope: "model", model_key: models[0], reason: "quota", retry_at: reset }];
+  f.c.model_quotas![models[0]] = structuredClone(f.c.model_quotas![models[0]]);
+  f.c.model_quotas![models[0]].observed_at = new Date(now + tick * 1000).toISOString();
+  f.advance(); await f.run();
+}
+test("direct contradiction loop allows only three attempts across five fresh rejections and restart", async () => {
+  const f = fixture(); f.usage(0, { limits: limits(0) });
+  for (let tick = 0; tick < 5; tick++) {
+    await rejectAgain(f, tick);
+    if (tick === 1) f.restart();
+  }
+  expect(f.posts).toBe(3); expect(f.s.recovery!.a.result).toBe("unchanged");
+  f.restart(); await rejectAgain(f, 5); expect(f.posts).toBe(3);
+});
+test("a new weekly reset window gets a new direct-attempt count", async () => {
+  const f = fixture(); f.usage(0, { limits: limits(0) });
+  for (let tick = 0; tick < 3; tick++) await rejectAgain(f, tick);
+  expect(f.posts).toBe(3); f.restart();
+  const nextReset = new Date(Date.parse(reset) + 7 * 86400000).toISOString();
+  f.usage(0, { seven_day: { utilization: 0, resets_at: nextReset },
+    limits: limits(0).map(m => ({ ...m, resets_at: nextReset })) });
+  await rejectAgain(f, 3); expect(f.posts).toBe(4);
+  expect(f.s.recovery!.a).toMatchObject({ directAttempts: { reset: Math.floor(Date.parse(nextReset) / 1000) * 1000, count: 1 } });
+});
+test("a malformed unrelated entry cannot hide a scoped meter still at 100%", async () => {
+  const f = fixture(); f.usage(0, { limits: [...limits(0, 100), { kind: "five_hour", percent: 0, resets_at: null }] });
+  await f.run(); expect(f.posts).toBe(0); expect(f.s.recovery!.a.result).toBe("unknown");
+});
+test("past scoped reset time makes the entire list UNKNOWN", async () => {
+  const f = fixture(), meters = limits(0);
+  meters[1].resets_at = new Date(now - 1000).toISOString();
+  f.usage(0, { limits: meters });
+  await f.run(); expect(f.posts).toBe(0); expect(f.s.recovery!.a.result).toBe("unknown");
+});
+for (const value of [undefined, null]) test(`only absent or null limits retain legacy recovery: ${value}`, async () => {
+  const f = fixture(); f.usage(0, { limits: value });
+  await f.run(); expect(f.posts).toBe(1); expect(f.s.recovery!.a.result).toBe("cleared");
+});
+test("direct attempt count is already durable when reset POST begins", async () => {
+  const f = fixture(), s = f.s; f.usage(0, { limits: limits(0) });
+  let durable = "", beforePost: unknown;
+  await reconcile(s, { ...f.hub, request: async (...args: Parameters<typeof f.hub.request>) => {
+    if (args[1] === "/routing/cooldown/reset") { beforePost = JSON.parse(durable); return {}; }
+    return f.hub.request(...args);
+  } }, () => { durable = JSON.stringify(s); }, () => now);
+  expect(beforePost).toMatchObject({ recovery: { a: { result: "attempted",
+    directAttempts: { reset: Math.floor(Date.parse(reset) / 1000) * 1000, count: 1 },
+  } } });
 });
