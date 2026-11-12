@@ -7,6 +7,7 @@ function fixture() {
   let s = state(), time = now, checks = 0, posts = 0, saved = "", fail = false, clear = true, loseResponse = false;
   let response: unknown = { status_code: 200, body: JSON.stringify({ seven_day: { utilization: 0, resets_at: reset }, five_hour: null }) };
   const c = observed("a", 0.98, 1), obs = [c, observed("b")];
+  obs.forEach(x => Object.assign(x, { provider: "claude", account_type: "oauth" }));
   c.quota!.observed_at = new Date(now - 1000).toISOString();
   c.quota!.signals!["Anthropic-Ratelimit-Unified-7d-Reset"] = String(Date.parse(reset) / 1000);
   c.model_quotas![models[0]].signals!["Anthropic-Ratelimit-Unified-7d_oi-Status"] = "rejected";
@@ -27,7 +28,7 @@ function fixture() {
   };
   return { c, obs, hub, get s() { return s; }, get checks() { return checks; }, get posts() { return posts; },
     set response(v: unknown) { response = v; }, set fail(v: boolean) { fail = v; }, set clear(v: boolean) { clear = v; }, set loseResponse(v: boolean) { loseResponse = v; },
-    set during(v: () => Promise<void>) { during = v; }, advance() { time += 180000; }, restart() { s = JSON.parse(saved); },
+    set during(v: () => Promise<void>) { during = v; }, advance(ms = 1800000) { time += ms; }, restart() { s = JSON.parse(saved); },
     async run() { await reconcile(s, hub, () => { saved = JSON.stringify(s); }, () => time); },
     usage(u: unknown, extras: Record<string, unknown> = {}) { response = { status_code: 200, body: JSON.stringify({ seven_day: { utilization: u, resets_at: reset }, five_hour: null, ...extras }) }; },
   };
@@ -300,3 +301,31 @@ test("direct attempt count is already durable when reset POST begins", async () 
     directAttempts: { reset: Math.floor(Date.parse(reset) / 1000) * 1000, count: 1 },
   } } });
 });
+
+for (const urgent of [false, true]) test(`cadence survives restart, urgent=${urgent}`, async () => {
+  const f = fixture(); f.fail = true; delete f.s.baseline.b;
+  f.c.cooldowns = models.map(model_key => ({ scope: "model", model_key, reason: "quota", retry_at: reset }));
+  if (urgent) f.obs[1].cooldowns = [{ scope: "model", model_key: models[0], reason: "quota", retry_at: reset }];
+  await f.run(); expect(f.checks).toBe(1);
+  expect(f.s.recovery!.a).toMatchObject({ urgent });
+  f.restart(); f.advance(179999); await f.run(); expect(f.checks).toBe(1);
+  f.advance(1); await f.run(); expect(f.checks).toBe(urgent ? 2 : 1);
+  f.restart(); f.advance(120000); await f.run(); expect(f.checks).toBe(urgent ? 2 : 1);
+  f.advance(1500000); await f.run(); expect(f.checks).toBe(urgent ? 3 : 2);
+});
+for (const mode of ["split", "disabled", "unavailable", "credential-free", "credential-blocked", "malformed", "expired", "other-provider", "api-key"])
+  test(`cadence route coverage: ${mode}`, async () => {
+    const f = fixture(), b = f.obs[1]; f.fail = true; delete f.s.baseline.b;
+    if (mode === "split") b.cooldowns = [{ scope: "model", model_key: models[1], reason: "quota", retry_at: reset }];
+    if (mode === "disabled") b.disabled = true;
+    if (mode === "unavailable") b.unavailable = true;
+    if (mode.startsWith("credential")) f.c.cooldowns = [{ scope: "credential", reason: "quota", retry_at: reset }];
+    if (mode === "credential-blocked") b.cooldowns = [{ scope: "model", model_key: models[1], reason: "quota", retry_at: reset }];
+    if (mode === "malformed") b.cooldowns = [{ scope: "model", model_key: models[0], retry_at: "bad" }];
+    if (mode === "expired") b.cooldowns = [{ scope: "model", model_key: models[0], retry_at: new Date(now - 1000).toISOString(), remaining_seconds: 0 }];
+    if (mode === "other-provider") b.provider = "openai";
+    if (mode === "api-key") b.account_type = "api_key";
+    const urgent = !["split", "credential-free", "expired"].includes(mode);
+    await f.run(); f.advance(300000); await f.run(); expect(f.checks).toBe(urgent ? 2 : 1);
+    expect(f.s.recovery!.a).toMatchObject({ urgent });
+  });

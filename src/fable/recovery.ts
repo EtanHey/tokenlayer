@@ -4,7 +4,21 @@ interface RecoveryHub {
   request(method: string, path: string, body?: unknown): Promise<unknown>;
   observations(): Promise<Observation[]>;
 }
-const cadence = 180000;
+function urgent(c: Observation, obs: Observation[], now: number) {
+  const peers = obs.filter(x => x.id !== c.id);
+  // Unknown route metadata cannot justify slowing recovery.
+  if (peers.some(x => !Array.isArray(x.cooldowns) || !Array.isArray(x.catalog) ||
+      typeof x.status !== "string" || typeof x.disabled !== "boolean" || typeof x.unavailable !== "boolean" ||
+      x.cooldowns.some(d => !d || !["credential", "model"].includes(d.scope ?? "") ||
+        d.scope === "model" && !d.model_key || !Number.isFinite(Date.parse(d.retry_at ?? ""))))) return true;
+  const models = c.cooldowns!.some(d => d.scope === "credential")
+    ? [...new Set([...c.catalog ?? [], ...peers.flatMap(x => [...x.catalog!, ...x.cooldowns!.flatMap(d => d.model_key ? [d.model_key] : [])])])]
+    : c.cooldowns!.map(d => d.model_key!);
+  return !models.length || models.some(model => !peers.some(x =>
+    x.provider === "claude" && x.account_type === "oauth" && x.status === "active" && !x.disabled && !x.unavailable &&
+    !x.cooldowns!.some(d => (d.scope === "credential" || d.model_key === model) &&
+      (Date.parse(d.retry_at!) > now || (d.remaining_seconds ?? 0) > 0))));
+}
 type Window = { utilization: number; reset: number };
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 function window(v: unknown): Window | null {
@@ -77,13 +91,15 @@ const identity = (a: Observation, b: Observation) =>
 
 /** Caller holds the controller lock. Metadata checks and recovery attempts are durable before I/O. */
 export async function reconcile(s: State, hub: RecoveryHub, persist: () => void, clock = Date.now) {
-  for (const c of await hub.observations()) {
+  const observations = await hub.observations();
+  for (const c of observations) {
     const now = clock();
     if (!candidate(s, c, now)) continue;
     s.recovery ??= {};
     const old = s.recovery[c.id];
-    if (old?.index === c.auth_index && now - old.checkedAt < cadence) continue;
-    const r: RecoveryCheck = { ...(old?.index === c.auth_index ? old : {}), index: c.auth_index!, checkedAt: now, result: "checked" };
+    const isUrgent = urgent(c, observations, now);
+    if (old?.index === c.auth_index && now - old.checkedAt < (isUrgent ? 180000 : 1800000)) continue;
+    const r: RecoveryCheck = { ...(old?.index === c.auth_index ? old : {}), index: c.auth_index!, checkedAt: now, urgent: isUrgent, result: "checked" };
     s.recovery[c.id] = r;
     persist();
     try {

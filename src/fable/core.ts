@@ -7,6 +7,7 @@ export const quotaKey = (q: Observation["quota"]) =>
 export type RecoveryCheck = {
   index: string;
   checkedAt: number;
+  urgent?: boolean;
   result: "checked" | "unknown" | "unchanged" | "stale" | "attempted" | "cleared" | "unconfirmed";
   attempted?: { reset: number; utilization: number; outcome: "attempted" | "cleared" | "unconfirmed" };
   directAttempts?: { reset: number; count: number };
