@@ -1,5 +1,5 @@
 export type Connection = { key: string; peer: string; rx: number; tx: number };
-export type Point = Connection & { ignored: boolean; owner?: number };
+export type Point = Connection & { ignored: boolean };
 export type Idle = { verdict: "idle" | "busy" | "busy_unknown"; seen: number; ignored: number; changed: number; unattributed: number; reason: string };
 export const blindSpots = ["A stream silent for the entire window looks idle.", "Arrivals after the final sample are unseen.", "Connections starting and ending between samples can be missed."];
 const fail = () => { throw Error("parse_failure"); };
@@ -48,7 +48,7 @@ export function idle(samples: Point[][]): Idle {
   for (const sample of samples) {
     const current = new Map(sample.filter(c => !c.ignored).map(c => [c.key, c]));
     for (const c of sample) { seen.add(c.key); if (c.ignored) ignored.add(c.key); }
-    for (const [key, c] of current) { const a = first.get(key); if (!a || a.rx !== c.rx || a.tx !== c.tx || a.owner !== c.owner) changed.add(key); }
+    for (const [key, c] of current) { const a = first.get(key); if (!a || a.rx !== c.rx || a.tx !== c.tx) changed.add(key); }
     for (const key of first.keys()) if (!current.has(key)) changed.add(key);
   }
   return { verdict: changed.size ? "busy" : "idle", seen: seen.size, ignored: ignored.size, changed: changed.size, unattributed: 0, reason: changed.size ? "client_activity" : "counters_unchanged" };

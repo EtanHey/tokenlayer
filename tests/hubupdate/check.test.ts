@@ -44,14 +44,13 @@ test("ignores only known launchd sidecars; verifies lsof attribution on each sam
   const unknownLabel = fixture(args => args[0] === "launchctl" ? "PID\tStatus\tLabel\n91\t0\tcom.tokenlayer.unrelated\n" : undefined);
   expect(await observe(unknownLabel.run, async () => {}, 1, 3)).toMatchObject({ ignored: 0 });
 });
-for (const failure of ["brew", "nettop", "lsof", "launchctl", "ps", "parse", "pid", "owner", "restart", "process", "labels", "empty_lsof"]) test(`unknown on ${failure} failure`, async () => {
+for (const failure of ["brew", "nettop", "lsof", "launchctl", "ps", "parse", "pid", "restart", "process", "labels", "empty_lsof"]) test(`unknown on ${failure} failure`, async () => {
   const { check } = await probe();
   const f = fixture((a, n) => {
     if (a[0] === failure) throw Error("PRIVATE_FAILURE_MUST_NOT_LEAK");
     if (failure === "parse" && a[0] === "nettop") return sample("garbage\n");
     if (failure === "pid" && a.includes("-sTCP:LISTEN")) return "";
     if (failure === "restart" && n > 0 && a.includes("-sTCP:LISTEN")) return "p43\n";
-    if (failure === "owner" && a.includes("-sTCP:ESTABLISHED")) return "p42\nf3\nn127.0.0.1:8317->127.0.0.1:65055\n";
     if (failure === "empty_lsof" && a.includes("-sTCP:ESTABLISHED")) return "";
     if (failure === "process" && a[0] === "ps") return "other_process\n";
     if (failure === "labels" && a[0] === "launchctl") return "garbage\n";
@@ -95,12 +94,12 @@ test("spawned CLI uses fake commands, writes private state and emits one identit
     expect(await denied.exited).toBe(1); expect(JSON.parse(await new Response(denied.stdout).text()).reason).toBe("state_write_failed"); expect(await new Response(denied.stderr).text()).toBe("");
   } finally { rmSync(dir, { recursive: true }); }
 });
-test("parser rejects wrong-PID snapshots, owners reject ambiguous peers, and owner changes are busy", async () => {
+test("parser rejects wrong-PID snapshots and ambiguous owners; unchanged normal traffic stays quiet", async () => {
   const { parseNettop, owners, idle } = await core();
   expect(() => parseNettop(sample(), 43)).toThrow();
   expect(() => owners("p91\nn127.0.0.1:65055->127.0.0.1:8317\np92\nn127.0.0.1:65055->127.0.0.1:8317", 42)).toThrow();
   const a = { ...parseNettop(sample())[0], ignored: false, owner: 91 };
-  expect(idle([[a], [a], [{ ...a, owner: 92 }]])).toMatchObject({ verdict: "busy", seen: 1, changed: 1 });
+  expect(idle([[a], [a], [{ ...a, owner: 92 }]])).toMatchObject({ verdict: "idle", seen: 1, changed: 0 });
 });
 test("sidecar traffic can change; client IPv6 peers match lsof bracket notation", async () => {
   const { observe } = await probe();
@@ -114,9 +113,23 @@ test("unreadable formula metadata remains unknown while sampling continues", asy
   expect(await check(f.run, async () => {}, 1, 3, false)).toMatchObject({ decision: "busy_unknown", reason: "version_unreadable", installed: null, available: null, idle: { verdict: "idle" } });
   expect(f.calls.filter(a => a[0] === "nettop")).toHaveLength(3);
 });
-test("unattributed clients stay unknown while all samples and known sidecar counts survive", async () => {
+test("unattributed changed clients are busy while all samples and known sidecar counts survive", async () => {
   const { observe } = await probe();
   const f = fixture((a, n) => a[0] === "nettop" ? sample(connection.replace("5051", String(n)) + connection.replace("65055", "65056")) : a.includes("-sTCP:ESTABLISHED") ? "p90\nn127.0.0.1:65056->127.0.0.1:8317\n" : undefined);
-  expect(await observe(f.run, async () => {}, 1, 3)).toMatchObject({ verdict: "busy_unknown", reason: "unattributed_client", seen: 2, ignored: 1, changed: 1, unattributed: 1 });
+  expect(await observe(f.run, async () => {}, 1, 3)).toMatchObject({ verdict: "busy", reason: "client_activity", seen: 2, ignored: 1, changed: 1, unattributed: 1 });
   expect(f.calls.filter(a => a[0] === "nettop")).toHaveLength(3);
+});
+test("unattributed unchanged clients are idle and never ignored", async () => {
+  const { observe } = await probe();
+  const f = fixture(a => a.includes("-sTCP:ESTABLISHED") ? "p42\nn127.0.0.1:8317->127.0.0.1:65055\n" : undefined);
+  expect(await observe(f.run, async () => {}, 1, 3)).toMatchObject({ verdict: "idle", seen: 1, ignored: 0, changed: 0, unattributed: 1 });
+  expect(f.calls.filter(a => a[0] === "nettop")).toHaveLength(3);
+});
+test("lsof command failure still overrides changing client counters with unknown", async () => {
+  const { observe } = await probe();
+  const f = fixture((a, n) => {
+    if (a.includes("-sTCP:ESTABLISHED")) throw Error("PRIVATE lsof failure");
+    if (a[0] === "nettop") return sample(connection.replace("5051", String(n)));
+  });
+  expect(await observe(f.run, async () => {}, 1, 3)).toMatchObject({ verdict: "busy_unknown", reason: "command_failure" });
 });

@@ -6,7 +6,7 @@ export const runner: Runner = async ([command, ...args]) => {
   if (r.error || r.status !== 0) throw Error("command_failure"); return r.stdout;
 };
 export async function observe(run: Runner, sleep: (ms: number) => Promise<unknown>, window: number, count: number): Promise<Idle> {
-  const samples: Point[][] = [], unknown = new Set<string>(); let initial = 0, reason = "command_failure";
+  const samples: Point[][] = [], unattributed = new Set<string>(); let initial = 0, reason = "command_failure";
   try {
     for (let i = 0; i < count; i++) {
       const pids = (await run(["lsof", "-nP", "-iTCP:8317", "-sTCP:LISTEN", "-Fp"])).match(/^p\d+$/gm);
@@ -22,13 +22,12 @@ export async function observe(run: Runner, sleep: (ms: number) => Promise<unknow
       if (points.length) {
         reason = "command_failure"; const sockets = await run(["lsof", "-nP", "-iTCP:8317", "-sTCP:ESTABLISHED", "-Fpn"]);
         reason = "parse_failure"; const attribution = owners(sockets, pid);
-        reason = "unattributed_client";
-        for (const c of points) { const owner = attribution.get(c.peer); if (!owner) { unknown.add(c.key); continue; } c.ignored = ignored.has(owner); c.owner = owner; }
+        for (const c of points) { const owner = attribution.get(c.peer); if (!owner) { unattributed.add(c.key); continue; } c.ignored = ignored.has(owner); }
       }
       reason = "command_failure"; if (i < count - 1) await sleep(window * 1000 / (count - 1));
     }
-    return unknown.size ? { ...idle(samples), verdict: "busy_unknown", reason: "unattributed_client", unattributed: unknown.size } : idle(samples);
-  } catch { return { ...idle(samples), verdict: "busy_unknown", reason, unattributed: unknown.size }; }
+    return { ...idle(samples), unattributed: unattributed.size };
+  } catch { return { ...idle(samples), verdict: "busy_unknown", reason, unattributed: unattributed.size }; }
 }
 export async function check(run: Runner, sleep: (ms: number) => Promise<unknown>, window: number, count: number, refresh: boolean) {
   let version: ReturnType<typeof versions> | undefined;

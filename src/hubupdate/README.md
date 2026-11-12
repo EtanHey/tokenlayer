@@ -10,11 +10,11 @@ The launchd template schedules checks at 02:10, 03:10 and 04:10 local time; it i
 At least three nettop snapshots span the window. lsof attributes each client endpoint;
 launchctl PIDs for `com.tokenlayer.{drain,fable,ship,steer,usage,dashboard}` are ignored.
 `seen`, `ignored` and `unattributed` count unique client endpoints across samples; `changed` counts non-ignored
-endpoints with changed counters/owners, newly appearing endpoints or disappeared endpoints.
-Command, parse, PID and attribution failures produce `busy_unknown`; raw diagnostics stay private.
-Unattributed peers remain unknown while sampling continues and preserves known sidecar counts.
+endpoints with changed counters, newly appearing endpoints or disappeared endpoints.
+Command, parse and hub PID failures produce `busy_unknown`; raw diagnostics stay private.
+Only positively attributed sidecar PIDs are ignored; every other peer is a normal client.
 Version equality produces `up_to_date` unless a signal is unknown; inspect `idle.verdict` separately.
 
 A stream silent for the entire window looks idle. Arrivals after the final sample are unseen.
-Connections starting and ending between samples can be missed. Remote clients that lsof cannot
-attribute produce `busy_unknown`. This is observation data, never restart authorization.
+Connections starting and ending between samples can be missed. Unattributed clients participate
+in the counter comparison and remain counted in JSON. This is observation data, never restart authorization.
