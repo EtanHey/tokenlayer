@@ -329,3 +329,25 @@ for (const mode of ["split", "disabled", "unavailable", "credential-free", "cred
     await f.run(); f.advance(300000); await f.run(); expect(f.checks).toBe(urgent ? 2 : 1);
     expect(f.s.recovery!.a).toMatchObject({ urgent });
   });
+
+// Management credentials response shape: catalogs are fetched separately, never present here.
+for (const incident of [false, true]) test(`live credentials without catalogs retain cadence, incident=${incident}`, async () => {
+  const s = state(); delete s.baseline.b;
+  const cooldowns = models.map(model_key => ({ backoff_level: 1, http_status: 429,
+    model_key, reason: "quota", remaining_seconds: 259200, retry_at: reset, scope: "model" }));
+  const obs: Observation[] = [
+    { id: "a", name: "a", email: "a", auth_index: "a", provider: "claude", type: "claude", account_type: "oauth",
+      status: "error", status_message: "quota exhausted", disabled: false, unavailable: true, cooldowns },
+    { id: "b", name: "b", email: "b", auth_index: "b", provider: "claude", type: "claude", account_type: "oauth",
+      status: "active", disabled: false, unavailable: false, cooldowns: incident ? [cooldowns[0]] : [] },
+  ];
+  s.recovery = { a: { index: "a", checkedAt: now - 300000, urgent: incident, result: "unknown" } };
+  let checks = 0, time = now, saved = "";
+  const run = () => reconcile(s, { observations: async () => structuredClone(obs), request: async (_method, path) => {
+    expect(path).toBe("/requests/api-call"); checks++; return {};
+  } }, () => { saved = JSON.stringify(s); }, () => time);
+  await run(); expect(checks).toBe(incident ? 1 : 0);
+  expect(s.recovery.a.urgent).toBe(incident);
+  time += 1500000; await run(); expect(checks).toBe(incident ? 2 : 1);
+  expect(JSON.parse(saved).recovery.a.urgent).toBe(incident);
+});
