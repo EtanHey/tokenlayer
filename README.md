@@ -16,6 +16,8 @@ tokenlayer records requests, session logs, and account usage in one place.
   each Mac into ClickHouse `session_events`.
 - `src/usage` writes each Claude account's 5-hour and weekly usage to
   `~/.config/tokenlayer/usage.json` for other tools to read.
+- `src/hubupdate` reports Homebrew versions and sampled hub activity without upgrading
+  or restarting anything. See the [check command](src/hubupdate/README.md).
 
 Usage tracking is telemetry only. It never blocks, slows, or pauses an agent.
 

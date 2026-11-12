@@ -1,4 +1,8 @@
 #!/bin/sh
+if [ "$1" = "hubupdate" ]; then
+  shift
+  exec bun "$(dirname "$0")/../src/hubupdate/main.ts" "$@"
+fi
 if [ "$1" = "fable" ]; then
   shift
   exec bun "$(dirname "$0")/../src/fable/main.ts" "$@"
