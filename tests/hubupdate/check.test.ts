@@ -133,3 +133,17 @@ test("lsof command failure still overrides changing client counters with unknown
   });
   expect(await observe(f.run, async () => {}, 1, 3)).toMatchObject({ verdict: "busy_unknown", reason: "command_failure" });
 });
+test("failed refresh preserves versions and reports only fixed failure tokens", async () => {
+  const { check } = await probe(); const f = fixture(a => { if (a[1] === "update") throw Object.assign(Error("PRIVATE"), { code: "ETIMEDOUT" }); return undefined; });
+  expect(await check(f.run, async () => {}, 1, 3, true)).toMatchObject({ installed: "8.0.64", available: "8.0.64", refresh: "failed", decision: "up_to_date", refreshError: { step: "brew_update", kind: "timed_out" } });
+});
+test("idle failures name the command without exposing diagnostics", async () => {
+  const { observe } = await probe(); const f = fixture(a => { if (a[0] === "ps") throw Error("PRIVATE"); return undefined; });
+  const out = await observe(f.run, async () => {}, 1, 3);
+  expect(out).toMatchObject({ reason: "command_failure", commandError: { step: "ps", kind: "nonzero" } }); expect(JSON.stringify(out)).not.toContain("PRIVATE");
+});
+test("injected runner receives separate refresh and normal timeouts", async () => {
+  const { check } = await probe(); const f = fixture(); const calls: number[] = [];
+  await check(async (args, timeout) => { calls.push(timeout!); return f.run(args); }, async () => {}, 1, 3, true);
+  expect(calls[0]).toBe(120000); expect(calls.slice(1).every(ms => ms === 15000)).toBe(true);
+});
