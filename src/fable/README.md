@@ -65,7 +65,8 @@ An unconfirmed reset press makes the count UNKNOWN: auto waits until the count i
 For adopted Claude OAuth credentials (active or explicitly quota-errored) with only long quota cooldowns
 (at least one hour remaining), it checks usage metadata through the hub API-call
 endpoint at most once per three minutes when a cooled model has no other active,
-not disabled or unavailable Claude OAuth credential free of a covering cooldown.
+neither disabled nor unavailable Claude OAuth credential free of a covering cooldown.
+Any policy exclusion keeps the three-minute rate.
 Otherwise it checks every 30 minutes: a reset on an account whose models another
 account still serves is noticed within 30 minutes instead of three. Unknown route
 observations keep the three-minute cadence. The last check records its urgency.

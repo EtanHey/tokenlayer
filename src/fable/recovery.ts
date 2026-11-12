@@ -4,7 +4,9 @@ interface RecoveryHub {
   request(method: string, path: string, body?: unknown): Promise<unknown>;
   observations(): Promise<Observation[]>;
 }
-function urgent(c: Observation, obs: Observation[], now: number) {
+function urgent(s: State, c: Observation, obs: Observation[], now: number) {
+  if ([...Object.values(s.policy?.desired ?? {}), ...Object.values(s.pending?.plan.desired ?? {}), ...obs]
+      .some(x => (x.excluded_models?.length ?? 0) > 0)) return true;
   const peers = obs.filter(x => x.id !== c.id);
   // Unknown route metadata cannot justify slowing recovery.
   if (peers.some(x => !Array.isArray(x.cooldowns) ||
@@ -98,7 +100,7 @@ export async function reconcile(s: State, hub: RecoveryHub, persist: () => void,
     if (!candidate(s, c, now)) continue;
     s.recovery ??= {};
     const old = s.recovery[c.id];
-    const isUrgent = urgent(c, observations, now);
+    const isUrgent = urgent(s, c, observations, now);
     if (old?.index === c.auth_index && now - old.checkedAt < (isUrgent ? 180000 : 1800000)) continue;
     const r: RecoveryCheck = { ...(old?.index === c.auth_index ? old : {}), index: c.auth_index!, checkedAt: now, urgent: isUrgent, result: "checked" };
     s.recovery[c.id] = r;

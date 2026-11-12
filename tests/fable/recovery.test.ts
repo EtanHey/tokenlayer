@@ -351,3 +351,47 @@ for (const incident of [false, true]) test(`live credentials without catalogs re
   time += 1500000; await run(); expect(checks).toBe(incident ? 2 : 1);
   expect(JSON.parse(saved).recovery.a.urgent).toBe(incident);
 });
+
+for (const kind of ["wait", "reserve"] as const) test(`policy exclusions keep recovery urgent: ${kind}`, async () => {
+  const f = fixture(); f.fail = true;
+  if (kind === "reserve") {
+    f.c.cooldowns = [];
+    f.c.quota!.signals!["Anthropic-Ratelimit-Unified-7d-Utilization"] = "0.7";
+    f.c.model_quotas![models[0]].signals!["Anthropic-Ratelimit-Unified-7d_oi-Utilization"] = "0.2";
+    f.c.model_quotas![models[0]].signals!["Anthropic-Ratelimit-Unified-7d_oi-Status"] = "allowed";
+    f.obs[1].cooldowns = [{ scope: "model", model_key: models[1], reason: "quota", retry_at: reset }];
+  } else f.c.quota!.signals!["Anthropic-Ratelimit-Unified-7d-Utilization"] = "0.5";
+  const p = plan(f.s, f.obs, now);
+  if (kind === "wait") {
+    expect(p.applied).toBe("ON_WAIT_AT_CAP");
+    expect(p.desired.b.excluded_models).toEqual(["claude-fable-*"]);
+  } else {
+    expect(p.exceptions[models[1]]).toBe("RESERVE_CONFLICT");
+    expect(p.desired.a.excluded_models).toContain(models[1]);
+  }
+  f.s.policy = p;
+  await f.run(); expect(f.checks).toBe(1);
+  f.advance(180000); await f.run(); expect(f.checks).toBe(2);
+  expect(f.s.recovery![kind === "wait" ? "a" : "b"].urgent).toBe(true);
+});
+for (const source of ["pending", "observation"] as const) test(`exclusions from ${source} keep fast cadence`, async () => {
+  const f = fixture(); f.fail = true;
+  if (source === "pending") {
+    const p = plan(f.s, f.obs, now); p.desired.b.excluded_models = ["anything"];
+    f.s.pending = { op: "test", plan: p };
+  } else Object.assign(f.obs[1], { excluded_models: ["anything"] });
+  await f.run(); f.advance(180000); await f.run(); expect(f.checks).toBe(2);
+});
+for (const kind of ["remaining", "inactive", "credential", "non-array"] as const) test(`peer serving guard: ${kind}`, async () => {
+  const f = fixture(), b = f.obs[1]; f.fail = true; delete f.s.baseline.b;
+  if (kind === "remaining") b.cooldowns = [{ scope: "model", model_key: models[0], retry_at: new Date(now - 1000).toISOString(), remaining_seconds: 60 }];
+  if (kind === "inactive") b.status = "error";
+  if (kind === "credential") b.cooldowns = [{ scope: "credential", retry_at: reset }];
+  if (kind === "non-array") Object.assign(b, { cooldowns: {} });
+  await f.run(); f.advance(180000); await f.run(); expect(f.checks).toBe(2);
+  expect(f.s.recovery!.a.urgent).toBe(true);
+});
+test("non-urgent recovery does not check at 29 minutes", async () => {
+  const f = fixture(); f.fail = true;
+  await f.run(); f.advance(29 * 60000); await f.run(); expect(f.checks).toBe(1);
+});

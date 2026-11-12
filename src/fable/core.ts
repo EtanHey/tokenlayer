@@ -17,6 +17,7 @@ export type Observation = Credential & {
   email?: string;
   status_message?: string;
   catalog?: string[];
+  excluded_models?: string[] | null;
   model_quotas?: Record<string, NonNullable<Credential["quota"]>>;
 };
 export type Fields = {
