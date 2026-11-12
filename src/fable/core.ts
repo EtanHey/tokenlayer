@@ -7,6 +7,7 @@ export const quotaKey = (q: Observation["quota"]) =>
 export type RecoveryCheck = {
   index: string;
   checkedAt: number;
+  urgent?: boolean;
   result: "checked" | "unknown" | "unchanged" | "stale" | "attempted" | "cleared" | "unconfirmed";
   attempted?: { reset: number; utilization: number; outcome: "attempted" | "cleared" | "unconfirmed" };
   directAttempts?: { reset: number; count: number };
@@ -16,6 +17,7 @@ export type Observation = Credential & {
   email?: string;
   status_message?: string;
   catalog?: string[];
+  excluded_models?: string[] | null;
   model_quotas?: Record<string, NonNullable<Credential["quota"]>>;
 };
 export type Fields = {

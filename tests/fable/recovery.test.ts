@@ -7,6 +7,7 @@ function fixture() {
   let s = state(), time = now, checks = 0, posts = 0, saved = "", fail = false, clear = true, loseResponse = false;
   let response: unknown = { status_code: 200, body: JSON.stringify({ seven_day: { utilization: 0, resets_at: reset }, five_hour: null }) };
   const c = observed("a", 0.98, 1), obs = [c, observed("b")];
+  obs.forEach(x => Object.assign(x, { provider: "claude", account_type: "oauth" }));
   c.quota!.observed_at = new Date(now - 1000).toISOString();
   c.quota!.signals!["Anthropic-Ratelimit-Unified-7d-Reset"] = String(Date.parse(reset) / 1000);
   c.model_quotas![models[0]].signals!["Anthropic-Ratelimit-Unified-7d_oi-Status"] = "rejected";
@@ -27,7 +28,7 @@ function fixture() {
   };
   return { c, obs, hub, get s() { return s; }, get checks() { return checks; }, get posts() { return posts; },
     set response(v: unknown) { response = v; }, set fail(v: boolean) { fail = v; }, set clear(v: boolean) { clear = v; }, set loseResponse(v: boolean) { loseResponse = v; },
-    set during(v: () => Promise<void>) { during = v; }, advance() { time += 180000; }, restart() { s = JSON.parse(saved); },
+    set during(v: () => Promise<void>) { during = v; }, advance(ms = 1800000) { time += ms; }, restart() { s = JSON.parse(saved); },
     async run() { await reconcile(s, hub, () => { saved = JSON.stringify(s); }, () => time); },
     usage(u: unknown, extras: Record<string, unknown> = {}) { response = { status_code: 200, body: JSON.stringify({ seven_day: { utilization: u, resets_at: reset }, five_hour: null, ...extras }) }; },
   };
@@ -299,4 +300,98 @@ test("direct attempt count is already durable when reset POST begins", async () 
   expect(beforePost).toMatchObject({ recovery: { a: { result: "attempted",
     directAttempts: { reset: Math.floor(Date.parse(reset) / 1000) * 1000, count: 1 },
   } } });
+});
+
+for (const urgent of [false, true]) test(`cadence survives restart, urgent=${urgent}`, async () => {
+  const f = fixture(); f.fail = true; delete f.s.baseline.b;
+  f.c.cooldowns = models.map(model_key => ({ scope: "model", model_key, reason: "quota", retry_at: reset }));
+  if (urgent) f.obs[1].cooldowns = [{ scope: "model", model_key: models[0], reason: "quota", retry_at: reset }];
+  await f.run(); expect(f.checks).toBe(1);
+  expect(f.s.recovery!.a).toMatchObject({ urgent });
+  f.restart(); f.advance(179999); await f.run(); expect(f.checks).toBe(1);
+  f.advance(1); await f.run(); expect(f.checks).toBe(urgent ? 2 : 1);
+  f.restart(); f.advance(120000); await f.run(); expect(f.checks).toBe(urgent ? 2 : 1);
+  f.advance(1500000); await f.run(); expect(f.checks).toBe(urgent ? 3 : 2);
+});
+for (const mode of ["split", "disabled", "unavailable", "credential-free", "credential-blocked", "malformed", "expired", "other-provider", "api-key"])
+  test(`cadence route coverage: ${mode}`, async () => {
+    const f = fixture(), b = f.obs[1]; f.fail = true; delete f.s.baseline.b;
+    if (mode === "split") b.cooldowns = [{ scope: "model", model_key: models[1], reason: "quota", retry_at: reset }];
+    if (mode === "disabled") b.disabled = true;
+    if (mode === "unavailable") b.unavailable = true;
+    if (mode.startsWith("credential")) f.c.cooldowns = [{ scope: "credential", reason: "quota", retry_at: reset }];
+    if (mode === "credential-blocked") b.cooldowns = [{ scope: "model", model_key: models[1], reason: "quota", retry_at: reset }];
+    if (mode === "malformed") b.cooldowns = [{ scope: "model", model_key: models[0], retry_at: "bad" }];
+    if (mode === "expired") b.cooldowns = [{ scope: "model", model_key: models[0], retry_at: new Date(now - 1000).toISOString(), remaining_seconds: 0 }];
+    if (mode === "other-provider") b.provider = "openai";
+    if (mode === "api-key") b.account_type = "api_key";
+    const urgent = !["split", "credential-free", "expired"].includes(mode);
+    await f.run(); f.advance(300000); await f.run(); expect(f.checks).toBe(urgent ? 2 : 1);
+    expect(f.s.recovery!.a).toMatchObject({ urgent });
+  });
+
+// Management credentials response shape: catalogs are fetched separately, never present here.
+for (const incident of [false, true]) test(`live credentials without catalogs retain cadence, incident=${incident}`, async () => {
+  const s = state(); delete s.baseline.b;
+  const cooldowns = models.map(model_key => ({ backoff_level: 1, http_status: 429,
+    model_key, reason: "quota", remaining_seconds: 259200, retry_at: reset, scope: "model" }));
+  const obs: Observation[] = [
+    { id: "a", name: "a", email: "a", auth_index: "a", provider: "claude", type: "claude", account_type: "oauth",
+      status: "error", status_message: "quota exhausted", disabled: false, unavailable: true, cooldowns },
+    { id: "b", name: "b", email: "b", auth_index: "b", provider: "claude", type: "claude", account_type: "oauth",
+      status: "active", disabled: false, unavailable: false, cooldowns: incident ? [cooldowns[0]] : [] },
+  ];
+  s.recovery = { a: { index: "a", checkedAt: now - 300000, urgent: incident, result: "unknown" } };
+  let checks = 0, time = now, saved = "";
+  const run = () => reconcile(s, { observations: async () => structuredClone(obs), request: async (_method, path) => {
+    expect(path).toBe("/requests/api-call"); checks++; return {};
+  } }, () => { saved = JSON.stringify(s); }, () => time);
+  await run(); expect(checks).toBe(incident ? 1 : 0);
+  expect(s.recovery.a.urgent).toBe(incident);
+  time += 1500000; await run(); expect(checks).toBe(incident ? 2 : 1);
+  expect(JSON.parse(saved).recovery.a.urgent).toBe(incident);
+});
+
+for (const kind of ["wait", "reserve"] as const) test(`policy exclusions keep recovery urgent: ${kind}`, async () => {
+  const f = fixture(); f.fail = true;
+  if (kind === "reserve") {
+    f.c.cooldowns = [];
+    f.c.quota!.signals!["Anthropic-Ratelimit-Unified-7d-Utilization"] = "0.7";
+    f.c.model_quotas![models[0]].signals!["Anthropic-Ratelimit-Unified-7d_oi-Utilization"] = "0.2";
+    f.c.model_quotas![models[0]].signals!["Anthropic-Ratelimit-Unified-7d_oi-Status"] = "allowed";
+    f.obs[1].cooldowns = [{ scope: "model", model_key: models[1], reason: "quota", retry_at: reset }];
+  } else f.c.quota!.signals!["Anthropic-Ratelimit-Unified-7d-Utilization"] = "0.5";
+  const p = plan(f.s, f.obs, now);
+  if (kind === "wait") {
+    expect(p.applied).toBe("ON_WAIT_AT_CAP");
+    expect(p.desired.b.excluded_models).toEqual(["claude-fable-*"]);
+  } else {
+    expect(p.exceptions[models[1]]).toBe("RESERVE_CONFLICT");
+    expect(p.desired.a.excluded_models).toContain(models[1]);
+  }
+  f.s.policy = p;
+  await f.run(); expect(f.checks).toBe(1);
+  f.advance(180000); await f.run(); expect(f.checks).toBe(2);
+  expect(f.s.recovery![kind === "wait" ? "a" : "b"].urgent).toBe(true);
+});
+for (const source of ["pending", "observation"] as const) test(`exclusions from ${source} keep fast cadence`, async () => {
+  const f = fixture(); f.fail = true;
+  if (source === "pending") {
+    const p = plan(f.s, f.obs, now); p.desired.b.excluded_models = ["anything"];
+    f.s.pending = { op: "test", plan: p };
+  } else Object.assign(f.obs[1], { excluded_models: ["anything"] });
+  await f.run(); f.advance(180000); await f.run(); expect(f.checks).toBe(2);
+});
+for (const kind of ["remaining", "inactive", "credential", "non-array"] as const) test(`peer serving guard: ${kind}`, async () => {
+  const f = fixture(), b = f.obs[1]; f.fail = true; delete f.s.baseline.b;
+  if (kind === "remaining") b.cooldowns = [{ scope: "model", model_key: models[0], retry_at: new Date(now - 1000).toISOString(), remaining_seconds: 60 }];
+  if (kind === "inactive") b.status = "error";
+  if (kind === "credential") b.cooldowns = [{ scope: "credential", retry_at: reset }];
+  if (kind === "non-array") Object.assign(b, { cooldowns: {} });
+  await f.run(); f.advance(180000); await f.run(); expect(f.checks).toBe(2);
+  expect(f.s.recovery!.a.urgent).toBe(true);
+});
+test("non-urgent recovery does not check at 29 minutes", async () => {
+  const f = fixture(); f.fail = true;
+  await f.run(); f.advance(29 * 60000); await f.run(); expect(f.checks).toBe(1);
 });
