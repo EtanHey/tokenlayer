@@ -18,3 +18,7 @@ Version equality produces `up_to_date` unless a signal is unknown; inspect `idle
 A stream silent for the entire window looks idle. Arrivals after the final sample are unseen.
 Connections starting and ending between samples can be missed. Unattributed clients participate
 in the counter comparison and remain counted in JSON. This is observation data, never restart authorization.
+
+Refresh failures leave the version read running and report `refresh` as `ok`, `failed` or `skipped`.
+`brew update` has a 120-second timeout; other commands retain 15 seconds.
+Command failures expose only a fixed step token and `timed_out` or `nonzero` kind in `refreshError`, `versionError` or `idle.commandError`.
