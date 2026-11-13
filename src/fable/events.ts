@@ -11,6 +11,9 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import type { ClickHouse } from "../lib/clickhouse";
+class PermanentShippingFault extends Error {
+  constructor(readonly code: string) { super(code); }
+}
 const hash = (line: Buffer | string) =>
   createHash("sha256").update(line).digest("hex");
 /** Cursor advances only after acknowledgement; a persisted pending batch pins ambiguous retries. */
@@ -26,11 +29,12 @@ export async function shipEvents(
       ? JSON.parse(readFileSync(cursorPath, "utf8"))
       : { offset: 0, lineHash: "" };
   const data = readFileSync(path);
-  if (cursor.offset > data.length) throw Error("event log truncated");
+  if (cursor.offset > data.length || (cursor.pendingEnd ?? 0) > data.length)
+    throw new PermanentShippingFault("log_truncated");
   if (cursor.offset) {
     const start = data.lastIndexOf("\n", cursor.offset - 2) + 1;
     if (hash(data.subarray(start, cursor.offset - 1)) !== cursor.lineHash)
-      throw Error("event cursor mismatch");
+      throw new PermanentShippingFault("cursor_mismatch");
   }
   const end = cursor.pendingEnd ?? data.lastIndexOf("\n") + 1;
   if (end <= cursor.offset) return;
@@ -59,7 +63,12 @@ export async function shipEvents(
     .split("\n");
   const tokens = lines.map(hash);
   const rows = lines.map((line, i) => {
-    const e = JSON.parse(line);
+    let e;
+    try {
+      e = JSON.parse(line);
+      if (typeof e.at !== "string" || !Number.isFinite(Date.parse(e.at)) ||
+          typeof e.op !== "string" || typeof e.stage !== "string") throw Error();
+    } catch { throw new PermanentShippingFault("malformed_event"); }
     return {
       ts: e.at.replace("T", " ").replace("Z", ""),
       op: e.op,
@@ -85,7 +94,9 @@ export async function shipBestEffort(
 ) {
   try {
     await shipEvents(ch, path);
-  } catch {
-    log("fable: event shipping unavailable; durable batch retained for retry");
+  } catch (error) {
+    log(error instanceof PermanentShippingFault
+      ? `fable: event shipping permanent fault (${error.code}); operator repair required; durable batch retained`
+      : "fable: event shipping unavailable; durable batch retained for retry");
   }
 }

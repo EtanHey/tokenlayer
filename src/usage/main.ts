@@ -26,7 +26,8 @@ try {
     try {
       await writeFile(historyTmp, nextHistory.map(s => JSON.stringify(s)).join('\n') + '\n', {mode:0o600});
       await rename(historyTmp, historyPath);
-    } finally { await rm(historyTmp, {force:true}); }
+    } catch { /* History is best-effort; fresh hub telemetry must still publish. */
+    } finally { try { await rm(historyTmp, {force:true}); } catch {} }
     value = published;
   } finally { clearTimeout(timer); }
 } catch {

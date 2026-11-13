@@ -40,7 +40,7 @@ test("real CLI set/override/protect/off/adopt/status use API-only readbacks", as
       });
     },
   });
-  const run = async (...args: string[]) => {
+  const invoke = async (...args: string[]) => {
     const p = Bun.spawn([process.execPath, "src/fable/main.ts", ...args], {
       env: {
         ...process.env,
@@ -59,8 +59,11 @@ test("real CLI set/override/protect/off/adopt/status use API-only readbacks", as
       new Response(p.stdout).text(),
       new Response(p.stderr).text(),
     ]);
-    expect(err).toBe("");
-    expect(code).toBe(0);
+    return { code, out, err };
+  };
+  const run = async (...args: string[]) => {
+    const { code, out, err } = await invoke(...args);
+    expect(err).toBe(""); expect(code).toBe(0);
     return out ? JSON.parse(out) : undefined;
   };
   const stored = (): State => JSON.parse(readFileSync(path, "utf8"));
@@ -71,6 +74,25 @@ test("real CLI set/override/protect/off/adopt/status use API-only readbacks", as
     await run("set", "--protect-fable-reserve");
     expect(stored().requested.allowNonFableOnFableAccount).toBe(false);
     expect((await run("off")).applied).toBe("OFF");
+    await run("set", "--no-spillover");
+    await run("off", "--auto-spillover", "--strict", "--allow-non-fable-on-fable-account");
+    expect(stored().spillover).toBe("auto");
+    expect(stored().requested.spillover).toBe("auto");
+    expect(stored().strictFableAccount).toBe(true);
+    expect(stored().requested.allowNonFableOnFableAccount).toBe(true);
+    expect(stored().mode).toBe("off"); expect(stored().applied).toBe("OFF");
+    await run("resets", "set", "--account", "a", "--left", "2", "--confirmed");
+    expect(stored().resets).toEqual({ a: { left: 2, confirmedByEtan: true } });
+    for (const args of [
+      ["--account", "missing", "--left", "2", "--confirmed"],
+      ["--account", "a", "--left", "-1", "--confirmed"],
+      ["--account", "a", "--left", "1.5", "--confirmed"],
+      ["--account", "a", "--left", "2"],
+    ]) {
+      const before = readFileSync(path, "utf8");
+      expect((await invoke("resets", "set", ...args)).code).toBe(1);
+      expect(readFileSync(path, "utf8")).toBe(before);
+    }
     const n = hub.calls.length;
     const status = await run("status", "--json");
     expect(status.requested.mode).toBe("off");

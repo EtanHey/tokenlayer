@@ -69,6 +69,20 @@ const hub = new Hub(
   env.TOKENLAYER_HUB_URL ?? "http://127.0.0.1:8317",
   env.CLIPROXY_MGMT_KEY ?? "",
 );
+function applyPreferences(s: ResetState) {
+  for (const [key, flag] of [
+    ["strictFableAccount", "strict"],
+    ["spillover", "spillover"],
+  ] as const) {
+    if (flags.has("--" + flag)) s[key] = true;
+    if (flags.has("--no-" + flag)) s[key] = false;
+  }
+  if (flags.has("--auto-spillover")) s.spillover = "auto";
+  if (flags.has("--allow-non-fable-on-fable-account"))
+    s.allowNonFableOnFableAccount = true;
+  if (flags.has("--protect-fable-reserve"))
+    s.allowNonFableOnFableAccount = false;
+}
 async function tick() {
   return locked(async () => {
     let s: ResetState = existsSync(statePath())
@@ -86,6 +100,12 @@ async function tick() {
         writeOut(JSON.stringify({ recovery: Object.values(s.recovery ?? {}).map(r => ({ result: r.result, checkedAt: r.checkedAt, attempt: r.attempted?.outcome })) }));
         return;
       }
+    }
+    if (command === "off") {
+      if (flags.has("--weekly-exhausted-at") || flags.has("--fable-cap-at"))
+        throw Error("thresholds are plan-only");
+      applyPreferences(s);
+      s.requested = intent(s);
     }
     if (command === "off" || (command === "run" && s.mode === "off")) {
       try {
@@ -214,14 +234,6 @@ async function tick() {
     if (command === "set") s.mode = "manual";
     if (flags.has("--account")) s.fableAccount = flags.get("--account")!;
     for (const [key, flag] of [
-      ["strictFableAccount", "strict"],
-      ["spillover", "spillover"],
-    ] as const) {
-      if (flags.has("--" + flag)) s[key] = true;
-      if (flags.has("--no-" + flag)) s[key] = false;
-    }
-    if (flags.has("--auto-spillover")) s.spillover = "auto";
-    for (const [key, flag] of [
       ["weeklyExhaustedAt", "--weekly-exhausted-at"],
       ["fableCapAt", "--fable-cap-at"],
     ] as const) {
@@ -232,10 +244,7 @@ async function tick() {
         s.thresholds[key] = n;
       }
     }
-    if (flags.has("--allow-non-fable-on-fable-account"))
-      s.allowNonFableOnFableAccount = true;
-    if (flags.has("--protect-fable-reserve"))
-      s.allowNonFableOnFableAccount = false;
+    applyPreferences(s);
     s.requested = intent(s);
     s = await migrate(s, hub);
     const obs = await observe(s, hub);
