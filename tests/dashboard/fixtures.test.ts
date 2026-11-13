@@ -13,6 +13,7 @@ test('real Hub fixture: mutating HTTP switch replay, email join and planted key 
   const secrets = ['sk-mgmt-' + 'x'.repeat(48), 'sk-ant-oat01-' + 'y'.repeat(80), 'sk-' + 'z'.repeat(48)];
   const fixture = fakeHub();
   writeFileSync(dir + '/state', JSON.stringify(state()));
+  writeFileSync(dir + '/events', JSON.stringify({ stage: 'reset-recovery', index: 'private-index-fixture' }) + '\n');
   let writes = 0;
   let fail = false;
   const fake = Bun.serve({ port: 0, fetch: async function hubRequest(r) {
@@ -63,6 +64,7 @@ test('real Hub fixture: mutating HTTP switch replay, email join and planted key 
     const text = await response.text();
     secrets.forEach(function noLeak(secret) { expect(text).not.toContain(secret); });
     if (path === 'api/state' || path.startsWith('api/switch')) {
+      expect(text).not.toContain('private-index-fixture');
       expect(text).not.toContain('auth_index'); expect(text).not.toContain('baseline');
     }
     return { status: response.status, data: text.startsWith('<') ? {} : JSON.parse(text) };

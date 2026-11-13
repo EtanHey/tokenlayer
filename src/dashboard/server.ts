@@ -101,7 +101,8 @@ export function createHandler(o: {
           .filter(Boolean)
           .slice(-50)
           .map(function callback2(x) {
-            return JSON.parse(x);
+            const { index, auth_index, baseline, ...entry } = JSON.parse(x);
+            return entry;
           })
       : [];
   }
