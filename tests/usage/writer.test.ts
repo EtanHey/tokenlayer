@@ -44,3 +44,22 @@ test('stale projection rejects invalid published field types', () => {
     expect(() => staleSnapshot({ ...seed, ...patch })).toThrow();
   }
 });
+
+test('fresh snapshot survives an unwritable history target', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'tokenlayer-history-'));
+  try {
+    const dir = join(home, '.config/tokenlayer');
+    await mkdir(join(dir, 'usage-history.jsonl'), { recursive: true });
+    const preload = join(home, 'hub.ts');
+    await writeFile(preload, `Bun.spawn = (() => ({ stdout: new Blob([${JSON.stringify(JSON.stringify({files:[{id:'synthetic',provider:'claude',account_type:'oauth'}]}))}]).stream(), exited: Promise.resolve(0), kill() {} })) as typeof Bun.spawn;`);
+    const proc = Bun.spawn([process.execPath, '--preload', preload, resolve('src/usage/main.ts')], {
+      env: { ...process.env, HOME: home }, stdout: 'pipe', stderr: 'pipe',
+    });
+    const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    expect(code).toBe(0); expect(out + err).toBe('');
+    const value = JSON.parse(await readFile(join(dir, 'usage.json'), 'utf8'));
+    expect(value.stale).toBe(false); expect(value.accounts).toHaveLength(1);
+    expect(value.generated_at).not.toBeNull();
+    expect((await readdir(dir)).filter(p => p.endsWith('.tmp'))).toEqual([]);
+  } finally { await rm(home, { recursive: true, force: true }); }
+});

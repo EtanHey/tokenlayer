@@ -62,6 +62,9 @@ test('real Hub fixture: mutating HTTP switch replay, email join and planted key 
     }));
     const text = await response.text();
     secrets.forEach(function noLeak(secret) { expect(text).not.toContain(secret); });
+    if (path === 'api/state' || path.startsWith('api/switch')) {
+      expect(text).not.toContain('auth_index'); expect(text).not.toContain('baseline');
+    }
     return { status: response.status, data: text.startsWith('<') ? {} : JSON.parse(text) };
   }
   try {
@@ -77,6 +80,8 @@ test('real Hub fixture: mutating HTTP switch replay, email join and planted key 
     for (const path of ['', 'api/state', 'api/accounts', 'api/metrics', 'api/burn', 'api/recommendation']) {
       expect((await request(path)).status).toBe(200);
     }
+    const auto = await request('api/switch', { on: true, account: 'a', opId: 'auto-default' });
+    expect(auto.data.state.spillover).toBe('auto');
     expect((await request('api/resets', { account: 'a', left: 2, confirmed: true })).status).toBe(200);
     fail = true;
     for (const path of ['api/state', 'api/accounts', 'api/metrics', 'api/burn', 'api/recommendation']) {
@@ -86,9 +91,14 @@ test('real Hub fixture: mutating HTTP switch replay, email join and planted key 
       expect((await request('api/' + path, { account: 'a', on: true, opId: 'error' })).status).toBe(503);
     }
     const off = await request('api/switch', { on: false, account: 'a' });
-    expect(off.status).toBe(202);
+    expect(off.status).toBe(503);
     expect(off.data.state.requested.mode).toBe('off');
-    expect(off.data.reason).toBe('OFF saved; applies when the hub is reachable');
+    expect(off.data.reason).toBe('hub HTTP 500');
+    expect(off.data.error).toBe('hub HTTP 500');
+    fake.stop(true);
+    const offline = await request('api/switch', { on: false, account: 'a' });
+    expect(offline.status).toBe(202);
+    expect(offline.data.reason).toBe('OFF saved; applies when the hub is reachable');
     for (const secret of secrets) expect(output.join('')).not.toContain(secret);
   } finally {
     stdout.mockRestore();

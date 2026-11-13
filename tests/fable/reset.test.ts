@@ -24,3 +24,12 @@ test('failed recovery retries without consuming again',async()=>{
  await resetPressed(s,'a','index','retry',true,hub,()=>{},()=>{});
  expect(s.resetOps!.retry.recovery).toBe('recovered');expect(s.resets!.a.left).toBe(1);expect(posts).toBe(2);
 });
+
+test('no cooldown is not_needed; replay never consumes twice',async()=>{
+ const s:ResetState={...defaults(),resets:{a:{left:2,confirmedByEtan:true}}};let posts=0;
+ const hub={request:async()=>{posts++},observations:async()=>[{id:'a',auth_index:'index',cooldowns:[]}]};
+ await resetPressed(s,'a','index','no-cooldown',true,hub,()=>{},()=>{});
+ expect(s.resetOps!['no-cooldown'].recovery).toBe('not_needed');
+ await resetPressed(s,'a','index','no-cooldown',true,hub,()=>{},()=>{});
+ expect(s.resets!.a.left).toBe(1);expect(posts).toBe(1);
+});

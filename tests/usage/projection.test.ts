@@ -38,3 +38,12 @@ test('outages preserve only validated additive fields', async () => {
  expect(staleSnapshot({...value, debug:'sentinel'})).toEqual({...value,stale:true,last_error:'hub unavailable'});
  expect(() => staleSnapshot({...value,accounts:[{...value.accounts[0],fable_pct:101}]})).toThrow();
 });
+
+test('missing and null telemetry publish null estimates with no samples', () => {
+ for (const fields of [{}, {quota:null,model_quotas:null}, {quota:{signals:{}},model_quotas:{}}]) {
+  const value=enrich({files:[{id:'fixture',provider:'claude',account_type:'oauth',...fields}]},[],now);
+  expect(value.history).toEqual([]);
+  for(const key of ['weekly_pct','fable_pct','burn_weekly_pct_per_hour','burn_fable_pct_per_hour',
+    'projected_weekly_empty_at','projected_fable_cap_at']) expect(value.accounts[0]![key as keyof typeof value.accounts[0]]).toBeNull();
+ }
+});

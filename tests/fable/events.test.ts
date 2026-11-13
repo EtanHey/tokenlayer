@@ -15,3 +15,21 @@ test('cursor batches new lines, pins ambiguous retries, and isolates outage',asy
  await shipEvents(ch,path);expect(calls.length).toBe(3);
  }finally{rmSync(dir,{recursive:true});}
 });
+
+test('permanent log faults alarm distinctly without exposing event contents', async () => {
+ const dir=mkdtempSync(tmpdir()+'/fable-faults-'),path=dir+'/events';
+ const ch={insert:async()=>{}};
+ try {
+  for (const [body,cursor,code] of [
+   ['sentinel-private\n',undefined,'malformed_event'],
+   ['', {offset:100,lineHash:''},'log_truncated'],
+   ['changed\n', {offset:8,lineHash:'wrong'},'cursor_mismatch'],
+   ['{}\n', {offset:0,lineHash:'',pendingEnd:100},'log_truncated'],
+  ] as const) {
+   writeFileSync(path,body); rmSync(path+'.cursor',{force:true});
+   if(cursor)writeFileSync(path+'.cursor',JSON.stringify(cursor));
+   const logs:string[]=[];await shipBestEffort(ch,x=>logs.push(x),path);
+   expect(logs).toEqual([`fable: event shipping permanent fault (${code}); operator repair required; durable batch retained`]);
+  }
+ } finally {rmSync(dir,{recursive:true});}
+});

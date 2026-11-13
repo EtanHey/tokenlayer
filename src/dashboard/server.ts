@@ -81,6 +81,11 @@ export function createHandler(o: {
   function load(): ResetState {
     return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : defaults();
   }
+  function publicState(s: ResetState) {
+    return { ...intent(s), requested: intent(s.requested), applied: s.applied, reason: s.reason,
+      resets: s.resets, resetOps: s.resetOps && Object.fromEntries(
+        Object.entries(s.resetOps).map(([op, r]) => [op, { account: r.account, recovery: r.recovery, hint: r.hint }])) };
+  }
   function token(login: string) {
     return createHmac("sha256", o.secret).update(login).digest("hex");
   }
@@ -147,7 +152,7 @@ export function createHandler(o: {
           );
         if (u.pathname === "/api/state") {
           const s = await status(load(), o.hub);
-          return json({ state: s, requested: s.requested, applied: s.applied,
+          return json({ state: publicState(s), requested: s.requested, applied: s.applied,
             reason: s.reason, events: history(), coverage, routing: s.policy });
         }
         if (u.pathname === "/api/accounts") return json(await accounts());
@@ -224,9 +229,12 @@ export function createHandler(o: {
             if (!body.on) {
               try {
                 await restoreOff(s, o.hub, op, (s) => save(s, path), emit);
-              } catch {
-                return json({ state: s, requested: s.requested, applied: s.applied,
-                  reason: "OFF saved; applies when the hub is reachable" }, 202);
+              } catch (error) {
+                const reason = error instanceof Error ? error.message : "OFF readback unconfirmed";
+                const transport = reason === "hub transport failure";
+                return json({ state: publicState(s), requested: s.requested, applied: s.applied,
+                  reason: transport ? "OFF saved; applies when the hub is reachable" : s.reason,
+                  error: transport ? undefined : s.reason }, transport ? 202 : 503);
               }
             } else {
               s = await migrate(s, o.hub);
@@ -281,7 +289,7 @@ export function createHandler(o: {
               );
             }
           }
-          return json({ state: s, opId: op, readback: await accounts() });
+          return json({ state: publicState(s), opId: op, readback: await accounts() });
         }, path);
       }
       if (!["GET", "POST"].includes(r.method))
