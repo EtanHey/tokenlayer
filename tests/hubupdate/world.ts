@@ -59,6 +59,7 @@ export class World {
     if (c === "lsof" && args.includes("-sTCP:LISTEN")) return this.running ? `p${this.running.pid}\nf13\n` : "";
     if (c === "lsof" && args.includes("txt")) return this.running ? `p${this.running.pid}\nftxt\nn/C/cliproxyapi/${this.fail.has("wrongexe") ? "8.0.1" : this.running.version}/bin/cliproxyapi\n` : "";
     if (c === "lsof") return "p555\nf3\nn127.0.0.1:6000->127.0.0.1:8317\n";
+    if (c === "readlink") { if (!this.opt) throw Error("not a link"); return `../Cellar/cliproxyapi/${this.opt}\n`; }
     if (c === "ps" && args.includes("lstart=")) { const start = this.procs.get(Number(args.at(-1))); if (!start) throw Error("no such process"); return start + "\n"; }
     if (c === "ps") return "/opt/homebrew/opt/cliproxyapi/bin/cliproxyapi\n";
     if (c === "nettop") return `,bytes_in,bytes_out,\ncliproxyapi.${this.running?.pid},1,2,\ntcp4 127.0.0.1:8317<->*:*,,,\n`;
@@ -77,7 +78,7 @@ export class World {
   };
   deps(extra: Record<string, unknown> = {}) {
     return { run: this.run, http: this.http, sleep: async (ms: number) => { this.clock += ms; }, now: () => this.clock, uid: 501, pid: 4242,
-      alive: (pid: number) => this.procs.has(pid), lock: () => () => {}, env: { CLIPROXY_MGMT_KEY: MGMT, CLIPROXY_ACCESS_KEY: ACCESS }, log: () => {}, ...extra };
+      alive: (pid: number) => this.procs.has(pid), lock: () => () => {}, connect: async () => (this.running ? "open" : "refused") as "open" | "refused", env: { CLIPROXY_MGMT_KEY: MGMT, CLIPROXY_ACCESS_KEY: ACCESS }, log: () => {}, ...extra };
   }
   /** Commands that change something outside our own state directory. */
   mutations() { return this.calls.filter(a => (a[0] === "brew" && ["upgrade", "unlink", "link", "fetch", "uninstall", "cleanup", "services", "pin"].includes(a[1])) || a[0] === "rm" || a[0] === "mv" || a[0] === "ditto" || (a[0] === "launchctl" && a[1] !== "list")); }

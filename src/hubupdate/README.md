@@ -66,9 +66,10 @@ then is the run recorded as `upgraded`.
 
 **Rollback** (any failure after `saving`): restore the old keg from the backup if Homebrew removed it, `brew unlink`,
 move every keg newer than the old one into the backup folder (`brew link` always picks the newest keg), `brew link`,
-and check `brew info` agrees (linked = old, nothing newer installed). If linking fails, the moved kegs go back and
-are relinked, so something runnable stays linked (`brew link` points `opt` at its keg before linking files); then
-halt. Next the saved config and plist are written back, bytes and mode, wherever they differ, and checked by
+and check `brew info` agrees (linked = old, nothing newer installed). If any part of that (unlink, a move, the link)
+fails, every moved keg goes back and is relinked; before halting the run checks that `opt` points at an installed
+keg and repairs it with `brew link` if not (`brew link` points `opt` at its keg before linking files). So a link
+failure mid-rollback ends with a runnable `opt` link and a halt, not with Homebrew's linked metadata restored. Next the saved config and plist are written back, bytes and mode, wherever they differ, and checked by
 hash. A restart happens only if the old version is not the one running, and only after the same idle gate as an
 upgrade; busy or unreadable keeps the journal and reports `rollback_pending` for the next run (no listener at all
 means nothing is in flight, so that restarts at once). A pending rollback waits at most 30 minutes
@@ -85,6 +86,13 @@ alive it changes nothing (`command_still_running`); after 30 minutes it halts fo
 Then: killed while `saving`, the partial backup is discarded; any later step, the rollback above runs and the
 version is recorded as failed with `interrupted_at_<step>`; killed while rolling back, the rollback resumes with
 its original reason. Dry-run mode only reports `interrupted_run_pending`.
+
+**Unknown is never a definite answer.** A failed, timed-out or ambiguous observation is "unknown" and takes the
+cautious path: no listener is believed only when `lsof` finds none AND a TCP connect to the port is refused (several
+PIDs, odd output or a failing `lsof` are unknown, and a rollback then waits on the gate like for a busy hub); an
+unreadable executable is unknown (at verify it is its own failure, `version_unreadable`, in the 30-minute class); a
+live child PID whose start time cannot be read still counts as running; an unreadable Cellar or Homebrew lock counts
+as held.
 
 **One run at a time.** `run.lock` is held with a kernel `flock`: taking it is atomic, the kernel drops it when the
 holder dies (no stale lock to reclaim, PID reuse cannot fake a holder), only the holder releases it, and the file

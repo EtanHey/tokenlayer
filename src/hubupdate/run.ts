@@ -2,6 +2,7 @@ import { chmodSync, closeSync, constants, existsSync, fsyncSync, ftruncateSync, 
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { dlopen, FFIType } from "bun:ffi";
+import { connect } from "node:net";
 import { kegState, versionPattern, versions } from "./core";
 import { gate, type GateDeps, type GateResult } from "./gate";
 import { command, CommandError, failure } from "./probe";
@@ -9,7 +10,18 @@ import type { Target } from "./target";
 
 /** Takes the run lock at `path`; returns its release function, or undefined when another run holds it. */
 export type Lock = (path: string) => (() => void) | undefined;
-export type Deps = GateDeps & { uid: number; pid?: number; alive: (pid: number) => boolean; env: Record<string, string | undefined>; log: (line: string) => void; lock?: Lock };
+/** Connect to 127.0.0.1:port and hang up. Only "refused" proves that nothing listens. */
+export type Connect = (port: number) => Promise<"open" | "refused" | "unknown">;
+export const tcpConnect: Connect = port => new Promise(resolve => {
+  const socket = connect({ host: "127.0.0.1", port });
+  const done = (r: "open" | "refused" | "unknown") => { clearTimeout(timer); socket.destroy(); resolve(r); };
+  const timer = setTimeout(() => done("unknown"), 2_000);
+  socket.on("connect", () => done("open"));
+  socket.on("error", error => done((error as { code?: string }).code === "ECONNREFUSED" ? "refused" : "unknown"));
+});
+export type Deps = GateDeps & { uid: number; pid?: number; alive: (pid: number) => boolean; env: Record<string, string | undefined>; log: (line: string) => void; lock?: Lock; connect?: Connect };
+/** A listener observation: one PID, verified absence, or unknown (failed, ambiguous or several PIDs). */
+type Listener = number | "none" | "unknown";
 type Step = "saving" | "upgrading" | "rechecking" | "restarting" | "verifying" | "probing" | "rolling_back";
 /** A long external command, recorded before waiting on it, so a later run can tell whether it outlived its run. */
 type Child = { cmd: string; pid: number; start?: string; since: string };
@@ -20,7 +32,7 @@ type Journal = {
 };
 type State = {
   failed?: Record<string, { at: string; reason: string; step: string }>; lastSuccessAt?: string;
-  lastSuccess?: { id: string; from: string; to: string; at: string }; halted?: { at: string; reason: string; version?: string; commandError?: unknown };
+  lastSuccess?: { id: string; from: string; to: string; at: string }; halted?: { at: string; reason: string; version?: string; commandError?: unknown; opt?: Opt };
   journal?: Journal; last?: unknown; cleared?: { at: string; what: string }[];
 };
 type Fail = ReturnType<typeof failure>;
@@ -30,9 +42,10 @@ export type Result = {
   installed?: string | null; available?: string | null; gate?: GateResult; recheck?: GateResult; upgrade?: { id: string; from: string; to: string; step?: string; commandError?: Fail };
   failedVersions?: string[]; lastSuccessAt?: string; halted?: State["halted"];
 };
+type Opt = { version?: string; runnable: boolean | "unknown"; repaired?: boolean };
 
 /** The new version failed real requests, its version check, or never came up: its rollback may cut a stream sooner. */
-const UNHEALTHY = new Set(["probe_failed", "version_mismatch", "listener_timeout"]);
+const UNHEALTHY = new Set(["probe_failed", "version_mismatch", "version_unreadable", "listener_timeout"]);
 
 // Homebrew must not delete the old keg (rollback source), touch other formulae, or auto-update mid-run.
 const brewEnv = { HOMEBREW_NO_INSTALL_CLEANUP: "1", HOMEBREW_NO_AUTO_UPDATE: "1", HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1", HOMEBREW_NO_ENV_HINTS: "1" };
@@ -139,17 +152,21 @@ class Run {
     finally { if (j.child) { delete j.child; this.save(); } }
   }
   async procStart(pid: number) { try { return (await command(this.d.run, ["ps", "-o", "lstart=", "-p", String(pid)])).trim() || undefined; } catch { return undefined; } }
-  /** Same PID and same start time: the recorded child itself, not a process that reused its PID. */
-  async childAlive(c: Child) {
-    if (!this.d.alive(c.pid)) return false;
+  /**
+   * "gone" only when the PID is dead or now belongs to a process with a different start time (PID reuse).
+   * A live PID whose start time cannot be read, or was never recorded, is "unknown" and counts as running.
+   */
+  async childState(c: Child): Promise<"alive" | "gone" | "unknown"> {
+    if (!this.d.alive(c.pid)) return "gone";
     const start = await this.procStart(c.pid);
-    return start !== undefined && (c.start === undefined || start === c.start);
+    if (start === undefined || c.start === undefined) return "unknown";
+    return start === c.start ? "alive" : "gone";
   }
   /** Homebrew holds an flock on <prefix>/var/homebrew/locks/<formula>.formula.lock while it installs or links. */
-  async brewLocked(rack: string) {
+  async brewLock(rack: string): Promise<"held" | "free" | "unknown"> {
     const path = join(dirname(dirname(rack)), "var/homebrew/locks", `${this.t.formula}.formula.lock`);
-    try { return /\d/.test(await command(this.d.run, ["lsof", "-t", path])); }
-    catch (error) { return !(error instanceof CommandError && error.kind === "nonzero"); } // lsof exits 1 when nobody has it open
+    try { return /^\d+$/m.test(await command(this.d.run, ["lsof", "-t", path])) ? "held" : "unknown"; }
+    catch (error) { return error instanceof CommandError && error.kind === "nonzero" ? "free" : "unknown"; } // lsof exits 1 when nobody has it open
   }
 
   async decide(): Promise<Result> {
@@ -168,11 +185,16 @@ class Run {
     if (state.failed?.[v.available]) return { ...seen, decision: "version_failed", reason: state.failed[v.available].reason };
     if (refresh !== "ok") return { ...seen, decision: "refresh_failed", reason: "refresh_failed" };
     if (state.lastSuccessAt && this.d.now() - Date.parse(state.lastSuccessAt) < t.minIntervalMs) return { ...seen, decision: "rate_limited", reason: "upgraded_within_interval" };
-    let rack: string, pid: number | undefined, running: string | undefined;
-    try { rack = await this.rack(); pid = await this.listener(); running = pid ? await this.exe(rack, pid) : undefined; }
-    catch (error) { return { ...seen, reason: "running_unreadable", runningError: failure(error) }; }
-    if (running !== v.installed) return { ...seen, decision: "running_mismatch", reason: pid ? "running_is_not_linked_keg" : "no_listener" };
-    if (await this.brewLocked(rack)) return { ...seen, decision: "brew_busy", reason: "brew_lock_held" };
+    let rack: string;
+    try { rack = await this.rack(); } catch (error) { return { ...seen, reason: "running_unreadable", runningError: failure(error) }; }
+    const pid = await this.listener();
+    if (pid === "unknown") return { ...seen, reason: "running_unreadable" };
+    if (pid === "none") return { ...seen, decision: "running_mismatch", reason: "no_listener" };
+    const running = await this.exe(rack, pid);
+    if (running === "unknown") return { ...seen, reason: "running_unreadable" };
+    if (running !== v.installed) return { ...seen, decision: "running_mismatch", reason: "running_is_not_linked_keg" };
+    const lock = await this.brewLock(rack);
+    if (lock !== "free") return { ...seen, decision: "brew_busy", reason: lock === "held" ? "brew_lock_held" : "brew_lock_unknown" };
     const key = this.d.env[t.mgmtKeyVar];
     if (!this.d.env[t.accessKeyVar]) return { ...seen, decision: "busy_unknown", reason: "access_key_missing" };
     const g = await gate(this.d, t, key, this.gateOptions());
@@ -180,22 +202,24 @@ class Run {
     if (!enabled) return { ...seen, decision: "would_upgrade_now", reason: g.reason, gate: g };
     // If the running version fails the probe too, the probe (quota, upstream) is the problem, not the new version.
     if (!(await this.probe())) return { ...seen, decision: "probe_baseline_failed", reason: "probe_failed_on_running_version", gate: g };
-    return this.upgrade({ ...seen, gate: g }, rack, v.installed, v.available, v.kegs, pid!, key);
+    return this.upgrade({ ...seen, gate: g }, rack, v.installed, v.available, v.kegs, pid, key);
   }
 
   /** A command of the dead run may still be changing things: change nothing while it lives; halt if it lives too long. */
   async fence(j: Journal): Promise<Result | undefined> {
-    let rack: string | undefined; try { rack = await this.rack(); } catch { /* the rollback reports an unreadable cellar */ }
-    const live = j.child ? await this.childAlive(j.child) : false;
-    const locked = !live && rack ? await this.brewLocked(rack) : false;
-    if (!live && !locked) { if (j.child) { delete j.child; this.save(); } return undefined; }
-    const reason = live ? j.child!.cmd : "brew_lock_held", since = Date.parse(live ? j.child!.since : j.updatedAt ?? j.startedAt);
+    const child = j.child ? await this.childState(j.child) : "gone";
+    const live = child !== "gone";
+    let lock: "held" | "free" | "unknown" = "free";
+    if (!live) { try { lock = await this.brewLock(await this.rack()); } catch { lock = "unknown"; } } // no Cellar, no proof the lock is free
+    if (!live && lock === "free") { if (j.child) { delete j.child; this.save(); } return undefined; }
+    const reason = live ? j.child!.cmd : lock === "held" ? "brew_lock_held" : "brew_lock_unknown";
+    const since = Date.parse(live ? j.child!.since : j.updatedAt ?? j.startedAt);
     if (this.d.now() - since > this.t.orphanHaltMs) {
       this.state.halted = { at: this.at(), reason: "orphan_command", version: j.to };
       this.log("halted", { id: j.id, reason: "orphan_command", command: reason, pid: live ? j.child!.pid : undefined });
       return { ...this.base, decision: "halted", reason: "orphan_command" };
     }
-    this.log("command_still_running", { id: j.id, command: reason, pid: live ? j.child!.pid : undefined, step: j.step });
+    this.log("command_still_running", { id: j.id, command: reason, pid: live ? j.child!.pid : undefined, identified: live ? child === "alive" : undefined, step: j.step });
     return { ...this.base, decision: "command_still_running", reason };
   }
 
@@ -204,20 +228,32 @@ class Run {
     if (!rack.startsWith("/") || !rack.endsWith(`/${this.t.formula}`) || rack.includes("..")) throw Error("cellar_unreadable");
     return rack;
   }
-  async listener(): Promise<number | undefined> {
-    let out: string; try { out = await command(this.d.run, ["lsof", "-nP", `-iTCP:${this.t.port}`, "-sTCP:LISTEN", "-Fp"]); } catch { return undefined; } // lsof exits 1 when nothing listens
-    const pids = [...new Set(out.match(/^p\d+$/gm) ?? [])]; return pids.length === 1 ? Number(pids[0].slice(1)) : undefined;
+  /**
+   * The one PID listening on the port, "none" only when lsof finds nothing AND a TCP connect is refused, otherwise
+   * "unknown" (lsof failed or timed out, odd output, several PIDs, or the port answers while lsof sees nobody).
+   */
+  async listener(): Promise<Listener> {
+    let out = "";
+    try { out = await command(this.d.run, ["lsof", "-nP", `-iTCP:${this.t.port}`, "-sTCP:LISTEN", "-Fp"]); }
+    catch (error) { if (!(error instanceof CommandError && error.kind === "nonzero")) return "unknown"; } // exit 1: no match, or an error
+    const pids = [...new Set(out.match(/^p\d+$/gm) ?? [])];
+    if (pids.length === 1) return Number(pids[0].slice(1));
+    if (pids.length > 1 || out.trim()) return "unknown";
+    return (await (this.d.connect ?? tcpConnect)(this.t.port)) === "refused" ? "none" : "unknown";
   }
-  /** The keg version the running process was executed from (the kernel resolves the opt symlink). */
-  async exe(rack: string, pid: number): Promise<string | undefined> {
-    const path = (await command(this.d.run, ["lsof", "-nP", "-p", String(pid), "-a", "-d", "txt", "-Fn"])).split("\n").find(l => l.startsWith("n"))?.slice(1);
-    if (!path?.startsWith(rack + "/")) return undefined;
-    const version = path.slice(rack.length + 1).split("/")[0]; return versionPattern.test(version) ? version : undefined;
+  /** The keg version the process was executed from (the kernel resolves the opt symlink), "foreign" if not one of ours, or "unknown". */
+  async exe(rack: string, pid: number): Promise<string | "foreign" | "unknown"> {
+    let out: string; try { out = await command(this.d.run, ["lsof", "-nP", "-p", String(pid), "-a", "-d", "txt", "-Fn"]); } catch { return "unknown"; }
+    const path = out.split("\n").find(l => l.startsWith("n"))?.slice(1);
+    if (!path) return "unknown";
+    if (!path.startsWith(rack + "/")) return "foreign";
+    const version = path.slice(rack.length + 1).split("/")[0]; return versionPattern.test(version) ? version : "foreign";
   }
+  /** A new listener PID (different from `old`); "none" and "unknown" both mean keep waiting. */
   async waitListener(old: number | undefined): Promise<number | undefined> {
     const start = this.d.now();
     for (;;) {
-      const pid = await this.listener(); if (pid !== undefined && pid !== old) return pid;
+      const pid = await this.listener(); if (typeof pid === "number" && pid !== old) return pid;
       if (this.d.now() - start >= this.t.restartWaitMs) return undefined;
       await this.d.sleep(1_000);
     }
@@ -267,24 +303,27 @@ class Run {
     try { await this.long(j, "brew_upgrade", ["brew", "upgrade", "--formula", this.t.formula], this.t.upgradeTimeoutMs, brewEnv); }
     catch (error) { return this.rollback(seen, j, "upgrade_failed", { commandError: failure(error) }); }
     try { if ((await this.info()).linked !== to) return this.rollback(seen, j, "link_mismatch"); }
-    catch (error) { return this.rollback(seen, j, "link_mismatch", { commandError: failure(error) }); }
+    catch (error) { return this.rollback(seen, j, "link_unreadable", { commandError: failure(error) }); }
     if (!this.sameFiles(j)) return this.rollback(seen, j, "config_changed", { halt: "config_changed" });
     this.step(j, "rechecking");
-    // launchd KeepAlive may already have restarted the service on the new keg; that restart has happened.
+    // launchd KeepAlive may already have restarted the service on the new keg; that restart has happened. Only a
+    // different PID or verified absence says so: an unknown listener is treated as unchanged and must pass the gate.
+    const moved = (l: Listener) => l === "none" || (typeof l === "number" && l !== oldPid);
     let pid = await this.listener(), recheck: GateResult | undefined;
-    if (pid === oldPid) {
+    if (!moved(pid)) {
       recheck = await gate(this.d, this.t, key, { confirmMs: this.t.recheckConfirmMs, pollMs: this.t.pollMs, waitMs: this.t.recheckWaitMs, fallbackWindowS: this.t.recheckFallbackWindowS, fallbackSamples: this.t.recheckFallbackSamples });
       pid = await this.listener();
-      if (pid === oldPid && recheck.verdict !== "idle") return this.rollback({ ...seen, recheck }, j, "busy_before_restart", { markFailed: false });
+      if (!moved(pid) && recheck.verdict !== "idle") return this.rollback({ ...seen, recheck }, j, "busy_before_restart", { markFailed: false });
     }
     const after = { ...seen, recheck };
     this.step(j, "restarting");
-    if (pid !== oldPid) this.log("self_restart", { id, oldPid, pid });
+    if (moved(pid)) this.log("self_restart", { id, oldPid, pid });
     else try { await this.restart(j); } catch (error) { return this.rollback(after, j, "restart_failed", { commandError: failure(error) }); }
     const newPid = await this.waitListener(oldPid);
     if (newPid === undefined) return this.rollback(after, j, "listener_timeout");
     this.step(j, "verifying");
-    let running: string | undefined; try { running = await this.exe(rack, newPid); } catch { /* unreadable is a mismatch */ }
+    const running = await this.exe(rack, newPid);
+    if (running === "unknown") return this.rollback(after, j, "version_unreadable");
     if (running !== to) return this.rollback(after, j, "version_mismatch");
     this.step(j, "probing");
     if (!(await this.probe(j))) return this.rollback(after, j, "probe_failed");
@@ -307,27 +346,28 @@ class Run {
     this.log("failure", { id: j.id, reason, step: failedStep, from: j.from, to: j.to, commandError: o.commandError });
     this.step(j, "rolling_back");
     const upgrade = { id: j.id, from: j.from, to: j.to, step: failedStep, commandError: o.commandError };
-    let forced: Result["forced"];
+    let forced: Result["forced"], rack: string | undefined;
     try {
-      const rack = await this.rack(); let keg = await this.info();
+      rack = await this.rack(); let keg = await this.info();
       if (!keg.kegs.includes(j.from)) { await this.long(j, "ditto", ["ditto", join(this.backup(j.id), "keg"), `${rack}/${j.from}`], 300_000); keg = await this.info(); }
       const ahead = keg.kegs.filter(v => newer(v, j.from)); // brew link would pick any of these over `from`
       if (keg.linked !== j.from || ahead.length) {
-        const wasLinked = keg.linked !== null;
-        if (wasLinked) await this.brew(["unlink", this.t.formula]);
+        const wasLinked = keg.linked !== null, cellar = rack;
         j.aside = [...new Set([...(j.aside ?? []), ...ahead])]; this.save();
-        for (const v of ahead) { privateDir(this.aside(j)); await this.long(j, "mv", ["mv", `${rack}/${v}`, join(this.aside(j), v)], 300_000); }
-        try {
+        try { // the whole transition: unlink, every move, link; any failure puts back whatever was moved
+          if (wasLinked) await this.brew(["unlink", this.t.formula]);
+          for (const v of ahead) { privateDir(this.aside(j)); await this.long(j, "mv", ["mv", `${cellar}/${v}`, join(this.aside(j), v)], 300_000); }
           await this.brew(["link", this.t.formula]);
           if ((await this.info()).linked !== j.from) throw Error("rollback_link_mismatch");
-        } catch (error) { await this.putBack(j, rack, wasLinked); throw error; }
+        } catch (error) { await this.putBack(j, cellar, wasLinked); throw error; }
       }
       keg = await this.info();
       if (keg.linked !== j.from || !keg.kegs.includes(j.from) || keg.kegs.some(v => newer(v, j.from))) throw Error("rollback_inconsistent");
       this.restoreFiles(j);
-      let pid = await this.listener(), running = pid ? await this.exe(rack, pid) : undefined;
+      const pid = await this.listener(), running = typeof pid === "number" ? await this.exe(rack, pid) : pid;
       if (running !== j.from) {
-        if (pid !== undefined) {
+        // Only verified absence restarts without the gate; a listener or executable we cannot read waits like a busy hub.
+        if (pid !== "none") {
           const g = await gate(this.d, this.t, this.d.env[this.t.mgmtKeyVar], this.gateOptions());
           if (g.verdict !== "idle") { // busy and unreadable alike
             const since = j.pendingSince ?? this.at(), waitedMs = this.d.now() - Date.parse(since);
@@ -341,17 +381,18 @@ class Run {
             this.log("forced_rollback", { id: j.id, ...forced, since, from: j.from, to: j.to });
           }
         }
-        await this.restart(j); pid = await this.waitListener(pid);
-        running = pid ? await this.exe(rack, pid) : undefined;
-        if (running !== j.from) throw Error("rollback_not_running");
+        await this.restart(j);
+        const fresh = await this.waitListener(typeof pid === "number" ? pid : undefined);
+        if (fresh === undefined || (await this.exe(rack, fresh)) !== j.from) throw Error("rollback_not_running");
       }
       if (!(await this.probe(j))) throw Error("rollback_probe_failed");
       if (!this.sameFiles(j)) j.halt ??= "config_changed"; // the old version rewrote it on start: a person looks
       for (const v of j.aside ?? []) if (j.kegsBefore?.includes(v)) await this.long(j, "mv", ["mv", join(this.aside(j), v), `${rack}/${v}`], 300_000);
     } catch (error) {
       if (markFailed) (this.state.failed ??= {})[j.to] = { at: this.at(), reason, step: failedStep };
-      this.state.halted = { at: this.at(), reason: "rollback_failed", version: j.to, commandError: failure(error) };
-      this.save(); this.log("rollback_failed", { id: j.id, reason, commandError: failure(error) });
+      const opt = await this.ensureOpt(rack); // before halting: launchd must have a keg to start
+      this.state.halted = { at: this.at(), reason: "rollback_failed", version: j.to, commandError: failure(error), opt };
+      this.save(); this.log("rollback_failed", { id: j.id, reason, commandError: failure(error), opt });
       return { ...seen, decision: "rollback_failed", reason, upgrade, forced };
     }
     if (markFailed) (this.state.failed ??= {})[j.to] = { at: this.at(), reason, step: failedStep };
@@ -369,6 +410,27 @@ class Run {
     j.aside = left; this.save();
     if (relink) try { await this.brew(["link", this.t.formula]); } catch { /* opt still points at a keg that exists */ }
     this.log("put_back", { id: j.id, left });
+  }
+
+  /**
+   * Where the opt link points and whether that keg is installed. If it is dangling and some keg is installed,
+   * `brew link` (which points opt at its keg first) repairs it.
+   */
+  async ensureOpt(rack: string | undefined): Promise<Opt> {
+    if (!rack) return { runnable: "unknown" };
+    const read = async (): Promise<Opt> => {
+      try {
+        const target = (await command(this.d.run, ["readlink", join(dirname(dirname(rack)), "opt", this.t.formula)])).trim();
+        const version = target.split("/").pop();
+        return { version, runnable: !!version && (await this.info()).kegs.includes(version) };
+      } catch { return { runnable: "unknown" }; }
+    };
+    const now = await read();
+    if (now.runnable !== false) return now;
+    try { await this.brew(["link", this.t.formula]); } catch { try { await this.brew(["unlink", this.t.formula]); await this.brew(["link", this.t.formula]); } catch { /* reported below */ } }
+    const after = await read();
+    this.log("opt_repair", { before: now, after });
+    return { ...after, repaired: after.runnable === true };
   }
 
   /** A journal left by a killed run (its commands are known to be gone). Never upgrades in the same run. */
