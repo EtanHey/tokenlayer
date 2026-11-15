@@ -5,71 +5,7 @@ const runMod = () => import("../../src/hubupdate/run");
 const targetMod = () => import("../../src/hubupdate/target");
 const gateMod = () => import("../../src/hubupdate/gate");
 
-const MGMT = "mgmt-PRIVATE-KEY-MUST-NOT-LEAK", ACCESS = "access-PRIVATE-KEY-MUST-NOT-LEAK";
-const ok = JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" });
-const broken = JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "API Error" });
-type Hang = (args: string[]) => boolean;
-
-/** A fake Homebrew + launchd + hub. Every command and HTTP call is recorded; brew/launchctl mutate the model. */
-class World {
-  kegs = new Set(["8.0.64"]); linked: string | null = "8.0.64"; stable = "8.0.70";
-  running: { pid: number; version: string } | null = { pid: 100, version: "8.0.64" };
-  calls: string[][] = []; envs: Record<string, string | undefined>[] = []; clock = Date.parse("2026-11-15T08:00:00Z");
-  inflight: (poll: number) => { status: number; body: string } | "throw" = () => ({ status: 200, body: JSON.stringify({ in_flight: 0, by_provider: {} }) });
-  polls = 0; fail = new Set<string>(); probeBroken = new Set<string>(); hang?: Hang; afterUpgrade?: () => void;
-  constructor(readonly dir: string) {}
-  info() { return JSON.stringify({ formulae: [{ name: "cliproxyapi", linked_keg: this.linked, versions: { stable: this.stable }, revision: 0, installed: [...this.kegs].map(version => ({ version })) }] }); }
-  run = async (args: string[], _timeout?: number, env?: Record<string, string | undefined>): Promise<string> => {
-    this.calls.push(args); if (env) this.envs.push(env);
-    if (this.hang?.(args)) return new Promise(() => {});
-    const key = args.slice(0, 2).join(" ");
-    if (this.fail.has(key)) throw Object.assign(Error("PRIVATE stderr " + MGMT), { code: key === "brew update" ? "ETIMEDOUT" : undefined });
-    const [c, sub] = args;
-    if (c === "brew" && sub === "update") return "";
-    if (c === "brew" && sub === "info") return this.info();
-    if (c === "brew" && sub === "--cellar") return "/C/cliproxyapi\n";
-    if (c === "brew" && sub === "fetch") return "";
-    if (c === "brew" && sub === "upgrade") { this.kegs.add(this.stable); this.linked = this.stable; this.afterUpgrade?.(); return ""; }
-    if (c === "brew" && sub === "unlink") { this.linked = null; return ""; }
-    if (c === "brew" && sub === "link") { if (this.fail.has("link")) throw Error("x"); this.linked = [...this.kegs].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).pop()!; return ""; }
-    if (c === "rm") { this.kegs.delete(args[2].split("/").pop()!); return ""; }
-    if (c === "ditto") { if (this.fail.has("ditto")) throw Error("x"); if (args[2].startsWith("/C/cliproxyapi/")) this.kegs.add(args[2].split("/").pop()!); return ""; }
-    if (c === "launchctl" && sub === "kickstart") { if (this.fail.has("kickstart")) throw Error("x"); this.running = this.linked && !this.fail.has("nostart") ? { pid: (this.running?.pid ?? 100) + 1, version: this.linked } : null; return ""; }
-    if (c === "launchctl" && sub === "list") return "PID\tStatus\tLabel\n";
-    if (c === "lsof" && args.includes("-sTCP:LISTEN")) return this.running ? `p${this.running.pid}\nf13\n` : "";
-    if (c === "lsof" && args.includes("txt")) return this.running ? `p${this.running.pid}\nftxt\nn/C/cliproxyapi/${this.fail.has("wrongexe") ? "8.0.1" : this.running.version}/bin/cliproxyapi\n` : "";
-    if (c === "lsof") return "p555\nf3\nn127.0.0.1:6000->127.0.0.1:8317\n";
-    if (c === "ps") return "/opt/homebrew/opt/cliproxyapi/bin/cliproxyapi\n";
-    if (c === "nettop") return `,bytes_in,bytes_out,\ncliproxyapi.${this.running?.pid},1,2,\ntcp4 127.0.0.1:8317<->*:*,,,\n`;
-    if (c === "probe") { if (!this.running || this.probeBroken.has(this.running.version)) { if (this.fail.has("probe-exit")) throw Error("exit 1"); return broken; } return ok; }
-    throw Error("unexpected command " + args.join(" "));
-  };
-  http = async (url: string, headers: Record<string, string>) => {
-    this.calls.push(["GET", url.replace(/^https?:\/\/[^/]+/, "")]);
-    if (this.hang?.(["GET"])) return new Promise<never>(() => {});
-    expect(headers.Authorization).toBe(`Bearer ${MGMT}`);
-    const r = this.inflight(this.polls++); if (r === "throw") throw Object.assign(Error("timeout"), { name: "TimeoutError" }); return r;
-  };
-  deps(extra: Record<string, unknown> = {}) {
-    return { run: this.run, http: this.http, sleep: async (ms: number) => { this.clock += ms; }, now: () => this.clock, uid: 501, pid: 4242, alive: () => false,
-      env: { CLIPROXY_MGMT_KEY: MGMT, CLIPROXY_ACCESS_KEY: ACCESS }, log: () => {}, ...extra };
-  }
-  /** Commands that change something outside our own state directory. */
-  mutations() { return this.calls.filter(a => (a[0] === "brew" && ["upgrade", "unlink", "link", "fetch", "uninstall", "cleanup", "services", "pin"].includes(a[1])) || a[0] === "rm" || a[0] === "ditto" || (a[0] === "launchctl" && a[1] !== "list")); }
-}
-
-async function setup(enabled = true, configure: (w: World) => void = () => {}) {
-  const dir = mkdtempSync(tmpdir() + "/hubrun-"), w = new World(dir); configure(w);
-  writeFileSync(dir + "/hub.conf", "server:\n  port: 8317\n"); writeFileSync(dir + "/hub.plist", "<plist/>\n");
-  if (enabled) writeFileSync(dir + "/enabled", "enabled\n");
-  const { hubTarget } = await targetMod();
-  const target = { ...hubTarget("/home/x"), configPath: dir + "/hub.conf", plistPath: dir + "/hub.plist", stateDir: dir + "/state", enableFile: dir + "/enabled", probe: ["probe"] };
-  return { dir, w, target };
-}
-const peek = (dir: string) => { try { return state(dir); } catch { return {}; } };
-const state = (dir: string) => JSON.parse(readFileSync(dir + "/state/state.json", "utf8"));
-const seed = (dir: string, s: object) => { require("node:fs").mkdirSync(dir + "/state", { recursive: true, mode: 0o700 }); writeFileSync(dir + "/state/state.json", JSON.stringify(s), { mode: 0o600 }); };
-const flat = (w: World) => w.calls.map(a => a[0] === "GET" ? "GET in-flight" : a.slice(0, a[0] === "brew" || a[0] === "launchctl" ? 2 : 1).join(" "));
+import { ACCESS, MGMT, World, broken, flat, ok, peek, seed, setup, state } from "./world";
 
 // Criterion 1: disabled means a full dry run that touches nothing.
 test("disabled: records would_upgrade_now and never upgrades, restarts, links or copies", async () => {
@@ -174,7 +110,8 @@ test("success: exact order of side effects, saved config/plist/keg, new version 
   const order = flat(w); const i = (s: string, from = 0) => order.indexOf(s, from);
   expect(i("brew update")).toBeLessThan(i("brew info")); expect(i("GET in-flight")).toBeLessThan(i("ditto"));
   expect(order.lastIndexOf("GET in-flight")).toBeGreaterThan(i("brew upgrade")); // recheck right before the restart
-  expect(order.lastIndexOf("GET in-flight")).toBeLessThan(i("launchctl kickstart")); expect(i("probe")).toBeGreaterThan(i("launchctl kickstart"));
+  expect(order.lastIndexOf("GET in-flight")).toBeLessThan(i("launchctl kickstart")); expect(order.lastIndexOf("probe")).toBeGreaterThan(i("launchctl kickstart"));
+  expect(i("probe")).toBeLessThan(i("ditto")); // baseline probe of the running version before anything is saved
   const s = state(dir); expect(s.lastSuccessAt).toBe(new Date(w.clock).toISOString()); expect(s.journal).toBeUndefined();
   const backup = `${dir}/state/backups/${out.upgrade!.id}`;
   expect(readFileSync(backup + "/config", "utf8")).toBe("server:\n  port: 8317\n"); expect(readFileSync(backup + "/plist", "utf8")).toBe("<plist/>\n");
@@ -228,7 +165,7 @@ test("rollback restores the old keg from the saved copy when Homebrew removed it
   rmSync(dir, { recursive: true });
 });
 test("a failed rollback is recorded as such and stops all further automatic runs", async () => {
-  const { run } = await runMod(); const { dir, w, target } = await setup(true, w => { w.probeBroken.add("8.0.70"); w.probeBroken.add("8.0.64"); });
+  const { run } = await runMod(); const { dir, w, target } = await setup(true, w => { w.probeBroken.add("8.0.70"); w.afterUpgrade = () => w.probeBroken.add("8.0.64"); }); // the old version passes its baseline, then breaks
   const out = await run(w.deps(), target);
   expect(out).toMatchObject({ decision: "rollback_failed", reason: "probe_failed" });
   const s = state(dir); expect(s.halted).toMatchObject({ reason: "rollback_failed" }); expect(s.failed["8.0.70"]).toBeDefined();
@@ -252,14 +189,14 @@ for (const [step, hangOn] of [
   ["verifying", (a: string[]) => a[0] === "lsof" && a.includes("txt")], ["probing", (a: string[]) => a[0] === "probe"],
 ] as const) test(`killed while ${step}: the next run recovers without a second upgrade`, async () => {
   const { run } = await runMod(); const { dir, w, target } = await setup(true);
-  let armed = step === "rechecking" || step === "verifying" ? false : true; // these commands also run earlier; arm after the upgrade
+  let armed = step === "rechecking" || step === "verifying" || step === "probing" ? false : true; // these commands also run earlier; arm after the upgrade
   w.afterUpgrade = () => { armed = true; };
   w.hang = a => armed && (hangOn as (a: string[]) => boolean)(a);
-  void run(w.deps({ alive: () => true }), target);
+  void run(w.deps(), target);
   for (let i = 0; i < 200 && peek(dir).journal?.step !== step; i++) await Bun.sleep(1);
   expect(state(dir).journal.step).toBe(step);
-  // Machine restarted: launchd brings the hub back with whatever is linked.
-  if (step !== "saving" && step !== "rechecking") w.running = { pid: 300, version: w.linked ?? "8.0.64" };
+  // Machine restarted: every child of the killed run is gone and launchd brings the hub back on the opt link.
+  w.procs.clear(); if (step !== "saving" && step !== "rechecking") w.respawn();
   w.hang = undefined; w.calls = [];
   const out = await run(w.deps(), target);
   expect(out.decision).toBe("recovered"); expect(w.calls.some(a => a[1] === "upgrade")).toBe(false);
@@ -275,11 +212,13 @@ test("an unfinished journal in dry-run mode is reported and nothing is touched",
   expect((await run(w.deps(), target)).decision).toBe("interrupted_run_pending"); expect(w.mutations()).toEqual([]);
   rmSync(dir, { recursive: true });
 });
-test("a live lock holder blocks a second run; a dead holder's lock is taken over", async () => {
-  const { run } = await runMod(); const { dir, w, target } = await setup(false);
-  require("node:fs").mkdirSync(dir + "/state", { recursive: true, mode: 0o700 }); writeFileSync(dir + "/state/run.lock", JSON.stringify({ pid: 999 }));
-  expect((await run(w.deps({ alive: () => true }), target)).decision).toBe("locked"); expect(w.calls).toEqual([]);
-  expect((await run(w.deps({ alive: () => false }), target)).decision).toBe("would_upgrade_now"); expect(existsSync(dir + "/state/run.lock")).toBe(false);
+test("a held run lock blocks a second run; once released the next run proceeds and the lock file stays", async () => {
+  const { run, flockLock } = await runMod(); const { dir, w, target } = await setup(false);
+  require("node:fs").mkdirSync(dir + "/state", { recursive: true, mode: 0o700 });
+  const release = flockLock(dir + "/state/run.lock")!; expect(release).toBeDefined();
+  expect((await run(w.deps({ lock: flockLock }), target)).decision).toBe("locked"); expect(w.calls).toEqual([]);
+  release();
+  expect((await run(w.deps({ lock: flockLock }), target)).decision).toBe("would_upgrade_now"); expect(existsSync(dir + "/state/run.lock")).toBe(true);
   rmSync(dir, { recursive: true });
 });
 

@@ -11,7 +11,7 @@ export type Target = {
   stateDir: string; enableFile: string;
   confirmMs: number; pollMs: number; waitMs: number; fallbackWindowS: number; fallbackSamples: number;
   recheckConfirmMs: number; recheckWaitMs: number; recheckFallbackWindowS: number; recheckFallbackSamples: number;
-  restartWaitMs: number; upgradeTimeoutMs: number; minIntervalMs: number;
+  restartWaitMs: number; upgradeTimeoutMs: number; minIntervalMs: number; orphanHaltMs: number;
 };
 
 export function hubTarget(home = homedir()): Target {
@@ -26,6 +26,8 @@ export function hubTarget(home = homedir()): Target {
     confirmMs: 20_000, pollMs: 2_000, waitMs: 240_000, fallbackWindowS: 30, fallbackSamples: 10,
     recheckConfirmMs: 4_000, recheckWaitMs: 60_000, recheckFallbackWindowS: 6, recheckFallbackSamples: 4,
     restartWaitMs: 60_000, upgradeTimeoutMs: 600_000, minIntervalMs: 86_400_000,
+    // A command of a killed run still alive this long after it started (brew upgrade's own timeout is 10 min) needs a person.
+    orphanHaltMs: 1_800_000,
   };
 }
 
@@ -39,7 +41,7 @@ const checks: Record<keyof Target, (v: unknown) => boolean> = {
   probe: v => Array.isArray(v) && v.length > 0 && v.every(a => typeof a === "string"),
   probeTimeoutMs: positive, confirmMs: positive, pollMs: positive, waitMs: positive, fallbackWindowS: positive, fallbackSamples: v => Number.isInteger(v) && (v as number) >= 3,
   recheckConfirmMs: positive, recheckWaitMs: positive, recheckFallbackWindowS: positive, recheckFallbackSamples: v => Number.isInteger(v) && (v as number) >= 3,
-  restartWaitMs: positive, upgradeTimeoutMs: positive, minIntervalMs: positive,
+  restartWaitMs: positive, upgradeTimeoutMs: positive, minIntervalMs: positive, orphanHaltMs: positive,
 };
 function positive(v: unknown) { return typeof v === "number" && Number.isFinite(v) && v > 0; }
 

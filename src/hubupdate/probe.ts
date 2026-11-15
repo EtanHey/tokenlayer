@@ -1,20 +1,39 @@
-import { spawnSync } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { blindSpots, idle, owners, parseNettop, sidecars, versions, type Idle, type Point } from "./core";
-/** `env` entries override the inherited environment; an `undefined` value removes that variable. Stdin is closed. */
-export type Runner = (args: string[], timeout?: number, env?: Record<string, string | undefined>) => Promise<string>;
-export const runner: Runner = async ([command, ...args], timeout = 15000, extra = {}) => {
+/**
+ * `env` entries override the inherited environment; an `undefined` value removes that variable. Stdin is /dev/null.
+ * `onSpawn` receives the child PID as soon as it exists, so a caller can record it before waiting.
+ * On timeout the child gets SIGTERM, then SIGKILL 10 s later, and the promise settles only after it has exited.
+ */
+export type Runner = (args: string[], timeout?: number, env?: Record<string, string | undefined>, onSpawn?: (pid: number) => void) => Promise<string>;
+const MAX_OUTPUT = 8 * 1024 * 1024;
+export const runner: Runner = ([command, ...args], timeout = 15000, extra = {}, onSpawn) => new Promise((resolve, reject) => {
   const env: Record<string, string | undefined> = { ...process.env, HOMEBREW_NO_AUTO_UPDATE: "1", ...extra };
   for (const [k, v] of Object.entries(env)) if (v === undefined) delete env[k];
-  const r = spawnSync(command, args, { encoding: "utf8", timeout, input: "", maxBuffer: 8 * 1024 * 1024, env });
-  if (r.error || r.status !== 0) throw r.error ?? Error("command_failure"); return r.stdout;
-};
+  let child: ChildProcess;
+  try { child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"] }); } catch (error) { reject(error); return; }
+  let out = "", size = 0, settled = false, failure: string | undefined, kill: ReturnType<typeof setTimeout> | undefined;
+  const settle = (error?: unknown) => { if (settled) return; settled = true; clearTimeout(timer); clearTimeout(kill); error ? reject(error) : resolve(out); };
+  const stop = (code: string) => { failure ??= code; child.kill("SIGTERM"); kill ??= setTimeout(() => child.kill("SIGKILL"), 10_000); };
+  const timer = setTimeout(() => stop("ETIMEDOUT"), timeout);
+  child.on("error", error => settle(error));
+  child.stdout!.setEncoding("utf8");
+  child.stdout!.on("data", (chunk: string) => { size += chunk.length; if (size > MAX_OUTPUT) stop("ENOBUFS"); else out += chunk; });
+  child.stderr!.resume();
+  child.on("exit", status => {
+    const done = () => settle(failure ? Object.assign(Error("command_failure"), { code: failure }) : status === 0 ? undefined : Object.assign(Error("command_failure"), { status }));
+    // A grandchild may hold stdout open; never wait on it for more than 2 s after the child itself exited.
+    if (child.stdout!.readableEnded) done(); else { child.stdout!.once("end", done); setTimeout(done, 2_000); }
+  });
+  if (child.pid !== undefined) onSpawn?.(child.pid);
+});
 export class CommandError extends Error {
   constructor(readonly step: string, readonly kind: "timed_out" | "nonzero" | "spawn_failed") { super("command_failure"); }
 }
 const spawnCodes = new Set(["ENOENT", "EACCES", "ENOBUFS", "E2BIG"]);
-export async function command(run: Runner, args: string[], timeout = 15000, env?: Record<string, string | undefined>, name?: string) {
+export async function command(run: Runner, args: string[], timeout = 15000, env?: Record<string, string | undefined>, name?: string, onSpawn?: (pid: number) => void) {
   const step = name ?? (args[0] === "brew" ? `brew_${args[1]}` : args[0] === "lsof" ? (args.includes("-sTCP:LISTEN") ? "lsof_listen" : args.includes("txt") ? "lsof_exe" : "lsof_established") : args[0] === "launchctl" ? `launchctl_${args[1]}` : args[0]);
-  try { return await run(args, timeout, env); }
+  try { return await run(args, timeout, env, onSpawn); }
   catch (error) {
     const code = (error as { code?: string })?.code;
     throw new CommandError(step, code === "ETIMEDOUT" ? "timed_out" : code && spawnCodes.has(code) ? "spawn_failed" : "nonzero");
