@@ -12,6 +12,7 @@ export type Target = {
   confirmMs: number; pollMs: number; waitMs: number; fallbackWindowS: number; fallbackSamples: number;
   recheckConfirmMs: number; recheckWaitMs: number; recheckFallbackWindowS: number; recheckFallbackSamples: number;
   restartWaitMs: number; upgradeTimeoutMs: number; minIntervalMs: number; orphanHaltMs: number;
+  rollbackForceUnhealthyMs: number; rollbackForceMs: number;
 };
 
 export function hubTarget(home = homedir()): Target {
@@ -28,6 +29,8 @@ export function hubTarget(home = homedir()): Target {
     restartWaitMs: 60_000, upgradeTimeoutMs: 600_000, minIntervalMs: 86_400_000,
     // A command of a killed run still alive this long after it started (brew upgrade's own timeout is 10 min) needs a person.
     orphanHaltMs: 1_800_000,
+    // A pending rollback restarts to the old version anyway after this long: sooner when the new version is not serving correctly.
+    rollbackForceUnhealthyMs: 1_800_000, rollbackForceMs: 21_600_000,
   };
 }
 
@@ -42,6 +45,7 @@ const checks: Record<keyof Target, (v: unknown) => boolean> = {
   probeTimeoutMs: positive, confirmMs: positive, pollMs: positive, waitMs: positive, fallbackWindowS: positive, fallbackSamples: v => Number.isInteger(v) && (v as number) >= 3,
   recheckConfirmMs: positive, recheckWaitMs: positive, recheckFallbackWindowS: positive, recheckFallbackSamples: v => Number.isInteger(v) && (v as number) >= 3,
   restartWaitMs: positive, upgradeTimeoutMs: positive, minIntervalMs: positive, orphanHaltMs: positive,
+  rollbackForceUnhealthyMs: positive, rollbackForceMs: positive,
 };
 function positive(v: unknown) { return typeof v === "number" && Number.isFinite(v) && v > 0; }
 

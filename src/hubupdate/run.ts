@@ -26,9 +26,13 @@ type State = {
 type Fail = ReturnType<typeof failure>;
 export type Result = {
   mode: "enabled" | "dry_run"; checkedAt: string; decision: string; reason?: string; what?: string; refresh?: string; refreshError?: Fail; versionError?: Fail; runningError?: Fail;
+  forced?: { reason: string; waitedMs: number; limitMs: number; gate: string };
   installed?: string | null; available?: string | null; gate?: GateResult; recheck?: GateResult; upgrade?: { id: string; from: string; to: string; step?: string; commandError?: Fail };
   failedVersions?: string[]; lastSuccessAt?: string; halted?: State["halted"];
 };
+
+/** The new version failed real requests, its version check, or never came up: its rollback may cut a stream sooner. */
+const UNHEALTHY = new Set(["probe_failed", "version_mismatch", "listener_timeout"]);
 
 // Homebrew must not delete the old keg (rollback source), touch other formulae, or auto-update mid-run.
 const brewEnv = { HOMEBREW_NO_INSTALL_CLEANUP: "1", HOMEBREW_NO_AUTO_UPDATE: "1", HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1", HOMEBREW_NO_ENV_HINTS: "1" };
@@ -303,6 +307,7 @@ class Run {
     this.log("failure", { id: j.id, reason, step: failedStep, from: j.from, to: j.to, commandError: o.commandError });
     this.step(j, "rolling_back");
     const upgrade = { id: j.id, from: j.from, to: j.to, step: failedStep, commandError: o.commandError };
+    let forced: Result["forced"];
     try {
       const rack = await this.rack(); let keg = await this.info();
       if (!keg.kegs.includes(j.from)) { await this.long(j, "ditto", ["ditto", join(this.backup(j.id), "keg"), `${rack}/${j.from}`], 300_000); keg = await this.info(); }
@@ -324,10 +329,16 @@ class Run {
       if (running !== j.from) {
         if (pid !== undefined) {
           const g = await gate(this.d, this.t, this.d.env[this.t.mgmtKeyVar], this.gateOptions());
-          if (g.verdict !== "idle") {
-            j.pendingSince ??= this.at(); this.save();
-            this.log("rollback_pending", { id: j.id, reason, gate: g.reason, since: j.pendingSince });
-            return { ...seen, decision: "rollback_pending", reason, gate: g, upgrade };
+          if (g.verdict !== "idle") { // busy and unreadable alike
+            const since = j.pendingSince ?? this.at(), waitedMs = this.d.now() - Date.parse(since);
+            const limitMs = UNHEALTHY.has(reason) ? this.t.rollbackForceUnhealthyMs : this.t.rollbackForceMs;
+            if (waitedMs < limitMs) {
+              j.pendingSince = since; this.save();
+              this.log("rollback_pending", { id: j.id, reason, gate: g.reason, since, waitedMs, limitMs });
+              return { ...seen, decision: "rollback_pending", reason, gate: g, upgrade };
+            }
+            forced = { reason, waitedMs, limitMs, gate: g.reason };
+            this.log("forced_rollback", { id: j.id, ...forced, since, from: j.from, to: j.to });
           }
         }
         await this.restart(j); pid = await this.waitListener(pid);
@@ -341,12 +352,12 @@ class Run {
       if (markFailed) (this.state.failed ??= {})[j.to] = { at: this.at(), reason, step: failedStep };
       this.state.halted = { at: this.at(), reason: "rollback_failed", version: j.to, commandError: failure(error) };
       this.save(); this.log("rollback_failed", { id: j.id, reason, commandError: failure(error) });
-      return { ...seen, decision: "rollback_failed", reason, upgrade };
+      return { ...seen, decision: "rollback_failed", reason, upgrade, forced };
     }
     if (markFailed) (this.state.failed ??= {})[j.to] = { at: this.at(), reason, step: failedStep };
     if (j.halt) this.state.halted = { at: this.at(), reason: j.halt, version: j.to };
     delete this.state.journal; this.prune(); this.log("rolled_back", { id: j.id, reason, from: j.from, to: j.to });
-    return { ...seen, decision: markFailed ? "rolled_back" : "aborted_busy", reason, upgrade };
+    return { ...seen, decision: markFailed ? "rolled_back" : "aborted_busy", reason, upgrade, forced };
   }
   /** Undo a relink attempt: every keg moved aside goes back to the Cellar, and if something was linked, relink it. */
   async putBack(j: Journal, rack: string, relink: boolean) {

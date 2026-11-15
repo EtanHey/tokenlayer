@@ -71,7 +71,10 @@ are relinked, so something runnable stays linked (`brew link` points `opt` at it
 halt. Next the saved config and plist are written back, bytes and mode, wherever they differ, and checked by
 hash. A restart happens only if the old version is not the one running, and only after the same idle gate as an
 upgrade; busy or unreadable keeps the journal and reports `rollback_pending` for the next run (no listener at all
-means nothing is in flight, so that restarts at once). Then the same probe. Moved kegs and the backup are deleted
+means nothing is in flight, so that restarts at once). A pending rollback waits at most 30 minutes
+(`rollbackForceUnhealthyMs`) when the new version failed its probe or version check or never came up, otherwise 6 hours
+(`rollbackForceMs`), counted from the first time it went pending, with an unreadable gate counted as busy. After that it
+restarts to the old version anyway and logs `forced_rollback` (reason, waited, limit), shown as `forced` in the result. Then the same probe. Moved kegs and the backup are deleted
 only after all of that passed. The failed version is recorded and never retried automatically. A failed rollback,
 or a changed config/plist, sets `halted`; every later run refuses until a person clears it.
 
