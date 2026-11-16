@@ -11,7 +11,7 @@ export type InFlight = { kind: "count"; n: number } | { kind: "absent" } | { kin
 export type GateResult = {
   verdict: "idle" | "busy" | "busy_unknown"; signal: "in_flight" | "os_fallback"; reason: string;
   polls: number; nonZeroPolls: number; maxInFlight: number; waitedMs: number;
-  fallback?: { runs: number; samples: number; lastVerdict: string; lastReason: string; commandError?: { step: string; kind: string } };
+  fallback?: { runs: number; samples: number; lastVerdict: string; lastReason: string; commandError?: { step: string; kind: string }; parseStep?: string };
 };
 export type GateOptions = { confirmMs: number; pollMs: number; waitMs: number; fallbackWindowS?: number; fallbackSamples?: number };
 
@@ -56,7 +56,7 @@ async function fallback(d: GateDeps, t: Target, o: GateOptions, start: number, p
   for (;;) {
     const r = await observe(d.run, d.sleep, windowS, samples, t.port, t.processName); runs++;
     const result = (verdict: GateResult["verdict"], reason: string): GateResult => ({ verdict, signal: "os_fallback", reason, polls, nonZeroPolls: 0, maxInFlight: 0, waitedMs: d.now() - start,
-      fallback: { runs, samples: runs * samples, lastVerdict: r.verdict, lastReason: r.reason, ...(r.commandError ? { commandError: r.commandError } : {}) } });
+      fallback: { runs, samples: runs * samples, lastVerdict: r.verdict, lastReason: r.reason, ...(r.commandError ? { commandError: r.commandError } : {}), ...(r.parseStep ? { parseStep: r.parseStep } : {}) } });
     if (r.verdict === "busy_unknown") return result("busy_unknown", "os_signal_unreadable");
     if (r.verdict === "idle") return result("idle", "os_counters_unchanged");
     if (d.now() - start + windowS * 1000 > o.waitMs) return result("busy", "os_client_activity");

@@ -20,12 +20,17 @@ export class World {
   inflight: (poll: number) => { status: number; body: string } | "throw" = () => ({ status: 200, body: JSON.stringify({ in_flight: 0, by_provider: {} }) });
   polls = 0; fail = new Set<string>(); probeBroken = new Set<string>(); hang?: (args: string[]) => boolean; afterUpgrade?: () => void;
   procs = new Map<number, string>(); nextPid = 700; brewLock = false; onProbe?: () => void;
+  /** The time limit each command was given, index-aligned with `calls` (undefined: the runner default). */
+  limits: (number | undefined)[] = [];
+  /** A command for which this returns true runs out its whole time limit and is killed (ETIMEDOUT), like a loaded Mac. */
+  slow?: (args: string[]) => boolean;
   constructor(readonly dir: string) {}
   info() { return JSON.stringify({ formulae: [{ name: "cliproxyapi", linked_keg: this.linked, versions: { stable: this.stable }, revision: 0, installed: [...this.kegs].map(version => ({ version })) }] }); }
   /** launchd KeepAlive brings the service back on whatever opt points at. */
   respawn() { this.running = this.opt && this.kegs.has(this.opt) ? { pid: (this.running?.pid ?? 100) + 1, version: this.opt } : null; }
   run = async (args: string[], _timeout?: number, env?: Record<string, string | undefined>, onSpawn?: (pid: number) => void): Promise<string> => {
-    this.calls.push(args); if (env) this.envs.push(env);
+    this.calls.push(args); this.limits.push(_timeout); if (env) this.envs.push(env);
+    if (this.slow?.(args)) { this.clock += _timeout ?? 15_000; throw Object.assign(Error("PRIVATE slow " + MGMT), { code: "ETIMEDOUT" }); }
     let child: number | undefined;
     if (onSpawn) { child = this.nextPid++; this.procs.set(child, `Sun Nov 15 08:00:${String(child % 60).padStart(2, "0")} 2026`); onSpawn(child); }
     if (this.hang?.(args)) return new Promise(() => {});
@@ -71,7 +76,7 @@ export class World {
     throw Error("unexpected command " + args.join(" "));
   }
   http = async (url: string, headers: Record<string, string>) => {
-    this.calls.push(["GET", url.replace(/^https?:\/\/[^/]+/, "")]);
+    this.calls.push(["GET", url.replace(/^https?:\/\/[^/]+/, "")]); this.limits.push(undefined);
     if (this.hang?.(["GET"])) return new Promise<never>(() => {});
     expect(headers.Authorization).toBe(`Bearer ${MGMT}`);
     const r = this.inflight(this.polls++); if (r === "throw") throw Object.assign(Error("timeout"), { name: "TimeoutError" }); return r;
