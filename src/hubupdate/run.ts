@@ -5,7 +5,7 @@ import { dlopen, FFIType } from "bun:ffi";
 import { connect } from "node:net";
 import { kegState, versionPattern, versions } from "./core";
 import { gate, type GateDeps, type GateResult } from "./gate";
-import { command, CommandError, failure } from "./probe";
+import { command, CommandError, failure, READ_LIMITS, retried, type Timing } from "./probe";
 import type { Target } from "./target";
 
 /** Takes the run lock at `path`; returns its release function, or undefined when another run holds it. */
@@ -41,6 +41,8 @@ export type Result = {
   forced?: { reason: string; waitedMs: number; limitMs: number; gate: string };
   installed?: string | null; available?: string | null; gate?: GateResult; recheck?: GateResult; upgrade?: { id: string; from: string; to: string; step?: string; commandError?: Fail };
   failedVersions?: string[]; lastSuccessAt?: string; halted?: State["halted"];
+  /** Every Homebrew step of this run, in order: total duration and tries (see `READ_LIMITS`, `LINK_LIMITS`). */
+  timings?: Timing[];
 };
 type Opt = { version?: string; runnable: boolean | "unknown"; repaired?: boolean };
 
@@ -49,6 +51,14 @@ const UNHEALTHY = new Set(["probe_failed", "version_mismatch", "version_unreadab
 
 // Homebrew must not delete the old keg (rollback source), touch other formulae, or auto-update mid-run.
 const brewEnv = { HOMEBREW_NO_INSTALL_CLEANUP: "1", HOMEBREW_NO_AUTO_UPDATE: "1", HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1", HOMEBREW_NO_ENV_HINTS: "1" };
+/** `brew update`: one try; a failed refresh already ends the run safely. */
+const UPDATE_LIMITS = [120_000];
+/**
+ * `brew link` / `brew unlink`: 120 s, tried once more on timeout. Measured on a stand-in formula (2026-11-16): after a
+ * try killed part-way (SIGTERM or SIGKILL) or one that had finished, the repeat exits 0 and leaves the keg fully
+ * linked / unlinked. The runner settles only after the killed try has exited, so two never overlap.
+ */
+const LINK_LIMITS = [120_000, 120_000];
 
 /** One `{"type":"result","subtype":"success","is_error":false}` event, from a single object or an event array. */
 export function probeOk(text: string): boolean {
@@ -111,7 +121,7 @@ export async function run(d: Deps, t: Target): Promise<Result> {
   return withState(d, t, base, async (state, save) => {
     const r = new Run(d, t, state, base.mode === "enabled", base, save);
     const out = await r.decide();
-    state.last = out; save();
+    out.timings = r.timings; state.last = out; save();
     return out;
   });
 }
@@ -136,8 +146,11 @@ class Run {
   log(event: string, fields: Record<string, unknown>) { this.d.log(JSON.stringify({ event, at: this.at(), ...fields })); }
   /** Record the step before doing it, so a killed run leaves the step it died in. */
   step(j: Journal, step: Step) { j.step = step; j.updatedAt = this.at(); this.state.journal = j; this.save(); this.log("step", { id: j.id, step, from: j.from, to: j.to }); }
-  brew(args: string[], timeout = 15_000) { return command(this.d.run, ["brew", ...args], timeout, brewEnv); }
-  async info() { return kegState(await this.brew(["info", "--json=v2", this.t.formula]), this.t.formula); }
+  timings: Timing[] = [];
+  /** Every Homebrew command goes through here: tried again only on timeout, per `limits`; timed into `timings`. */
+  brew(args: string[], limits: number[]) { return retried(this.d.run, ["brew", ...args], limits, brewEnv, this.d.now, this.timings); }
+  read(args: string[]) { return this.brew(args, READ_LIMITS); }
+  async info() { return kegState(await this.read(["info", "--json=v2", this.t.formula]), this.t.formula); }
   backup(id: string) { return join(this.t.stateDir, "backups", id); }
   aside(j: Journal) { return join(this.backup(j.id), "aside"); }
   gateOptions() { return { confirmMs: this.t.confirmMs, pollMs: this.t.pollMs, waitMs: this.t.waitMs }; }
@@ -177,8 +190,8 @@ class Run {
       return (await this.fence(state.journal)) ?? this.recover(state.journal);
     }
     let refresh = "ok", refreshError: Fail, versionError: Fail, v: ReturnType<typeof versions> | undefined;
-    try { await this.brew(["update"], 120_000); } catch (error) { refresh = "failed"; refreshError = failure(error); }
-    try { v = versions(await this.brew(["info", "--json=v2", t.formula]), t.formula); } catch (error) { versionError = failure(error); }
+    try { await this.brew(["update"], UPDATE_LIMITS); } catch (error) { refresh = "failed"; refreshError = failure(error); }
+    try { v = versions(await this.read(["info", "--json=v2", t.formula]), t.formula); } catch (error) { versionError = failure(error); }
     const seen: Result = { ...base, refresh, refreshError, versionError, installed: v?.installed ?? null, available: v?.available ?? null };
     if (!v) return { ...seen, reason: "version_unreadable" };
     if (!v.newer) return { ...seen, decision: "up_to_date", reason: "installed_not_older" };
@@ -224,7 +237,7 @@ class Run {
   }
 
   async rack() {
-    const rack = (await this.brew(["--cellar", this.t.formula])).trim();
+    const rack = (await this.read(["--cellar", this.t.formula])).trim();
     if (!rack.startsWith("/") || !rack.endsWith(`/${this.t.formula}`) || rack.includes("..")) throw Error("cellar_unreadable");
     return rack;
   }
@@ -300,8 +313,11 @@ class Run {
       return { ...seen, decision: "save_failed", reason: "save_failed", upgrade: { ...upgrade, commandError: failure(error) } };
     }
     this.step(j, "upgrading");
+    const began = this.d.now(); let upgradeError: { error: unknown } | undefined;
     try { await this.long(j, "brew_upgrade", ["brew", "upgrade", "--formula", this.t.formula], this.t.upgradeTimeoutMs, brewEnv); }
-    catch (error) { return this.rollback(seen, j, "upgrade_failed", { commandError: failure(error) }); }
+    catch (error) { upgradeError = { error }; }
+    this.timings.push({ step: "brew_upgrade", ms: this.d.now() - began, tries: 1 });
+    if (upgradeError) return this.rollback(seen, j, "upgrade_failed", { commandError: failure(upgradeError.error) });
     try { if ((await this.info()).linked !== to) return this.rollback(seen, j, "link_mismatch"); }
     catch (error) { return this.rollback(seen, j, "link_unreadable", { commandError: failure(error) }); }
     if (!this.sameFiles(j)) return this.rollback(seen, j, "config_changed", { halt: "config_changed" });
@@ -355,9 +371,9 @@ class Run {
         const wasLinked = keg.linked !== null, cellar = rack;
         j.aside = [...new Set([...(j.aside ?? []), ...ahead])]; this.save();
         try { // the whole transition: unlink, every move, link; any failure puts back whatever was moved
-          if (wasLinked) await this.brew(["unlink", this.t.formula]);
+          if (wasLinked) await this.brew(["unlink", this.t.formula], LINK_LIMITS);
           for (const v of ahead) { privateDir(this.aside(j)); await this.long(j, "mv", ["mv", `${cellar}/${v}`, join(this.aside(j), v)], 300_000); }
-          await this.brew(["link", this.t.formula]);
+          await this.brew(["link", this.t.formula], LINK_LIMITS);
           if ((await this.info()).linked !== j.from) throw Error("rollback_link_mismatch");
         } catch (error) { await this.putBack(j, cellar, wasLinked); throw error; }
       }
@@ -408,7 +424,7 @@ class Run {
       catch { left.push(v); }
     }
     j.aside = left; this.save();
-    if (relink) try { await this.brew(["link", this.t.formula]); } catch { /* opt still points at a keg that exists */ }
+    if (relink) try { await this.brew(["link", this.t.formula], LINK_LIMITS); } catch { /* opt still points at a keg that exists */ }
     this.log("put_back", { id: j.id, left });
   }
 
@@ -427,7 +443,7 @@ class Run {
     };
     const now = await read();
     if (now.runnable !== false) return now;
-    try { await this.brew(["link", this.t.formula]); } catch { try { await this.brew(["unlink", this.t.formula]); await this.brew(["link", this.t.formula]); } catch { /* reported below */ } }
+    try { await this.brew(["link", this.t.formula], LINK_LIMITS); } catch { try { await this.brew(["unlink", this.t.formula], LINK_LIMITS); await this.brew(["link", this.t.formula], LINK_LIMITS); } catch { /* reported below */ } }
     const after = await read();
     this.log("opt_repair", { before: now, after });
     return { ...after, repaired: after.runnable === true };
