@@ -140,24 +140,43 @@ test("rollback: three timeouts in a row at one of its reads behave as today: rol
   rmSync(dir, { recursive: true });
 });
 
-// Recovery after a run killed while probing: read 1 is the fence's --cellar, reads 2.. are the rollback's.
-for (const n of [1, 2, 3, 4, 5]) test(`recovery: one timeout at its read ${n} gives the same recovery as none`, async () => {
+// A rollback whose relink fails (nonzero) puts the moved keg back, then checks opt before halting. After the upgrade:
+// read 1 is the link check, 2-3 the rollback's, 4 is putBack's (is the keg home?), 5 is ensureOpt's (is opt runnable?).
+for (const [n, site] of [[4, "putBack"], [5, "ensureOpt"]] as const) for (const times of [1, 2]) test(`failed relink: ${times} timeout(s) at the ${site} read give the same halt as none`, async () => {
   const { run } = await runMod();
-  const killed = async () => {
-    const x = await setup(true); let armed = false; x.w.afterUpgrade = () => { armed = true; };
-    x.w.hang = a => armed && a[0] === "probe"; void run(x.w.deps(), x.target); await until(x.dir, "probing");
-    x.w.procs.clear(); x.w.respawn(); x.w.hang = undefined; x.w.calls = []; x.w.limits = [];
-    return x;
-  };
-  const base = await killed(); const want = outcome(await run(base.w.deps(), base.target), base.dir, base.w);
-  expect(want).toMatchObject({ decision: "recovered", reason: "interrupted_at_probing", failed: ["8.0.70"], halted: undefined, linked: "8.0.64", running: "8.0.64" });
-  const { dir, w, target } = await killed(); const s = slowRead(n, 1); w.slow = s.slow;
+  const mk = async () => { let upgraded = false; const x = await setup(true, w => { w.probeBroken.add("8.0.70"); w.fail.add("link-once"); w.afterUpgrade = () => { upgraded = true; }; }); return { ...x, armed: () => upgraded }; };
+  const base = await mk(); const want = outcome(await run(base.w.deps(), base.target), base.dir, base.w);
+  expect(want).toMatchObject({ decision: "rollback_failed", reason: "probe_failed", halted: "rollback_failed", linked: "8.0.70", kegs: ["8.0.64", "8.0.70"] });
+  const { dir, w, target, armed } = await mk(); const s = slowRead(n, times, armed); w.slow = s.slow;
   const out = await run(w.deps(), target);
-  expect(s.fired).toBe(1); expect(outcome(out, dir, w)).toEqual(want);
+  expect(s.fired).toBe(times); expect(outcome(out, dir, w)).toEqual(want);
+  expect(state(dir).halted.opt).toEqual(state(base.dir).halted.opt); expect(state(dir).halted.opt).toMatchObject({ version: "8.0.70", runnable: true });
   for (const d of [base.dir, dir]) rmSync(d, { recursive: true });
 });
 
-// ---- Pass criterion 4: brew link and brew unlink get 120 s; a timed-out one is repeated (safe: see the PR body).
+// Recovery after a killed run. While probing: read 1 is the fence's --cellar, reads 2.. are the rollback's.
+// While saving (partial save): read 1 is the fence's --cellar, read 2 the check that nothing was upgraded.
+for (const [step, reads, expected] of [
+  ["probing", 5, { decision: "recovered", reason: "interrupted_at_probing", failed: ["8.0.70"], halted: undefined, linked: "8.0.64", running: "8.0.64" }],
+  ["saving", 2, { decision: "recovered", reason: "discarded_partial_save", failed: [], halted: undefined, linked: "8.0.64", running: "8.0.64" }],
+] as const) for (let n = 1; n <= reads; n++) for (const times of [1, 2]) test(`recovery (killed while ${step}): ${times} timeout(s) at its read ${n} give the same recovery as none`, async () => {
+  const { run } = await runMod();
+  const killed = async () => {
+    const x = await setup(true); let armed = step === "saving"; x.w.afterUpgrade = () => { armed = true; };
+    x.w.hang = a => armed && a[0] === (step === "saving" ? "ditto" : "probe"); void run(x.w.deps(), x.target); await until(x.dir, step);
+    x.w.procs.clear(); if (step !== "saving") x.w.respawn(); x.w.hang = undefined; x.w.calls = []; x.w.limits = [];
+    return x;
+  };
+  const base = await killed(); const want = outcome(await run(base.w.deps(), base.target), base.dir, base.w);
+  expect(want).toMatchObject(expected);
+  const { dir, w, target } = await killed(); const s = slowRead(n, times); w.slow = s.slow;
+  const out = await run(w.deps(), target);
+  expect(s.fired).toBe(times); expect(outcome(out, dir, w)).toEqual(want);
+  for (const d of [base.dir, dir]) rmSync(d, { recursive: true });
+});
+
+// ---- Pass criterion 4: brew link and brew unlink get 120 s and one try. The runner waits only for the process it
+// spawned, so a second try could start while something the first one started still writes (review C, B1).
 
 test("rollback: brew link and brew unlink reach the runner with a 120 s limit", async () => {
   const { run } = await runMod(); const { dir, w, target } = await setup(true, w => { w.probeBroken.add("8.0.70"); });
@@ -166,14 +185,19 @@ test("rollback: brew link and brew unlink reach the runner with a 120 s limit", 
   expect(limitsOf(w, "update")).toEqual([120_000]); // unchanged: one try
   rmSync(dir, { recursive: true });
 });
-for (const sub of ["link", "unlink"]) test(`rollback: one timed-out brew ${sub} is repeated once and the rollback completes`, async () => {
+for (const sub of ["link", "unlink"]) test(`rollback: a timed-out brew ${sub} is NOT repeated: it ends as a failed rollback does today`, async () => {
   const { run } = await runMod(); let left = 1;
   const { dir, w, target } = await setup(true, w => { w.probeBroken.add("8.0.70"); });
   w.slow = a => a[0] === "brew" && a[1] === sub && left-- > 0;
   const out = await run(w.deps(), target);
-  expect(outcome(out, dir, w)).toMatchObject({ decision: "rolled_back", reason: "probe_failed", failed: ["8.0.70"], halted: undefined, linked: "8.0.64", kegs: ["8.0.64"] });
-  expect(limitsOf(w, sub)).toEqual([120_000, 120_000]);
-  expect((out as { timings?: unknown }).timings).toContainEqual({ step: `brew_${sub}`, ms: 120_000, tries: 2 });
+  // putBack moves the newer keg home and relinks it (its own link call), then the halt records where opt points.
+  expect(outcome(out, dir, w)).toMatchObject({ decision: "rollback_failed", reason: "probe_failed", failed: ["8.0.70"], halted: "rollback_failed", linked: "8.0.70", kegs: ["8.0.64", "8.0.70"] });
+  expect(state(dir).halted).toMatchObject({ reason: "rollback_failed", version: "8.0.70", commandError: { step: `brew_${sub}`, kind: "timed_out" }, opt: { version: "8.0.70", runnable: true } });
+  const timings = (out as { timings?: { step: string; ms: number; tries: number }[] }).timings!;
+  expect(timings).toContainEqual({ step: `brew_${sub}`, ms: 120_000, tries: 1 });
+  expect(timings.every(t => !(t.step === `brew_${sub}` && t.tries > 1))).toBe(true);
+  expect(limitsOf(w, sub)).toEqual(sub === "link" ? [120_000, 120_000] : [120_000]); // link: the timed-out try, then putBack's relink
+  expect(flat(w)[flat(w).indexOf(`brew ${sub}`) + 1]).not.toBe(`brew ${sub}`); // nothing re-runs it straight away
   rmSync(dir, { recursive: true });
 });
 

@@ -54,11 +54,11 @@ const brewEnv = { HOMEBREW_NO_INSTALL_CLEANUP: "1", HOMEBREW_NO_AUTO_UPDATE: "1"
 /** `brew update`: one try; a failed refresh already ends the run safely. */
 const UPDATE_LIMITS = [120_000];
 /**
- * `brew link` / `brew unlink`: 120 s, tried once more on timeout. Measured on a stand-in formula (2026-11-16): after a
- * try killed part-way (SIGTERM or SIGKILL) or one that had finished, the repeat exits 0 and leaves the keg fully
- * linked / unlinked. The runner settles only after the killed try has exited, so two never overlap.
+ * `brew link` / `brew unlink`: 120 s and one try. They change the prefix, and the runner waits only for the process it
+ * spawned, not for anything that process started: a second try could overlap a write of the first. A timed-out one
+ * fails the rollback as any other failure does (put back, opt check, halt).
  */
-const LINK_LIMITS = [120_000, 120_000];
+const LINK_LIMITS = [120_000];
 
 /** One `{"type":"result","subtype":"success","is_error":false}` event, from a single object or an event array. */
 export function probeOk(text: string): boolean {

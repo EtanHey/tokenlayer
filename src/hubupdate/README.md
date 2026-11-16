@@ -24,13 +24,15 @@ Refresh failures leave the version read running and report `refresh` as `ok`, `f
 `brew update` has a 120-second timeout and one try. A loaded Mac makes Homebrew slow (`brew info` hit 15 s in 6 of
 39 runs on 2026-11-15/16, against 0.5 s normally), so the read-only queries `brew info --json=v2` and `brew --cellar`
 are tried again when they time out: three tries with limits of 15, 45 and 90 seconds. A nonzero exit or unparsable
-output is final. `brew link` and `brew unlink` (in `run`) get 120 seconds and one more try on timeout: on a stand-in
-formula, a repeat after a try killed part-way (SIGTERM or SIGKILL), or after one that had finished, exits 0 and
-leaves the keg fully linked or unlinked. Other commands retain 15 seconds and one try.
+output is final. `brew link` and `brew unlink` (in `run`) get 120 seconds and one try: they change the prefix, and
+the runner waits only for the process it spawned, not for anything that process started, so a second try could
+overlap the first. A timed-out one fails the rollback like any other failure. Other commands retain 15 seconds and
+one try.
 Command failures expose only a fixed step token and `timed_out` or `nonzero` kind in `refreshError`, `versionError` or `idle.commandError`.
 A sampler `parse_failure` also names the step whose output did not parse (`launchctl_list`, `nettop` or
 `lsof_established`) in `idle.parseStep` and in the gate's `fallback.parseStep`; never the output itself.
 `check` and every `run` result line carry `timings`: one `{ step, ms, tries }` entry per Homebrew command, in order.
+A `run` that returns before any step runs (`locked`, `state_unreadable`, `state_dir_unwritable`) has no `timings`.
 
 ## `run` (upgrade when idle; off by default)
 
