@@ -12,6 +12,9 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse", () => {
   let ch: LocalClickHouse;
   let dir: string;
   let opts: ShipOptions;
+  const now = new Date();
+  const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  const partition = (date: Date) => date.toISOString().slice(0, 7).replace("-", "");
 
   beforeAll(async () => {
     ch = await startLocalClickHouse();
@@ -25,13 +28,13 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse", () => {
         sessionId: "s-1",
         cwd: "/Users/u/Gits/golems",
         entrypoint: "sdk-ts",
-        timestamp: `2026-10-28T08:00:0${i}Z`,
+        timestamp: new Date(now.getTime() + i * 1000).toISOString(),
         message: { id: `msg_${i >> 1}`, role: "assistant", model: "claude-opus-5-5", usage: { input_tokens: 3, cache_read_input_tokens: 100, output_tokens: 10 } },
       });
     writeFileSync(join(dir, "claude", "p", "s-1.jsonl"), [0, 1, 2, 3].map(assistant).join("\n") + "\n");
     writeFileSync(
       join(dir, "codex", "r.jsonl"),
-      JSON.stringify({ timestamp: "2026-09-30T23:59:59Z", type: "session_meta", payload: { id: "c-1", cwd: "/x/brainlayer", originator: "codex_exec" } }) + "\n",
+      JSON.stringify({ timestamp: now.toISOString(), type: "session_meta", payload: { id: "c-1", cwd: "/x/brainlayer", originator: "codex_exec" } }) + "\n",
     );
     opts = {
       machine: "m4",
@@ -76,12 +79,12 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse", () => {
   });
 
   test("appended lines land in order; rows span monthly partitions", async () => {
-    appendFileSync(join(dir, "codex", "r.jsonl"), JSON.stringify({ timestamp: "2026-10-01T00:00:01Z", type: "turn_context", payload: { model: "gpt-5.5" } }) + "\n");
+    appendFileSync(join(dir, "codex", "r.jsonl"), JSON.stringify({ timestamp: nextMonth.toISOString(), type: "turn_context", payload: { model: "gpt-5.5" } }) + "\n");
     await shipOnce(opts);
     const parts = await ch.client.queryJSON<{ partition: string }>(
       "SELECT DISTINCT partition FROM system.parts WHERE database = 'tokenlayer' AND table = 'session_events' AND active ORDER BY partition",
     );
-    expect(parts.map((p) => p.partition)).toEqual(["202609", "202610"]);
+    expect(parts.map((p) => p.partition)).toEqual([partition(now), partition(nextMonth)]);
   });
   test("raw readback is byte-identical and agent views omit payload columns", async () => {
     const line = ' { "type":"user", "message":{"content":"sk-ant-api03-SYNTHETIC01234567890123456789"} }\r\n';

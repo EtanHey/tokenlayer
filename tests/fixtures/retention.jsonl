@@ -1,0 +1,4 @@
+{"type":"user","entrypoint":"cli","sessionId":"old","timestamp":"OLD","message":{"content":"original"}}
+{"type":"user","entrypoint":"cli","sessionId":"recent","timestamp":"RECENT"}
+{"type":"user","entrypoint":"cli","sessionId":"undated"}
+{"type":"user","entrypoint":"cli","sessionId":"january","timestamp":"1970-01-02T00:00:00Z"}

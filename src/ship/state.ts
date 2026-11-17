@@ -6,6 +6,8 @@ import type { FileState } from "./parse";
 export type FileCheckpoint = {
   /** Physical compressed representation; offset/fingerprint remain decoded coordinates. */
   compressed?: { size: number; fingerprint: string; complete: boolean };
+  /** Persist retention filtering across bounded generation replays and retries. */
+  retentionReplay?: boolean;
   inode: number;
   identity: string;
   /** mtime when last checked; an unchanged size, inode and mtime skips the file without reading it. */

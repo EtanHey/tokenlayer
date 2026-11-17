@@ -1,3 +1,4 @@
+import { SESSION_RETENTION_DAYS } from "./session-retention";
 import { writeOut, installErrorHandlers } from './egress';
 import { repoFunctionsSQL } from "./repo";
 import { migrateSessionSchema } from "./session-schema";
@@ -7,7 +8,7 @@ import { fixed, type ClickHouse } from "./clickhouse";
 
 export const SCHEMA_DIR = join(import.meta.dir, "..", "..", "schema");
 
-/** Apply schema/*.sql in name order. Files contain idempotent statements (CREATE ... IF NOT EXISTS). */
+/** Apply schema/*.sql in name order. Files contain idempotent CREATE/ALTER statements and shared retention placeholders. */
 export async function applySchema(ch: ClickHouse, dir = SCHEMA_DIR): Promise<string[]> {
   fixed(ch);
   const files = readdirSync(dir)
@@ -18,6 +19,7 @@ export async function applySchema(ch: ClickHouse, dir = SCHEMA_DIR): Promise<str
     if (f === "005_views.sql") await migrateSessionSchema(ch);
     if (f === "006_session_context.sql") for (const sql of repoFunctionsSQL()) await ch.exec(sql);
     const sql = readFileSync(join(dir, f), "utf8")
+      .replaceAll("{{SESSION_RETENTION_DAYS}}", String(SESSION_RETENTION_DAYS))
       .split("\n")
       .filter((l) => !l.trim().startsWith("--"))
       .join("\n")

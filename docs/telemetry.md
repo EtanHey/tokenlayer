@@ -214,3 +214,18 @@ bun -e 'import {loadEnvFiles} from "./src/lib/env"; import {ClickHouse} from "./
 For deployment verification include `machine,harness` in SELECT/GROUP BY to confirm both feeds. This view is a
 content-free query convenience, not an access-control boundary. Backfill covers eligible uncompressed files;
 see the runbook's compressed-history gap before claiming all 90 days are present.
+
+## Session text retention
+
+`bun run schema:apply` expands `{{SESSION_RETENTION_DAYS}}` in migration 011 from
+`src/lib/session-retention.ts` (30 days). The TTL deletes expired session rows in background
+merges, with a one-hour minimum interval between TTL merges. It preserves `harness = 'antigravity'`
+and all UTC January 1970 timestamps until undated rows are resolved. Both session and proxy tables
+cap background merge size at 1 GiB. Applying the migration to an existing database can trigger
+heavy TTL materialization; announce and apply it separately from shipping the code.
+
+When a file is replayed after a rewrite or rotation (including recovery of that replay),
+ship skips rows outside the same retention window. It still parses and checkpoints all source
+bytes, including batches where every row is expired. `ShipResult.lines` counts acknowledged
+source lines, including skipped lines, so line limits also bound expired-only replays.
+Fresh imports retain their existing behavior and rely on the database TTL for expiration.

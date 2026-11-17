@@ -25,10 +25,12 @@ describe.skipIf(!clickhouseBinary())("session restore → real ClickHouse and CL
     await applySchema(ch.client);
     dir = mkdtempSync(join(tmpdir(), "tokenlayer-restore-"));
     source = join(dir, "source.jsonl");
+    const now = new Date();
+    const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
     bytes = Buffer.concat([
       Buffer.from('{"type":"queue-operation"}\n'),
-      Buffer.from(' { "type":"session_meta", "timestamp":"2026-09-30T23:59:59Z", "payload":{"id":"native-id", "session_id":"alias-id"} }\r\n'),
-      Buffer.from('{"type":"turn_context","timestamp":"2026-10-01T00:00:01Z","payload":{"model":"שלום"}}\n'),
+      Buffer.from(` { "type":"session_meta", "timestamp":"${now.toISOString()}", "payload":{"id":"native-id", "session_id":"alias-id"} }\r\n`),
+      Buffer.from(`{"type":"turn_context","timestamp":"${nextMonth.toISOString()}","payload":{"model":"שלום"}}\n`),
       Buffer.from([0xff, 0xfe, 0, 34, 92, 10]),
     ]);
     writeFileSync(source, bytes);

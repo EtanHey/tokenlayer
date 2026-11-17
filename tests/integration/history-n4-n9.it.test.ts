@@ -10,7 +10,7 @@ import { runImport } from '../../scripts/history/run';
 import { StreamingHistoryClient, RESERVE } from '../../scripts/history/stream';
 const dir = historyFixtureDirectories('history-n4n9-');
 const row = (i: number) => ({ machine: 'm4', path: '/native/source', generation: 'g', byte_offset: i * 10,
-    content_hash: sha256Hex(String(i)), line_bytes: 10, session_id: `owner-${String(i).padStart(80, '0')}`, session_alias: '', ts: '2026-02-07 00:00:00.000', raw: '{}\n' });
+    content_hash: sha256Hex(String(i)), line_bytes: 10, session_id: `owner-${String(i).padStart(80, '0')}`, session_alias: '', ts: new Date().toISOString().replace("T", " ").replace("Z", ""), raw: '{}\n' });
 const fixture = () => {
     const root = dir(), roots = join(root, 'roots'), history = join(root, 'history');
     mkdirSync(roots); mkdirSync(history, { mode: 0o700 });
