@@ -221,8 +221,19 @@ see the runbook's compressed-history gap before claiming all 90 days are present
 `src/lib/session-retention.ts` (30 days). The TTL deletes expired session rows in background
 merges, with a one-hour minimum interval between TTL merges. It preserves `harness = 'antigravity'`
 and all UTC January 1970 timestamps until undated rows are resolved. Both session and proxy tables
-cap background merge size at 1 GiB. Applying the migration to an existing database can trigger
-heavy TTL materialization; announce and apply it separately from shipping the code.
+cap background merge size at 1 GiB. Apply retention in two separate steps:
+
+1. Apply the schema with `bun run schema:apply`. Migration 011 is metadata only:
+   `materialize_ttl_after_modify = 0` prevents a rewrite, and the runner skips statements
+   whose TTL and settings already match live metadata. New parts follow the TTL;
+   existing parts acquire TTL information only as they merge or are materialized.
+2. Announce a separate materialization step. Before each partition, check its active
+   `sum(bytes_on_disk)` in `system.parts` and the free space on its disk in `system.disks`.
+   Proceed only when **free space minus 25 GiB exceeds the partition's bytes**.
+   Run `ALTER TABLE tokenlayer.session_events MATERIALIZE TTL IN PARTITION <p>`
+   for one partition at a time, wait for its mutation to finish, and monitor free space.
+   Recheck the space condition before the next partition. The 1 GiB merge cap does
+   not limit these mutations.
 
 When a file is replayed after a rewrite or rotation (including recovery of that replay),
 ship skips rows outside the same retention window. It still parses and checkpoints all source

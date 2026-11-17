@@ -46,3 +46,8 @@ test("replay retention uses UTC, keeps boundary rows and protects Antigravity", 
   expect(retainSessionRow({ harness: "antigravity", ts: ts(cutoff - 1) }, now)).toBe(true);
   expect(retainSessionRow({ harness: "claude", ts: ts(0) }, now)).toBe(true);
 });
+
+test("replay retention keeps malformed timestamps", async () => {
+  const { retainSessionRow } = await import("../../src/lib/session-retention");
+  expect(retainSessionRow({ harness: "claude", ts: "malformed" }, Date.now())).toBe(true);
+});

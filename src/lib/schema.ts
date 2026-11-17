@@ -8,6 +8,30 @@ import { fixed, type ClickHouse } from "./clickhouse";
 
 export const SCHEMA_DIR = join(import.meta.dir, "..", "..", "schema");
 
+/** ClickHouse prints INTERVAL as toIntervalDay and adds predicate parentheses. */
+function canonicalTTL(sql: string): string {
+  return sql.replace(/INTERVAL\s+(\d+)\s+DAY/gi, "toIntervalDay($1)")
+    .replace(/\bDELETE\s+WHERE\b/g, "WHERE")
+    .replace(/[\s`()]/g, "");
+}
+
+/** Guard migration 011 using live metadata, rather than reissuing MODIFY TTL on deploy. */
+async function retentionStatementApplied(ch: ClickHouse, statement: string): Promise<boolean> {
+  const table = statement.match(/^ALTER TABLE tokenlayer\.(session_events|proxy_usage) /)?.[1];
+  if (!table) return false;
+  const [row] = await ch.queryJSON<{ create_table_query: string }>(
+    `SELECT create_table_query FROM system.tables WHERE database = 'tokenlayer' AND name = '${table}'`,
+  );
+  if (!row) return false;
+  const settings = row.create_table_query.match(/\bSETTINGS\s+([\s\S]*)$/)?.[1] ?? "";
+  const requestedSettings = statement.match(/MODIFY SETTING (.*)$/)?.[1];
+  if (requestedSettings) return requestedSettings.split(",").every(setting =>
+    settings.split(",").some(actual => actual.trim() === setting.trim()));
+  const ttl = statement.match(/MODIFY TTL ([\s\S]*?) SETTINGS /)?.[1];
+  const installedTTL = row.create_table_query.match(/\bTTL ([\s\S]*?)\s+SETTINGS /)?.[1];
+  return !!ttl && !!installedTTL && canonicalTTL(ttl) === canonicalTTL(installedTTL);
+}
+
 /** Apply schema/*.sql in name order. Files contain idempotent CREATE/ALTER statements and shared retention placeholders. */
 export async function applySchema(ch: ClickHouse, dir = SCHEMA_DIR): Promise<string[]> {
   fixed(ch);
@@ -25,7 +49,10 @@ export async function applySchema(ch: ClickHouse, dir = SCHEMA_DIR): Promise<str
       .join("\n")
       .trim()
       .replace(/;\s*$/, "");
-    for (const statement of sql.split(";").map((s) => s.trim()).filter(Boolean)) await ch.exec(statement);
+    for (const statement of sql.split(";").map((s) => s.trim()).filter(Boolean)) {
+      if (f === "011_session_retention.sql" && await retentionStatementApplied(ch, statement)) continue;
+      await ch.exec(statement);
+    }
   }
   await migrateSessionSchema(ch);
   return files;
