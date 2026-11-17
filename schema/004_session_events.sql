@@ -38,4 +38,4 @@ CREATE TABLE IF NOT EXISTS tokenlayer.session_events
 ENGINE = ReplacingMergeTree(ingested_at)
 PARTITION BY toYYYYMM(ts)
 ORDER BY (machine, path, generation, byte_offset, content_hash)
-SETTINGS non_replicated_deduplication_window = 10000;
+SETTINGS non_replicated_deduplication_window = 10000, max_bytes_to_merge_at_max_space_in_pool = 1073741824;

@@ -19,8 +19,8 @@ const fixture = () => {
     mkdirSync(roots);
     mkdirSync(history, { mode: 0o700 });
     const id = '00000000-0000-4000-8000-000000000001', path = join(roots, `rollout-${id}.jsonl`);
-    const lines = Array.from({ length: 80 }, (_, i) => JSON.stringify(i === 0 ? { type: 'session_meta', timestamp: '2026-02-07T12:12:11.951Z', payload: { id } } :
-        { type: 'event_msg', ...(i % 2 ? { timestamp: '2026-02-07T12:12:11.969Z' } : {}), payload: { type: 'fixture', n: i % 3 } }) + '\n');
+    const lines = Array.from({ length: 80 }, (_, i) => JSON.stringify(i === 0 ? { type: 'session_meta', timestamp: new Date().toISOString(), payload: { id } } :
+        { type: 'event_msg', ...(i % 2 ? { timestamp: new Date().toISOString() } : {}), payload: { type: 'fixture', n: i % 3 } }) + '\n');
     const raw = Buffer.from(lines.join('')), prefix = Buffer.from(lines.slice(0, 32).join(''));
     writeFileSync(path, raw);
     const source: Source = { path, kind: 'codex', sessionId: id, physicalSha256: sha256Hex(raw), decodedSha256: sha256Hex(raw), decodedBytes: raw.length, prefixBytes: prefix.length, prefixSha256: sha256Hex(prefix) };
@@ -207,7 +207,7 @@ test('fresh compressed native pilot uses decoded generation, original path and r
         await runImport(f.manifest,local.client,{...opts(f,local.client),pilotOnly:true});
         const rows=await local.client.queryJSON<{machine:string;path:string;generation:string;n:string}>('SELECT machine,path,generation,count() AS n FROM tokenlayer.session_events FINAL GROUP BY machine,path,generation');
         expect(rows.map(r=>({...r,n:Number(r.n)}))).toEqual([{machine:'m4',path:f.path,generation:source.decodedSha256.slice(0,16),n:32}]);
-        expect(await local.client.exec('SELECT DISTINCT toYYYYMM(ts) FROM tokenlayer.session_events FINAL ORDER BY 1')).toBe('197001\n202602\n');
+        expect(await local.client.exec('SELECT DISTINCT toYYYYMM(ts) FROM tokenlayer.session_events FINAL ORDER BY 1')).toBe('197001\n' + new Date().toISOString().slice(0, 7).replace('-', '') + '\n');
         await runImport(f.manifest,local.client,{...opts(f,local.client),pilotOnly:true,batchBytes:1000});
         expect(await local.client.exec('SELECT count() FROM tokenlayer.session_events FINAL')).toBe('32\n');
     } finally {await local.stop();}

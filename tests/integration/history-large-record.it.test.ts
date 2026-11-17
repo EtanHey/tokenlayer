@@ -25,7 +25,7 @@ test('full CLI: explicit 11/13 MiB history records at LF813 preserve raw/hash/of
             // One tool arguments blob and a native response_item/message with 13 content parts.
             const payload = compressed ? { type: 'message', role: 'user', content: Array.from({ length: 13 }, (_, i) => [1, 4, 7, 10].includes(i) ? { type: 'input_image', image_url: 'A'.repeat(13 * MiB / 4) } : { type: 'input_text', text: 'fixture' }) } :
                 { type: 'function_call', arguments: '"'.repeat(11 * MiB / 2) };
-            const big = Buffer.from(JSON.stringify({ timestamp: '2026-04-09T14:55:02.000Z', ordinal: 813, type: 'response_item', payload }) + '\n');
+            const big = Buffer.from(JSON.stringify({ timestamp: new Date().toISOString(), ordinal: 813, type: 'response_item', payload }) + '\n');
             const raw = Buffer.concat([prefix, big, Buffer.from('{}\n')]);
             const path = join(root, `rollout-${id}.jsonl`), physical = compressed ? Buffer.from(Bun.zstdCompressSync(raw)) : raw;
             const source = { path: path + (compressed ? '.zst' : ''), kind: 'codex', sessionId: id, physicalSha256: sha256Hex(physical), decodedSha256: sha256Hex(raw), decodedBytes: raw.length,

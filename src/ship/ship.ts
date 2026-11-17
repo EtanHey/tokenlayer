@@ -1,3 +1,4 @@
+import { retainSessionRow } from "../lib/session-retention";
 import { redactText } from "../lib/redact";
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, openSync, readdirSync, readSync, statSync, type Stats } from "node:fs";
@@ -195,6 +196,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           const head = () => decoded?.head ?? headLines(path);
           const fresh = () => {
             const checkpoint = freshCheckpoint(path, root.kind, st, head());
+            if (cp?.retentionReplay) checkpoint.retentionReplay = true;
             if (agy) Object.assign(checkpoint.parser, { sessionId: session, cwd: antigravityCwd(root.dir, path, session, root.kind), lastTsMs: 0 });
             if (kiro) Object.assign(checkpoint.parser, { sessionId: session, ...kiroMetadata(path, cp?.parser), harness: kiroHarness });
             if (decoded) checkpoint.generation = decoded.digest.slice(0, 16);
@@ -228,6 +230,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
               : fresh().generation;
             cp = fresh();
             cp.generation = revision;
+            cp.retentionReplay = true;
             hash = createHash("sha256");
             result.resets++;
           } else if (cp && replay) {
@@ -290,6 +293,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             // A fresh checkpoint starts at offset 0, so lines[0] is the file's first line.
 
             const parser = structuredClone(cp.parser);
+            const retentionNow = Date.now();
             const rows = lines.map((l) => ({
               machine: opts.machine,
               harness: parser.harness,
@@ -302,7 +306,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
               ...(kiro ? parseKiro(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes), parser)
                 : agy ? parseAntigravity(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes), parser)
                 : parseLine(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes))),
-            }));
+            })).filter(row => !cp!.retentionReplay || retainSessionRow(row, retentionNow));
             // Deterministic token over the rows themselves: an identical retry is deduplicated server-side,
             // while changed rows for the same range (rewrite, late harness decision) are a new insert.
             if (opts.maxBatchJsonBytes !== undefined) boundedRowsBytes(rows, opts.maxBatchJsonBytes);
@@ -318,7 +322,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
               generations.files[path] = { ...cp, offset: nextOffset, fingerprint, parser };
             }
             writeState(generationPath, generations);
-            await opts.clickhouse.insert("session_events", rows, token);
+            if (rows.length) await opts.clickhouse.insert("session_events", rows, token);
 
             const shippedBytes = nextOffset - cp.offset;
             cp.parser = parser;
@@ -328,7 +332,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             state.legacyReplay = state.legacyReplay?.filter((p) => p !== path);
             dirty = true;
             shippedFromFile = true;
-            result.lines += rows.length;
+            result.lines += lines.length;
             result.bytes += shippedBytes;
 
             if (rate > 0) {

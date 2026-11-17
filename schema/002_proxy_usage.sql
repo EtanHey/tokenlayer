@@ -55,4 +55,4 @@ ENGINE = ReplacingMergeTree(ingested_at)
 PARTITION BY toYYYYMM(ts)
 -- Per-account/day burn is a prefix scan; execution_id makes the dedupe key unique per request.
 ORDER BY (credential, toDate(ts), ts, execution_id)
-SETTINGS non_replicated_deduplication_window = 10000;
+SETTINGS non_replicated_deduplication_window = 10000, max_bytes_to_merge_at_max_space_in_pool = 1073741824;
