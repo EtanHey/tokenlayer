@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 // After the Friday stack merges: every install step on both Macs, in the order the receipts need, for one commit on
 // main. Dry run by default: it reads state and prints every step, command, check and rollback, and changes nothing.
-//   bun scripts/after-merge-install.ts --commit <full sha on origin/main> [--apply] [--clickhouse-window]
+//   bun scripts/after-merge-install.ts --commit <full or short hex sha on origin/main> [--apply] [--clickhouse-window]
 // --apply runs the steps on the M1 (here) and the M4 (ssh macbook-pro). Each step skips when it is already in place,
 // checks itself after it runs, and the first failure stops the run and prints the rollback for every step it changed.
 // docs/after-merge-install.md lists where each step and its order come from. R12's repartition is not here: own window.
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
@@ -43,15 +44,35 @@ export type Options = { sha: string; stamp: string; clickhouse: string; clickhou
 const LANE = 'tokenlayer-after-merge';
 const job = (name: string) => `com.tokenlayer.${name}`;
 
+const FULL = /^[0-9a-f]{40}$/;
+/** The run's values go into bash on both Macs: refuse anything but a full SHA and a plain stamp before a script exists. */
+function assertOptions(o: Options) {
+  if (!FULL.test(o.sha)) throw Error(`not a full commit SHA: ${JSON.stringify(o.sha)}`);
+  if (!/^\d{8}T\d{6}Z$/.test(o.stamp)) throw Error(`bad stamp: ${JSON.stringify(o.stamp)}`);
+}
+
+/**
+ * --commit as typed (full or short hex only) to the full commit SHA, with git's argv, never a shell. Anything else,
+ * a name, an option, a tree or an unknown object, is refused. Runs before any script is built, dry run included.
+ */
+export function resolveCommit(repo: string, input: string) {
+  if (!/^[0-9a-f]{7,40}$/.test(input)) throw Error(`--commit takes a full or short hex SHA, not ${JSON.stringify(input)}`);
+  const r = spawnSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', '--end-of-options', `${input}^{commit}`], { encoding: 'utf8' });
+  const sha = r.stdout.trim();
+  if (r.status !== 0 || !FULL.test(sha)) throw Error(`--commit ${input} is not a commit here (fetch first)`);
+  return sha;
+}
+
 /** Shared bash for every script on either Mac. Secrets are only ever read inside a subshell, never printed. */
 export function prelude(mac: Mac, o: Options) {
+  assertOptions(o);
   return [
     'set -euo pipefail',
     'export PATH=/opt/homebrew/bin:$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
-    `S=${o.sha}; MAC=${mac}`,
+    `S=${quote(o.sha)}; MAC=${mac}`,
     'REPO=$HOME/Gits/tokenlayer; TL=$HOME/.config/tokenlayer; APP=$TL/app/$S; CUR=$TL/app/current',
-    `LA=$HOME/Library/LaunchAgents; D=gui/$(id -u); B=$TL/backups/after-merge-${o.stamp}; MARK=$TL/after-merge/$S`,
-    `CH=$HOME/${o.clickhouse}`,
+    `LA=$HOME/Library/LaunchAgents; D=gui/$(id -u); B=$TL/backups/after-merge-${quote(o.stamp)}; MARK=$TL/after-merge/$S`,
+    `CH="$HOME"/${quote(o.clickhouse)}`,
     // Reader (capped) login unless a second env file is named; clickhouse-writer.env sets the writer.
     'chq() { ( set -a; . "$TL/clickhouse.env"; [[ -n ${2:-} ]] && . "$TL/$2"; set +a; "$CH" client --port 19000 --user "$CLICKHOUSE_USER" -q "$1" ); }',
     // One top-level field of a loaded job (pid, runs, state, program, "last exit code"); empty when not loaded.
@@ -179,11 +200,13 @@ export function plan(o: Options): Step[] {
     // ── ClickHouse (M1): config before views (R5's views fit the cap only with the reader profile), tables before code ──
     {
       id: 'm1-clickhouse-config', mac: 'm1', title: 'clickhouse.xml from the template: reader cap, writer login, window-order read', from: 'R4, R5 §4, R6 (setup.sh config), Sol §5', after: ['m1-pin'],
-      done: `[[ -d $APP ]] || exit 3; (cd "$APP" && bun -e "import { clickhouseConfig } from './scripts/deploy/deploy.ts'; import { readFileSync } from 'node:fs'; process.exit(clickhouseConfig() === readFileSync(process.env.HOME + '/.config/tokenlayer/clickhouse.xml', 'utf8') ? 0 : 1)")`,
+      done: `[[ -d $APP ]] || exit 3; (cd "$APP" && bun -e "import { clickhouseConfig } from './scripts/deploy/deploy.ts'; import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs'; process.exit(clickhouseConfig() === readFileSync(process.env.HOME + '/.config/tokenlayer/clickhouse.xml', 'utf8') ? 0 : 1)")`,
       capture: 'chq "SELECT uptime()"',
       apply: ['"$APP/scripts/deploy/setup.sh" config'],
       verify: [
-        `(cd "$APP" && bun -e "import { clickhouseConfig } from './scripts/deploy/deploy.ts'; import { readFileSync } from 'node:fs'; process.exit(clickhouseConfig() === readFileSync(process.env.HOME + '/.config/tokenlayer/clickhouse.xml', 'utf8') ? 0 : 1)")`,
+        `(cd "$APP" && bun -e "import { clickhouseConfig } from './scripts/deploy/deploy.ts'; import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs'; process.exit(clickhouseConfig() === readFileSync(process.env.HOME + '/.config/tokenlayer/clickhouse.xml', 'utf8') ? 0 : 1)")`,
         '[[ $(chq "SELECT getSetting(\'max_memory_usage\')") == 8589934592 ]]',
         '[[ $(chq "SELECT getSetting(\'optimize_read_in_window_order\')") == true ]]',
         '[[ $(chq "SELECT getSetting(\'max_memory_usage\')" clickhouse-writer.env) == 0 ]]',
@@ -338,6 +361,7 @@ const paste = (text: string, o: Options, before = '') =>
 
 /** Run (or, by default, only describe) the plan. Stops at the first failure and prints the rollback for what changed. */
 export async function run(o: RunOptions): Promise<Outcome> {
+  assertOptions(o);
   const log = o.log ?? console.log;
   const steps = plan(o);
   const problems = orderProblems(steps);
@@ -438,12 +462,16 @@ export function clickhouseFromSetup(repo: string) {
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const known = ['--commit', '--apply', '--clickhouse-window'];
-  const sha = args[args.indexOf('--commit') + 1];
-  if (!args.includes('--commit') || !sha || args.some((a, i) => a.startsWith('--') && !known.includes(a)) || args.filter(a => !a.startsWith('--')).length !== 1) {
-    console.error('usage: bun scripts/after-merge-install.ts --commit <full sha on origin/main> [--apply] [--clickhouse-window]');
+  const input = args[args.indexOf('--commit') + 1];
+  const usage = 'usage: bun scripts/after-merge-install.ts --commit <full or short hex sha on origin/main> [--apply] [--clickhouse-window]';
+  if (!args.includes('--commit') || !input || args.some((a, i) => a.startsWith('--') && !known.includes(a)) || args.filter(a => !a.startsWith('--')).length !== 1) {
+    console.error(usage);
     process.exit(2);
   }
   const self = resolve(import.meta.dir, '..');
+  // Validated and resolved here, before any script is built or run (the dry run included): it goes into bash on both Macs.
+  let sha: string;
+  try { sha = resolveCommit(self, input); } catch (err) { console.error(`${(err as Error).message}\n${usage}`); process.exit(2); }
   const stamp = new Date().toISOString().replace(/[-:]|\.\d+/g, '');
   const outcome = await run({ sha, stamp, apply: args.includes('--apply'), clickhouseWindow: args.includes('--clickhouse-window'), clickhouse: clickhouseFromSetup(self), exec: realExec, self });
   process.exit(outcome.ok ? 0 : 1);

@@ -8,6 +8,7 @@ bun scripts/after-merge-install.ts --commit <full sha on origin/main>           
 bun scripts/after-merge-install.ts --commit <full sha on origin/main> --apply    # runs it
 ```
 
+- `--commit` takes only a full or short lowercase hex SHA. It is resolved to the full commit with `git rev-parse --verify <sha>^{commit}` before any script is built, the dry run included; anything else exits 2 having run nothing. The SHA, the stamp and the ClickHouse path enter the bash on both Macs single-quoted.
 - It runs from the M1. M1 steps run locally. M4 steps run over `ssh macbook-pro` with `BatchMode=yes` and `ConnectTimeout=5`, and the M4 must answer before anything changes.
 - `--apply` holds the M1 heavy-job lock (`~/.m1-heavy.lock`) for the whole run: it reads `.next`, needs `df -g /` ≥ 44, and releases the lock on success and on failure.
 - Each step does four things:

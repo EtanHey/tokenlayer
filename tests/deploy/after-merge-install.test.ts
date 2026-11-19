@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { drift, orderProblems, plan, prelude, quote, run, type Exec, type Kind, type Mac, type Options } from '../../scripts/after-merge-install';
+import { drift, orderProblems, plan, prelude, quote, resolveCommit, run, type Exec, type Kind, type Mac, type Options } from '../../scripts/after-merge-install';
 
 const o: Options = { sha: 'a'.repeat(40), stamp: '20261120T000000Z', clickhouse: '.local/bin/clickhouse-test' };
 const ids = (opts = o) => plan(opts).map(s => s.id);
@@ -96,7 +96,7 @@ describe('drift check (real bash, a fake setup.sh)', () => {
       return r.status;
     } finally { rmSync(home, { recursive: true, force: true }); }
   }
-  const ck = 'DRIFT clickhouse:\n        ProgramArguments[0]: live "~/Gits/tokenlayer/bin/tokenlayer", repo "~/.config/tokenlayer/app/current/bin/tokenlayer"';
+  const ck = 'DRIFT clickhouse:\n        ProgramArguments[0]: differs (live "/h/synthetic/Gits/tokenlayer/bin/tokenlayer", template "/h/synthetic/.config/tokenlayer/app/current/bin/tokenlayer")';
   test('no tree to run drift from is a failure, not a clean result', () => {
     expect(check(true)).not.toBe(0);
     expect(check(false)).not.toBe(0);
@@ -107,7 +107,7 @@ describe('drift check (real bash, a fake setup.sh)', () => {
     expect(check(false, { out: `ok    ship\n${ck}`, rc: 1 })).not.toBe(0);
   });
   test('any other drift fails', () => {
-    expect(check(true, { out: `${ck}\nDRIFT ship:\n        x: live 1, repo 2`, rc: 1 })).not.toBe(0);
+    expect(check(true, { out: `${ck}\nDRIFT ship:\n        x: differs (live 1, template 2)`, rc: 1 })).not.toBe(0);
     expect(check(true, { out: 'DRIFT spendtable: no template in this repo', rc: 1 })).not.toBe(0);
   });
   test('a crash is not drift', () => expect(check(true, { out: 'TypeError: boom', rc: 1 })).not.toBe(0));
@@ -215,5 +215,65 @@ describe('apply', () => {
     await run({ ...o, ...quiet, apply: true, exec: withPid });
     expect(lines.join('\n')).toContain(`m1 m1-pin: [[ ${'b'.repeat(40)} == none ]] || ~/Gits/tokenlayer/scripts/deploy/setup.sh use ${'b'.repeat(40)}`);
     expect(calls.find(c => c.id === 'm1-ship' && c.kind === 'verify')!.script).toContain('APPLIED=1');
+  });
+});
+
+// Security pre-review M1 (20 Nov): --commit went raw into `S=...` in the prelude, and even the dry run ran it on both Macs.
+describe('--commit is validated and resolved before any script is built', () => {
+  const payload = 'deadbeef; echo INJECTED-RAN >&2; #';
+  test("the reviewer's payload never reaches exec, in a dry run or an apply", async () => {
+    for (const apply of [false, true]) {
+      const { calls, exec } = mock();
+      await expect(run({ ...o, ...quiet, sha: payload, apply, exec })).rejects.toThrow('not a full commit SHA');
+      expect(calls).toEqual([]);
+    }
+    expect(() => prelude('m1', { ...o, sha: payload })).toThrow('not a full commit SHA');
+    for (const sha of ['a'.repeat(39), 'A'.repeat(40), `${'a'.repeat(40)}\n`, `$(id)${'a'.repeat(35)}`]) expect(() => prelude('m4', { ...o, sha })).toThrow();
+  });
+  test('the other prelude values are quoted: a hostile ClickHouse path stays a literal string in bash', () => {
+    const clickhouse = ".local/bin/ch $(echo INJECTED-RAN >&2)'; echo INJECTED-RAN >&2; '";
+    const r = spawnSync('bash', ['-c', `${prelude('m1', { ...o, clickhouse })}\nprintf %s "$CH"`], { encoding: 'utf8', env: { ...process.env, HOME: '/h' } });
+    expect(r.stderr).not.toContain('INJECTED-RAN');
+    expect(r.stdout).toBe(`/h/${clickhouse}`);
+    expect(() => prelude('m1', { ...o, stamp: '2026; echo x' })).toThrow('stamp');
+  });
+
+  const git = (cwd: string, ...args: string[]) => spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8' }).stdout.trim();
+  function repo() {
+    const dir = mkdtempSync(join(tmpdir(), 'i1-commit-'));
+    git(dir, 'init', '-q');
+    writeFileSync(join(dir, 'f'), '1\n');
+    git(dir, 'add', 'f');
+    git(dir, 'commit', '-qm', 'one');
+    return { dir, sha: git(dir, 'rev-parse', 'HEAD'), tree: git(dir, 'rev-parse', 'HEAD^{tree}') };
+  }
+  test('a full or short hex SHA resolves to the full commit; anything else is refused', () => {
+    const r = repo();
+    try {
+      expect(resolveCommit(r.dir, r.sha)).toBe(r.sha);
+      expect(resolveCommit(r.dir, r.sha.slice(0, 7))).toBe(r.sha);
+      for (const bad of [payload, 'HEAD', 'main', r.sha.slice(0, 6), r.sha.toUpperCase(), `${r.sha}x`, '--all', 'f'.repeat(40), r.tree])
+        expect(() => resolveCommit(r.dir, bad)).toThrow();
+    } finally { rmSync(r.dir, { recursive: true, force: true }); }
+  });
+  test('the CLI refuses the payload before any shell runs: exit 2, no bash or ssh, even in a dry run', () => {
+    const home = mkdtempSync(join(tmpdir(), 'i1-cli-'));
+    try {
+      const bin = join(home, 'bin');
+      mkdirSync(bin);
+      // Stand-ins that record a call: nothing may reach a real shell or the M4.
+      for (const tool of ['ssh', 'bash']) {
+        writeFileSync(join(bin, tool), `#!/bin/sh\necho ${tool} >> ${quote(join(home, 'calls'))}\nexit 255\n`);
+        chmodSync(join(bin, tool), 0o755);
+      }
+      const cli = (sha: string) => spawnSync(process.execPath, ['scripts/after-merge-install.ts', '--commit', sha], { encoding: 'utf8', env: { HOME: home, PATH: `${bin}:/usr/bin:/bin` } });
+      for (const sha of [payload.replace('echo INJECTED-RAN >&2', `touch ${join(home, 'INJECTED')}`), 'HEAD', 'f'.repeat(40)]) {
+        const r = cli(sha);
+        expect(r.status).toBe(2);
+        expect(r.stderr).toContain('--commit');
+      }
+      expect(existsSync(join(home, 'INJECTED'))).toBe(false);
+      expect(existsSync(join(home, 'calls'))).toBe(false);
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 });
