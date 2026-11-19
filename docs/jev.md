@@ -32,11 +32,7 @@ net, which keeps the held maximum for unreconciled calls).
 
 ```sh
 bun build src/jev/main.ts --target bun --outfile ~/.config/tokenlayer/bin/jev.js
-bun -e 'import {render} from "./scripts/deploy/deploy"; import {readFileSync} from "node:fs"; import {homedir} from "node:os";
-  process.stdout.write(render(readFileSync("launchd/com.tokenlayer.jev.plist.template","utf8"), {HOME: homedir()}))' \
-  > ~/Library/LaunchAgents/com.tokenlayer.jev.plist
-plutil -lint ~/Library/LaunchAgents/com.tokenlayer.jev.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tokenlayer.jev.plist
+scripts/deploy/setup.sh jev   # renders the template, lints it and reloads the job
 ```
 
 It reads `TOKENLAYER_MACHINE` and the ClickHouse client settings from `~/.config/tokenlayer/{ship,clickhouse}.env`,
