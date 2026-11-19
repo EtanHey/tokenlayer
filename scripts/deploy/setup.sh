@@ -9,11 +9,22 @@ if [[ ${1:-} == hub ]]; then
   required+=(uname mkdir curl shasum mv chmod openssl plutil launchctl tailscale)
 elif [[ ${1:-} == ship ]]; then
   required+=(plutil launchctl)
+elif [[ ${1:-} == pin ]]; then
+  required+=(git tar launchctl)
+elif [[ ${1:-} == use ]]; then
+  required+=(launchctl)
 fi
 for binary in "${required[@]}"; do
   command -v "$binary" >/dev/null || { echo "$binary missing from deploy PATH; no changes made" >&2; exit 1; }
 done
-# Never invoke git/xcrun. Pin the official single arm64 binary; verify on EVERY run.
+# Daemons run ~/.config/tokenlayer/app/current, never this checkout (docs/pinned-installs.md).
+# pin <sha>: git archive that commit to app/<sha>, bun install --production, flip current; use <sha>: roll back.
+if [[ ${1:-} == pin ]]; then
+  exec "$BUN" "$REPO/scripts/deploy/pin.ts" install "${@:2}"
+elif [[ ${1:-} == use ]]; then
+  exec "$BUN" "$REPO/scripts/deploy/pin.ts" use "${@:2}"
+fi
+# hub/ship never invoke git/xcrun. Pin the official single arm64 binary; verify on EVERY run.
 if [[ ${1:-} == hub ]]; then
   [[ $(uname -s) == Darwin && $(uname -m) == arm64 ]] || exit 1
   CH="$HOME/.local/bin/clickhouse-d1-26.10.2.103"
