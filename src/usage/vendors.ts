@@ -1,16 +1,16 @@
-// Codex and Cursor limits, read from the provider caches T3 Code refreshes about once a minute
+// Codex, Cursor and Antigravity limits, read from the provider caches T3 Code refreshes about once a minute
 // (~/.t3/caches/<instance>.json). Only numbers and timestamps are copied; auth stays behind.
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { iso } from './projection';
 
 export const VENDOR_STALE_MS = 600_000;
-const DRIVERS = ['codex', 'cursor'];
+const DRIVERS = ['codex', 'cursor', 'antigravity', 'kiro'];
 type Win = { id: string; window: string | null; pct: number; resets_at: string | null };
 export type VendorReading = { pct: number | null; window: string | null; resets_at: string | null; observed_at: string | null;
-  source: string; stale: boolean; windows: Win[]; last_error?: string };
+  source: string; stale: boolean; windows: Win[]; last_error?: string; note?: string };
 
-const obj = (v: unknown): Record<string, any> => v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+const obj = (v: unknown): Record<string, any> => v && typeof v === 'object' ? v : {};
 const at = (v: string | null) => Date.parse(v ?? '') || 0;
 const span = (m: any, kind: unknown) => Number.isInteger(m) && m > 0 ? m % 1440 ? m % 60 ? `${m}m` : `${m / 60}h` : `${m / 1440}d`
   : typeof kind === 'string' && /^[a-z]{1,16}$/.test(kind) ? kind : null;
@@ -19,7 +19,7 @@ const empty = (source: string, last_error: string, observed_at: string | null): 
 
 export function vendorReading(cache: unknown, now: number): VendorReading {
   const c = obj(cache), limits = obj(c.usageLimits), observed_at = iso(limits.checkedAt);
-  const source = typeof c.instanceId === 'string' && /^[a-z0-9-]{1,40}$/.test(c.instanceId) ? `t3-cache:${c.instanceId}` : 't3-cache';
+  const source = /^[a-z0-9-]{1,40}$/.test(c.instanceId ?? '') ? `t3-cache:${c.instanceId}` : 't3-cache';
   const windows: Win[] = (Array.isArray(limits.windows) ? limits.windows : []).flatMap((raw: unknown) => {
     const w = obj(raw), pct = w.usedPercent;
     return typeof w.id === 'string' && /^[\w-]{1,40}$/.test(w.id) && typeof pct === 'number' && pct >= 0 && pct <= 100
@@ -27,8 +27,10 @@ export function vendorReading(cache: unknown, now: number): VendorReading {
   });
   // The binding window is the fullest; on a tie, the one that frees up last.
   const bind = [...windows].sort((a, b) => b.pct - a.pct || at(b.resets_at) - at(a.resets_at))[0];
-  if (!bind) return empty(source, 'usage unavailable', observed_at);
-  const stale = !observed_at || now - at(observed_at) > VENDOR_STALE_MS || !!bind.resets_at && at(bind.resets_at) <= now;
+  // Kiro's cache carries no usage at all; name what it does carry (key names only, never values).
+  if (!bind) return { ...empty(source, 'usage unavailable', observed_at),
+    note: c.usageLimits ? undefined : `no usageLimits, only ${Object.keys(c).sort()}` };
+  const stale = now - at(observed_at) > VENDOR_STALE_MS || (at(bind.resets_at) || Infinity) <= now;
   return { pct: bind.pct, window: bind.window, resets_at: bind.resets_at, observed_at, source, stale, windows };
 }
 
