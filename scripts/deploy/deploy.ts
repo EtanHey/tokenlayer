@@ -69,6 +69,8 @@ export function configureClient(machine: 'm1' | 'm4', url: string, root = home) 
   chmodSync(join(dir, 'ship.env'), 0o600);
 }
 const clientEnv = () => loadEnvFiles([join(config, 'ship.env'), join(config, 'clickhouse.env')], {});
+/** Schema apply is DDL, which the reader profile refuses: it logs in as the writer (clickhouse-writer.env last wins). */
+const writerClientEnv = () => loadEnvFiles([join(config, 'ship.env'), join(config, 'clickhouse.env'), join(config, writerEnv)], {});
 async function install(label: string, machine: string, binary = '') {
   const agents = join(home, 'Library/LaunchAgents');
   mkdirSync(agents, { recursive: true });
@@ -129,7 +131,7 @@ if (import.meta.main) {
         await Bun.sleep(500);
       }
       if (!ready) throw Error('ClickHouse /ping did not become ready');
-      run([process.execPath, 'run', 'schema:apply'], { ...process.env, ...clientEnv() });
+      run([process.execPath, 'run', 'schema:apply'], { ...process.env, ...writerClientEnv() });
       run(['tailscale', 'serve', '--bg', '--https=8123', 'http://127.0.0.1:8123']);
     });
   } else if (action === 'ship') {

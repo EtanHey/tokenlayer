@@ -2,6 +2,8 @@
 
 One ClickHouse database `tokenlayer` on the M1 hub (`tailscale serve :8123`, tailnet only).
 Apply the schema with `bun run schema:apply` (reads `CLICKHOUSE_*` from the environment; every file is idempotent).
+It is DDL, so it runs as the writer: the `tokenlayer` reader login runs none (see **Memory cap** below). On the M1:
+`( set -a; . ~/.config/tokenlayer/ship.env; . ~/.config/tokenlayer/clickhouse.env; . ~/.config/tokenlayer/clickhouse-writer.env; set +a; bun run schema:apply )`.
 
 | Table | Feed | Sort key | Engine |
 |---|---|---|---|
@@ -183,6 +185,9 @@ LIMIT 50
 - Each query is capped at 8 GiB (`max_memory_usage`). A caller may lower the cap, but may not raise it or set 0
   (ClickHouse refuses with code 452).
 - GROUP BY and ORDER BY spill to disk past 4 GiB, with at most 8 GiB of temporary disk per query.
+- No DDL (`allow_ddl=0`, which the caller cannot change; code 392): the reader selects, inserts (jev, fable events)
+  and reloads config, but cannot create, alter, rename, truncate or drop anything, nor make a `DEFINER` view.
+  Schema apply and any repartition or back-out run as `tokenlayer_writer`; `setup.sh hub` does that itself.
 
 Ship and drain write as `tokenlayer_writer`, which stays uncapped. It has its own password in
 `~/.config/tokenlayer/clickhouse-writer.env` (mode 600, loaded last by their plists), so the reader's password cannot

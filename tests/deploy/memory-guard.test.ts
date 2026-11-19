@@ -30,6 +30,12 @@ test('the shared read user runs under the reader profile: 8 GiB per query, spill
   expect(block('max_memory_usage', block('constraints', reader))).toBe(`<min>1</min><max>${8 * GiB}</max>`);
 });
 
+test('the reader runs no DDL, and cannot turn it back on (security pre-review S3)', () => {
+  const reader = block('reader', profiles);
+  expect(reader).toContain('<allow_ddl>0</allow_ddl>');
+  expect(block('allow_ddl', block('constraints', reader))).toBe('<readonly/>');
+});
+
 test('the writer user stays on the uncapped default profile, with its own password hash hidden from the preprocessed copy', () => {
   const writer = block('tokenlayer_writer', users);
   expect(block('profile', writer)).toBe('default');

@@ -56,6 +56,25 @@ test('reader cap and writer user apply by config reload, without a restart', asy
     // The cap binds: a query past it fails with MEMORY_LIMIT_EXCEEDED (lowered cap keeps the test light).
     await expect(reader.exec('SELECT groupArray(number) FROM numbers(50000000) SETTINGS max_memory_usage=50000000')).rejects.toThrow('exception 241');
     expect(await writer.exec('SELECT length(groupArray(number)) FROM numbers(50000000)').then(Number)).toBe(5e7);
+
+    // Security pre-review S3: the reader reads and inserts (jev, fable events) and reloads config, but runs no DDL,
+    // so an agent holding clickhouse.env cannot create, alter or drop anything, nor make a DEFINER view.
+    await writer.exec('CREATE TABLE default.guard (x UInt8) ENGINE = MergeTree ORDER BY x');
+    await reader.exec('INSERT INTO default.guard VALUES (1)');
+    expect(await reader.exec('SELECT count() FROM default.guard').then(Number)).toBe(1);
+    await reader.exec('SYSTEM RELOAD CONFIG');
+    for (const ddl of [
+      'CREATE TABLE default.made (x UInt8) ENGINE = Memory',
+      'CREATE DATABASE made',
+      'CREATE VIEW default.lifted DEFINER = tokenlayer_writer SQL SECURITY DEFINER AS SELECT 1',
+      'ALTER TABLE default.guard ADD COLUMN y UInt8',
+      'RENAME TABLE default.guard TO default.moved',
+      'TRUNCATE TABLE default.guard',
+      'DROP TABLE default.guard',
+    ]) await expect(reader.exec(ddl)).rejects.toThrow('exception 392');
+    for (const lift of ['SELECT 1 SETTINGS allow_ddl = 1', 'SET allow_ddl = 1']) await expect(reader.exec(lift)).rejects.toThrow('exception 392');
+    expect(await writer.exec('SELECT count() FROM default.guard').then(Number)).toBe(1);
+    await writer.exec('DROP TABLE default.guard');
   } finally { proc.kill('SIGKILL'); await proc.exited; }
 }, 40000);
 

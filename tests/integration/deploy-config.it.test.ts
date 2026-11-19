@@ -31,7 +31,11 @@ test('deploy config serves authenticated queries, refuses default, hides auth in
       await Bun.sleep(100);
     }
     expect(ready).toBe(true);
-    await applySchema(ch);
+    // Schema apply is DDL: it runs as the writer, as setup.sh hub does; the reader is refused (security pre-review S3).
+    await expect(applySchema(ch)).rejects.toThrow('exception 392');
+    const writerEnv = parseEnv(readFileSync(join(config, 'clickhouse-writer.env'), 'utf8'));
+    await applySchema(new ClickHouse({ ...ch.config, user: writerEnv.CLICKHOUSE_USER!, password: writerEnv.CLICKHOUSE_PASSWORD! }));
+    expect(await ch.queryJSON('SELECT count() AS n FROM tokenlayer.session_events')).toEqual([{ n: 0 }]);
     expect(await ch.queryJSON('SELECT 42 AS n')).toEqual([{ n: 42 }]);
     await expect(checkSpace(ch, Number.MAX_SAFE_INTEGER)).rejects.toThrow('35 GiB');
     await expect(new ClickHouse({ ...ch.config, user: 'default', password: '' }).exec('SELECT 1')).rejects.toThrow();
