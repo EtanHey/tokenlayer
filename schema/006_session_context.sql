@@ -8,6 +8,7 @@
 -- one day. Credit for message and token_count lines (~1.8M of 11M) is computed apart and joined after the windows.
 -- raw is the same in every version of a key (content_hash is its SHA-256), so the totals are read without FINAL,
 -- only from token_count lines (PREWHERE), and keyed to the FINAL rows. R5 receipt, 2026-11-19.
+-- R7: the total is session_events.token_total, extracted from raw at insert; no view reads raw.
 CREATE OR REPLACE VIEW tokenlayer.v_session_events_context AS
 WITH token_lines AS (
     SELECT machine, path, generation, byte_offset, content_hash, message_id
@@ -34,8 +35,7 @@ WITH token_lines AS (
                                                                    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS credit
         FROM token_lines
         ANY LEFT JOIN (
-            SELECT machine, path, generation, byte_offset, content_hash,
-                   coalesce(nullIf(JSONExtractRaw(raw, 'payload', 'info', 'total_token_usage'), ''), 'null') AS token_total
+            SELECT machine, path, generation, byte_offset, content_hash, token_total
             FROM tokenlayer.session_events
             PREWHERE type = 'event_msg' AND role = 'token_count'
         ) AS totals USING (machine, path, generation, byte_offset, content_hash)

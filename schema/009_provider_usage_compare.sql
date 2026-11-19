@@ -4,6 +4,8 @@
 -- Quota columns are peaks of observed rolling gauges across accounts/limits, NOT daily burn.
 -- Memory (R5, 2026-11-19): raw stays out of every FINAL read. raw is the same in every version of a key (content_hash
 -- is its SHA-256) and FINAL keeps every key, so raw-only facts are read without FINAL and joined by stream or key.
+-- R7 (2026-11-19): those facts are MATERIALIZED columns of session_events (schema/004), so no read decompresses raw.
+-- Until MATERIALIZE COLUMN rewrites the old parts they compute from raw on read, as these joins did before.
 CREATE OR REPLACE VIEW tokenlayer.v_provider_usage_compare AS
 WITH streams AS (
     SELECT machine, path, generation,
@@ -20,7 +22,7 @@ WITH streams AS (
         GROUP BY machine, path, generation
     ) AS parsed
     LEFT JOIN (
-        SELECT machine, path, generation, max(JSONHas(raw, 'created_at')) AS created_at_lines, max(JSONHas(raw, 'message')) AS message_lines
+        SELECT machine, path, generation, max(raw_has_created_at) AS created_at_lines, max(raw_has_message) AS message_lines
         FROM tokenlayer.session_events
         GROUP BY machine, path, generation
     ) AS raw_flags USING (machine, path, generation)
@@ -56,10 +58,8 @@ WITH streams AS (
     ) AS final_counts
     ANY LEFT JOIN (
         SELECT machine, path, generation, byte_offset, content_hash,
-               JSONExtract(raw, 'payload', 'rate_limits', 'primary', 'used_percent', 'Nullable(Float64)') AS primary_pct,
-               JSONExtract(raw, 'payload', 'rate_limits', 'primary', 'window_minutes', 'Nullable(UInt64)') AS primary_minutes,
-               JSONExtract(raw, 'payload', 'rate_limits', 'secondary', 'used_percent', 'Nullable(Float64)') AS secondary_pct,
-               JSONExtract(raw, 'payload', 'rate_limits', 'secondary', 'window_minutes', 'Nullable(UInt64)') AS secondary_minutes
+               codex_primary_pct AS primary_pct, codex_primary_minutes AS primary_minutes,
+               codex_secondary_pct AS secondary_pct, codex_secondary_minutes AS secondary_minutes
         FROM tokenlayer.session_events
         PREWHERE type = 'event_msg' AND role = 'token_count'
     ) AS limits USING (machine, path, generation, byte_offset, content_hash)

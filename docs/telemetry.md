@@ -208,8 +208,33 @@ sorted all 51 GiB of `raw` and failed the cap. Live on the M1 (11.1M rows), as t
 | `v_provider_usage_compare`, 7 days or all days | 4.4 GiB | 55–62 s |
 | the 30-day `v_sessions_daily` query below | 4.8 GiB | 5 s |
 
-The compare still scans `raw` once per read, for the per-file `created_at`/`message` provider hints. That scan is
-most of its time. A full `SELECT *` from the context view still sorts every row by session for `ordinal`.
+A full `SELECT *` from the context view still sorts every row by session for `ordinal`.
+
+### Facts from `raw` are columns (R7)
+
+No view reads `raw`. The facts they need are `MATERIALIZED` columns of `session_events`, extracted once at insert
+(schema/004): `raw_has_created_at` and `raw_has_message` (the compare's per-file provider hints), `token_total`
+(the context view's token_count credit) and `codex_{primary,secondary}_{pct,minutes}` (Codex rate limits). Before
+R7 the compare decompressed all of `raw` once per read for the hints, which was most of its time. Live on the M1
+(2026-11-19, reader, 7 days): 4.9 GiB / 59 s before R7, 4.8 GiB / 49 s with the columns but old parts not yet
+backfilled, and 2.8–3.7 GiB / 7.5 s on a copy where every row carries the columns.
+
+`bun run schema:apply` adds the columns with `ADD COLUMN IF NOT EXISTS`, which is metadata only: no mutation, and
+existing parts are untouched. Parts written before that compute the columns from `raw` on read, so the views are
+correct at once and only the speed waits for the backfill. Merges and the 30-day TTL rewrite old parts over time.
+To backfill now, in an announced window (one mutation; it hard-links `raw` and writes only the new columns):
+
+```sql
+ALTER TABLE tokenlayer.session_events
+    MATERIALIZE COLUMN raw_has_created_at IN PARTITION 202611, MATERIALIZE COLUMN raw_has_message IN PARTITION 202611,
+    MATERIALIZE COLUMN token_total IN PARTITION 202611,
+    MATERIALIZE COLUMN codex_primary_pct IN PARTITION 202611, MATERIALIZE COLUMN codex_primary_minutes IN PARTITION 202611,
+    MATERIALIZE COLUMN codex_secondary_pct IN PARTITION 202611, MATERIALIZE COLUMN codex_secondary_minutes IN PARTITION 202611
+```
+
+Every command carries its own `IN PARTITION`; one left without it covers the whole table. Run one partition at a
+time (`SELECT DISTINCT partition FROM system.parts WHERE database = 'tokenlayer' AND table = 'session_events' AND
+active`) and wait for `system.mutations` to show `is_done` before the next.
 
 Activity per machine / harness / project: the context view reads the archive with `FINAL` and derives attribution/usage credit.
 Rewound/abandoned branches with different content remain distinct. Legacy migration or lineage loss can increase sums.
