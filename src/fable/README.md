@@ -18,6 +18,17 @@ not rejected, but only when a fresh weekly signal shows a later window. An idle
 account's Fable reading only refreshes on a Fable request, so after a weekly
 reset it would otherwise keep refusing. A stale reading whose reset is still
 ahead, or one with no reset time, still refuses.
+The hub learns weekly use only from responses it serves, so an idle credential
+(and every credential after a hub restart) can have no weekly reading. Then the
+switch reads the hub's last served weekly reading from ClickHouse `proxy_usage`
+(exact `7d` key, 14 days, one SELECT; never a model request). If that reading's
+reset has passed, the credential is in a new window the hub has served nothing in:
+usable, estimated at zero use. If its reset is still ahead, the reading is a
+lower bound: rejected or at `weeklyExhaustedAt` means exhausted; below that the
+level is unknown and the plan stays UNKNOWN. A present hub reading always wins,
+and an unconfirmed reset press drops history too. `plan` marks these credentials
+in `weeklyEstimated` and the reason. An estimated credential keeps its partition
+role, because only a request it serves turns the estimate into a reading.
 At 0.45 the reserve excludes non-Fable from A even if B cannot serve it. That
 conflict is DEGRADED. `set --allow-non-fable-on-fable-account` persists an override;
 `set --protect-fable-reserve` restores protection. These commands use the saved

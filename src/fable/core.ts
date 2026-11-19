@@ -19,7 +19,10 @@ export type Observation = Credential & {
   catalog?: string[];
   excluded_models?: string[] | null;
   model_quotas?: Record<string, NonNullable<Credential["quota"]>>;
+  /** The hub's last served weekly reading (history), attached only when the hub has none now. */
+  last_weekly?: LastWeekly;
 };
+export type LastWeekly = { u: number; reset: number; status: string; observed_at: string };
 export type Fields = {
   excluded_models: string[] | null;
   priority: number | null;
@@ -56,6 +59,8 @@ export type Plan = {
     confidence: "medium" | "conservative";
     triggered: boolean;
   };
+  /** Credentials whose weekly level is estimated from history (the hub has no reading). */
+  weeklyEstimated?: Record<string, "new-window" | "exhausted">;
 };
 export type State = Intent & {
   schemaVersion: 2;
@@ -183,6 +188,28 @@ export function quotaWindow(
     : NaN;
   return { u, rejected: status === "rejected", reset };
 }
+export const hasWeekly = (q: Observation["quota"]) =>
+  Object.keys(q?.signals ?? {}).some((k) =>
+    k.toLowerCase().startsWith("anthropic-ratelimit-unified-7d-"));
+/**
+ * The hub learns weekly use only from responses it serves, so an idle credential (and every
+ * credential after a hub restart) can have no weekly reading. Its last served reading is then
+ * history. Reset passed: a new window the hub has served nothing in, estimated at zero use. Reset
+ * ahead: that reading is a lower bound on this window's use, so rejected or at the exhausted
+ * threshold means exhausted; below it the level is unknown. A present hub reading always wins.
+ */
+function weeklyWindow(s: State, c: Observation, now: number) {
+  const w = quotaWindow(c.quota, "7d", now);
+  const h = c.last_weekly;
+  if (w || hasWeekly(c.quota) || !h || !Number.isFinite(h.u) || h.u < 0 ||
+      !h.status || !Number.isFinite(h.reset))
+    return w;
+  if (h.reset <= now)
+    return { u: 0, rejected: false, reset: NaN, estimated: "new-window" as const };
+  if (h.status === "rejected" || h.u >= s.thresholds.weeklyExhaustedAt)
+    return { u: h.u, rejected: h.status === "rejected", reset: h.reset, estimated: "exhausted" as const };
+  return null;
+}
 function fableQuota(c: Observation) {
   return Object.entries(c.model_quotas ?? {})
     .filter(([m]) => isFable(m))
@@ -221,7 +248,7 @@ export function usable(
   now = Date.now(),
 ) {
   c = currentQuota(s, c, now);
-  const week = quotaWindow(c.quota, "7d", now);
+  const week = weeklyWindow(s, c, now);
   const fable = fableWindow(c, now);
   return (
     !!c.catalog?.includes(model) &&
@@ -261,7 +288,7 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
   const b = obs.find((c) => c !== a);
   if (!a || !b)
     return { ...p, applied: "UNKNOWN", reason: "account not found" };
-  const week = quotaWindow(a.quota, "7d", now),
+  const week = weeklyWindow(s, a, now),
     fable = fableWindow(a, now);
   const n = week ? Math.max(0, week.u - 0.5 * (fable?.u ?? 0)) : 0;
   const reserve =
@@ -277,7 +304,7 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
   // Missing weekly observations cannot justify any policy restriction.
   if (
     obs.some((c) => {
-      const w = quotaWindow(c.quota, "7d", now);
+      const w = weeklyWindow(s, c, now);
       const blocked =
         c.status !== "active" ||
         c.disabled ||
@@ -299,6 +326,11 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
       reason:
         "unreadable or stale signals; routing restored to normal (both accounts serve everything)",
     };
+  // An estimated account keeps its role: the hub only learns its level from a request it serves.
+  for (const c of obs) {
+    const e = weeklyWindow(s, c, now);
+    if (e && "estimated" in e) (p.weeklyEstimated ??= {})[c.id] = e.estimated;
+  }
   desired[a.id].priority = 50;
   desired[b.id].priority = 100;
   p.applied = "ON";
@@ -364,6 +396,9 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
     p.reason = "non-Fable paused on Fable account to keep Fable room";
   else if (exceptions.length) p.reason = [...new Set(exceptions)].join(", ");
   else if (reserve) p.reason = "Fable reserve protected on A";
+  if (p.weeklyEstimated)
+    p.reason += "; weekly estimated from history for " + Object.entries(p.weeklyEstimated)
+      .map(([id, e]) => (id === a.id ? "A" : "B") + " (" + e + ")").join(", ");
   if (transient) {
     const cause = a.disabled
       ? "disabled"
@@ -388,7 +423,7 @@ function currentQuota(s: State, c: Observation, now: number): Observation {
   if (c.cooldowns?.some(x => x.reason === "quota" &&
       (Date.parse(x.retry_at ?? "") > now || (x.remaining_seconds ?? 0) > 0))) return c;
   const fresh = (q: Observation["quota"]) => r.superseded!.includes(quotaKey(q)) ? undefined : q;
-  return { ...c, quota: fresh(c.quota), model_quotas: Object.fromEntries(
+  return { ...c, quota: fresh(c.quota), last_weekly: undefined, model_quotas: Object.fromEntries(
     Object.entries(c.model_quotas ?? {}).filter(([, q]) => fresh(q)),
   ) };
 }
