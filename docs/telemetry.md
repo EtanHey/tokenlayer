@@ -186,15 +186,27 @@ LIMIT 50
 
 Ship and drain write as `tokenlayer_writer` (`CLICKHOUSE_USER` in their launchd plists, with the same password), which
 stays uncapped. Before the cap, one unbounded read of the context view reached the server's 28.8 GiB limit on the M1.
-The same read now fails in about 2 s with `MEMORY_LIMIT_EXCEEDED`. On 2026-11-19 (11.1M rows), these were the
-heavy reads:
-- The 30-day `v_sessions_daily` query below peaks at 5.1 GiB.
-- Credited sums from the context view need more than 8 GiB even for one day, because the window runs over every row.
-  This covers `output_tokens` and similar columns, and `v_provider_usage_compare` too.
+The same read now fails in about 2 s with `MEMORY_LIMIT_EXCEEDED`. The reader profile also sets
+`optimize_read_in_window_order=1`, so the context view's per-file windows read in table order instead of sorting
+the whole table.
+
+The context view and `v_provider_usage_compare` keep `raw` out of every window and every `FINAL` read. Before
+2026-11-19 (R5) the planner moved the token_count JSON extraction above the window sort, so even a 1-day credited sum
+sorted all 51 GiB of `raw` and failed the cap. Live on the M1 (11.1M rows), as the reader at default threads:
+
+| Read | Peak | Time |
+|---|---|---|
+| credited tokens by harness, 1 day or 7 days | 1.9 GiB | 8 s |
+| the 30-day activity query below | 2.2 GiB | 8 s |
+| `v_provider_usage_compare`, 7 days or all days | 4.4 GiB | 55–62 s |
+| the 30-day `v_sessions_daily` query below | 4.8 GiB | 5 s |
+
+The compare still scans `raw` once per read, for the per-file `created_at`/`message` provider hints. That scan is
+most of its time. A full `SELECT *` from the context view still sorts every row by session for `ordinal`.
 
 Activity per machine / harness / project: the context view reads the archive with `FINAL` and derives attribution/usage credit.
 Rewound/abandoned branches with different content remain distinct. Legacy migration or lineage loss can increase sums.
-Under the reader cap, this query fails at the current table size (see above):
+Under the reader cap this query peaks at 2.2 GiB (see above):
 
 ```sql
 SELECT machine, harness, project, toDate(ts) AS day,

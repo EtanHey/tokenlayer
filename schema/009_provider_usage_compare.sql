@@ -2,15 +2,28 @@
 -- Source (checked 2026-11-03): https://kiro.dev/docs/billing/ . Account cycle boundary is not logged.
 -- daily_allowance_used_pct is that day's credits / 50, not a remaining-balance estimate.
 -- Quota columns are peaks of observed rolling gauges across accounts/limits, NOT daily burn.
+-- Memory (R5, 2026-11-19): raw stays out of every FINAL read. raw is the same in every version of a key (content_hash
+-- is its SHA-256) and FINAL keeps every key, so raw-only facts are read without FINAL and joined by stream or key.
 CREATE OR REPLACE VIEW tokenlayer.v_provider_usage_compare AS
 WITH streams AS (
     SELECT machine, path, generation,
-        multiIf(countIf(startsWith(type, 'kiro:')) > 0, 'kiro',
-                countIf(harness = 'antigravity' OR JSONHas(raw, 'created_at')) > 0, 'antigravity',
-                countIf(harness = 'codex' OR type IN ('session_meta', 'event_msg', 'turn_context')) > 0, 'codex',
-                countIf(harness = 'claude' OR JSONHas(raw, 'message')) > 0, 'claude', '') AS provider
-    FROM tokenlayer.session_events FINAL
-    GROUP BY machine, path, generation
+        multiIf(kiro_lines > 0, 'kiro',
+                antigravity_lines > 0 OR created_at_lines, 'antigravity',
+                codex_lines > 0, 'codex',
+                claude_lines > 0 OR message_lines, 'claude', '') AS provider
+    FROM (
+        SELECT machine, path, generation,
+               countIf(startsWith(type, 'kiro:')) AS kiro_lines, countIf(harness = 'antigravity') AS antigravity_lines,
+               countIf(harness = 'codex' OR type IN ('session_meta', 'event_msg', 'turn_context')) AS codex_lines,
+               countIf(harness = 'claude') AS claude_lines
+        FROM tokenlayer.session_events FINAL
+        GROUP BY machine, path, generation
+    ) AS parsed
+    LEFT JOIN (
+        SELECT machine, path, generation, max(JSONHas(raw, 'created_at')) AS created_at_lines, max(JSONHas(raw, 'message')) AS message_lines
+        FROM tokenlayer.session_events
+        GROUP BY machine, path, generation
+    ) AS raw_flags USING (machine, path, generation)
 ), token_totals AS (
     SELECT toDate(ts) AS day, provider,
            sumOrNull(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens
@@ -35,13 +48,21 @@ WITH streams AS (
     FROM kiro_turns GROUP BY day
 ), codex_readings AS (
     -- Native Codex token_count logs carry rate_limits. Window size must match the column.
-    SELECT toDate(ts) AS day,
-           JSONExtract(raw, 'payload', 'rate_limits', 'primary', 'used_percent', 'Nullable(Float64)') AS primary_pct,
-           JSONExtract(raw, 'payload', 'rate_limits', 'primary', 'window_minutes', 'Nullable(UInt64)') AS primary_minutes,
-           JSONExtract(raw, 'payload', 'rate_limits', 'secondary', 'used_percent', 'Nullable(Float64)') AS secondary_pct,
-           JSONExtract(raw, 'payload', 'rate_limits', 'secondary', 'window_minutes', 'Nullable(UInt64)') AS secondary_minutes
-    FROM tokenlayer.session_events FINAL
-    WHERE type = 'event_msg' AND role = 'token_count' AND ts > toDateTime64(0, 3, 'UTC')
+    SELECT toDate(ts) AS day, primary_pct, primary_minutes, secondary_pct, secondary_minutes
+    FROM (
+        SELECT machine, path, generation, byte_offset, content_hash, ts
+        FROM tokenlayer.session_events FINAL
+        WHERE type = 'event_msg' AND role = 'token_count' AND ts > toDateTime64(0, 3, 'UTC')
+    ) AS final_counts
+    ANY LEFT JOIN (
+        SELECT machine, path, generation, byte_offset, content_hash,
+               JSONExtract(raw, 'payload', 'rate_limits', 'primary', 'used_percent', 'Nullable(Float64)') AS primary_pct,
+               JSONExtract(raw, 'payload', 'rate_limits', 'primary', 'window_minutes', 'Nullable(UInt64)') AS primary_minutes,
+               JSONExtract(raw, 'payload', 'rate_limits', 'secondary', 'used_percent', 'Nullable(Float64)') AS secondary_pct,
+               JSONExtract(raw, 'payload', 'rate_limits', 'secondary', 'window_minutes', 'Nullable(UInt64)') AS secondary_minutes
+        FROM tokenlayer.session_events
+        PREWHERE type = 'event_msg' AND role = 'token_count'
+    ) AS limits USING (machine, path, generation, byte_offset, content_hash)
 ), quota_peaks AS (
     SELECT toDate(ts) AS day, 'claude' AS provider,
            maxOrNull(if(utilization_5h BETWEEN 0 AND 1, utilization_5h * 100, NULL)) AS peak_5h_used_pct,
