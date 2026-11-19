@@ -6,6 +6,7 @@ import { loadEnvFiles } from '../src/lib/env';
 import { unreconciledSQL } from '../src/jev/unreconciled';
 import { LIVE_QUERY_SQL, liveRatioSQL, shipperLagSQL } from './live-sql';
 import { readUsageAge } from './usage-age';
+import { HEARTBEAT_MACHINES, readHeartbeatAge, type HeartbeatMachine } from './heartbeat-age';
 import { burnSQL, burnVerdict, parsePoints, readTarget } from './burn';
 const env = loadEnvFiles(['~/.config/tokenlayer/hub.env', '~/.config/tokenlayer/clickhouse.env']);
 const ch = ClickHouse.fromEnv(env);
@@ -22,6 +23,13 @@ if (id === 'claude_burn_2h') {
 } else if (id === 'usage_json_age_s') {
   const age = readUsageAge();
   // 'skip': the M4 is asleep or just woke; live-schedule holds the row's state.
+  if (age === 'skip') { console.log('skip'); process.exit(0); }
+  value = age ?? NaN;
+} else if (id?.startsWith('ship_heartbeat_age_s_')) {
+  const machine = id.slice('ship_heartbeat_age_s_'.length) as HeartbeatMachine;
+  if (!HEARTBEAT_MACHINES.includes(machine)) throw Error('unknown heartbeat machine');
+  const age = await readHeartbeatAge(machine, (sql) => ch.queryJSON(sql));
+  // 'skip': the M4 is asleep, off the tailnet or just woke; live-schedule holds the row's state.
   if (age === 'skip') { console.log('skip'); process.exit(0); }
   value = age ?? NaN;
 } else if (id?.startsWith('hub_mgmt_latency_')) {

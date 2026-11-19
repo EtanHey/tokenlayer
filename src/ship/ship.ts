@@ -365,7 +365,8 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
         } catch (err) {
           const reason = err instanceof Error ? err.message : String(err);
           const message = compressed ? `${sanitizeOutput(physical)}: ${sanitizeOutput(reason)}` : redactText(reason);
-          failures.push(new Error(message));
+          // Keep the class (never the cause's text) so the heartbeat can tell an outage from a bad file.
+          failures.push(Object.assign(new Error(message), err instanceof StoreUnreachableError ? { name: err.name } : {}));
           // The store is unreachable (DNS or connect, after the client's retries): every later file would
           // also write its journal ahead and fail. Stop the pass; acknowledged progress is saved below.
           if (err instanceof StoreUnreachableError) throw new AggregateError(failures, "ship failed for some files");
