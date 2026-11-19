@@ -20,7 +20,43 @@ Numeric CI rows may set `reportOnly: true`: they still run, display main/PR valu
 
 Queries have two warmups plus 20 timed requests (nearest-rank p95). After OPTIMIZE and stopping background merges, the harness also runs each golden query with the query cache disabled, one thread and fixed block size. It flushes logs and identifies exactly one QueryFinish by a unique log comment, yielding `<query>-read_rows`, `-read_bytes`, `-result_rows`, `-result_bytes` and `-memory_usage`. Query row policy should use `growth: 0.02` (memory: `0.05`); memory allocation can vary slightly. The harness emits `session-active-parts`, `ship-insert-batches`, and `ship-insert-batch-<n>-rows` for deterministic ingest budgets. Storage remains active bytes_on_disk after OPTIMIZE scaled to 10k rows. CI has a six-minute hard timeout.
 
-M1 rows are report-only until deployment; `bun ratchet/live.ts <row-id>` reads local credentials without printing them. Cache ratio is read tokens divided by total creation tokens (W5m + W1h); w1h share uses the raw one-hour creation breakdown. Unknown/zero-denominator telemetry fails the probe. Live ship lag is event timestamp to ingest timestamp p95 over the last day and can include historical replays. No M1 values are claimed by CI.
+M1 rows are report-only until deployment; `bun ratchet/live.ts <row-id>` reads local credentials without printing them. Cache ratio is read tokens divided by total creation tokens (W5m + W1h); w1h share uses the raw one-hour creation breakdown. Both read `FINAL` per partition, like `ch_live_query_p95_ms` below. Unknown/zero-denominator telemetry fails the probe. Live ship lag is, per machine, the p95 of first ingest minus event time over events written in the last hour, and the worst machine is reported; 1970-dated imports, history replays and generation replays do not count, and no live events reads 0 (a shipper that stops trips the row once its backlog lands). `usage_json_age_s` reads the M4's `usage.json` over `ssh macbook-pro`; an asleep or offline M4, or one that woke under 180 s ago with no post-wake snapshot, prints `skip` and the scheduler holds the row's state. `ch_live_query_p95_ms` times a 1-day `FINAL` query with `do_not_merge_across_partitions_select_final=1`: without it `FINAL` cannot prune by `ts` and reads the whole table (see `ratchet/live-sql.ts`). `v_session_events_context` and the archaeology `existing.sql` export read `session_events FINAL` the same way. `jev_unreconciled_24h` counts Jev reservations with no reconciliation 15 min after reservation, over the last day (ceiling 0; see docs/jev.md). No M1 values are claimed by CI.
+
+### Live rows on a schedule (M1)
+
+`com.tokenlayer.ratchet-live` runs every `bun ratchet/live.ts <id>` row every 15 min (`ratchet/live-schedule.ts`).
+A row that turns red appends one line to the orc outbox, `### tokenlayer-ratchet → @tokenlayer-lead @orc — <time> FAIL <row>: value <v>, threshold <limit>`,
+and one `cleared` line when it turns green again; nothing while it stays the same or while a probe prints `skip`. State: `~/.config/tokenlayer/ratchet-live-state.json`.
+`TOKENLAYER_RATCHET_OUTBOX` is required; `TOKENLAYER_RATCHET_OVERRIDE='{"row": value}'` forces values for a proof run (lines say `(override)`).
+
+`claude_burn_2h` catches an idle Claude week (whatever is left at the weekly reset is lost). It reads the hub's own
+`anthropic-ratelimit-unified-7d-utilization` in `proxy_usage.ratelimit` (fractions; `7d_oi`, a per-model quota, is not
+counted): per account, the last reading before the window, then the max per 15-minute bucket. The week used in the last
+2 h is each account's rises summed over accounts (a new weekly cycle that began in the window counts its use; one that
+began earlier counts only the rise after its first reading). No request at all reads 0%/h. The target is orc's:
+
+```json
+{"pct_per_hour": 3, "set_by": "orc", "until": "2026-11-20T19:00:00Z"}
+```
+
+in `~/.config/tokenlayer/burn-target.json` (`TOKENLAYER_BURN_TARGET` overrides the path). The row fails under half of
+`pct_per_hour`. No file, or a target past `until`: report only (the job log's `say` field carries the sentence, the row
+never fails). A malformed file is a broken probe (FAIL, value MISSING). No quiet hours. Its posts read in words:
+`FAIL claude_burn_2h: Claude ran 0.4%/h for the last 2 h against a 3%/h target (alarm under 1.5%/h); 45% of the week is
+left until Fri 21:00` (the in-use account, in Israel time). A probe judges against its own threshold by printing
+`{"value", "threshold", "say"}` as its last line; `threshold: null` means report only.
+
+Install from a merged tree (the job runs from a snapshot, so a worktree cleanup cannot break it). Set `OUTBOX` to the orc outbox file first; its path stays out of this public repo:
+
+```sh
+dest=~/.config/tokenlayer/ratchet-live; rm -rf "$dest.new"; mkdir -p "$dest.new"
+git archive origin/main | tar -x -C "$dest.new" && rm -rf "$dest" && mv "$dest.new" "$dest"
+bun -e 'import {render} from "./scripts/deploy/deploy"; import {readFileSync as r, writeFileSync as w} from "fs"; const h=process.env.HOME;
+  w(h+"/Library/LaunchAgents/com.tokenlayer.ratchet-live.plist", render(r("launchd/com.tokenlayer.ratchet-live.plist.template","utf8"),
+  {HOME:h, REPO:h+"/.config/tokenlayer/ratchet-live", OUTBOX:process.env.OUTBOX}))'
+launchctl bootout gui/$(id -u)/com.tokenlayer.ratchet-live 2>/dev/null
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tokenlayer.ratchet-live.plist
+```
 
 Normal tests retain 40-trial shipper property smoke checks (`TOKENLAYER_PROPERTY_N` defaults to 40).
 Long `*.property.test.ts` entries are excluded from default discovery. `bun run test:property` explicitly

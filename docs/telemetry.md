@@ -178,8 +178,35 @@ ORDER BY cache_write DESC
 LIMIT 50
 ```
 
+**Memory cap.** The `tokenlayer` login (the dashboard, the ratchet rows and every ad-hoc reader) runs under the
+`reader` profile in `config/clickhouse.xml.template`:
+- Each query is capped at 8 GiB (`max_memory_usage`). A caller may lower the cap, but may not raise it or set 0
+  (ClickHouse refuses with code 452).
+- GROUP BY and ORDER BY spill to disk past 4 GiB, with at most 8 GiB of temporary disk per query.
+
+Ship and drain write as `tokenlayer_writer` (`CLICKHOUSE_USER` in their launchd plists, with the same password), which
+stays uncapped. Before the cap, one unbounded read of the context view reached the server's 28.8 GiB limit on the M1.
+The same read now fails in about 2 s with `MEMORY_LIMIT_EXCEEDED`. The reader profile also sets
+`optimize_read_in_window_order=1`, so the context view's per-file windows read in table order instead of sorting
+the whole table.
+
+The context view and `v_provider_usage_compare` keep `raw` out of every window and every `FINAL` read. Before
+2026-11-19 (R5) the planner moved the token_count JSON extraction above the window sort, so even a 1-day credited sum
+sorted all 51 GiB of `raw` and failed the cap. Live on the M1 (11.1M rows), as the reader at default threads:
+
+| Read | Peak | Time |
+|---|---|---|
+| credited tokens by harness, 1 day or 7 days | 1.9 GiB | 8 s |
+| the 30-day activity query below | 2.2 GiB | 8 s |
+| `v_provider_usage_compare`, 7 days or all days | 4.4 GiB | 55–62 s |
+| the 30-day `v_sessions_daily` query below | 4.8 GiB | 5 s |
+
+The compare still scans `raw` once per read, for the per-file `created_at`/`message` provider hints. That scan is
+most of its time. A full `SELECT *` from the context view still sorts every row by session for `ordinal`.
+
 Activity per machine / harness / project: the context view reads the archive with `FINAL` and derives attribution/usage credit.
-Rewound/abandoned branches with different content remain distinct. Legacy migration or lineage loss can increase sums:
+Rewound/abandoned branches with different content remain distinct. Legacy migration or lineage loss can increase sums.
+Under the reader cap this query peaks at 2.2 GiB (see above):
 
 ```sql
 SELECT machine, harness, project, toDate(ts) AS day,
