@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { configureClient, render, startServer } from '../../scripts/deploy/deploy';
+import { clickhouseConfig, configureClient, startServer } from '../../scripts/deploy/deploy';
 import { parseEnv } from '../../src/lib/env';
 import { ClickHouse } from '../../src/lib/clickhouse';
 import { checkSpace } from '../../scripts/deploy/backfill';
@@ -18,7 +18,7 @@ test('deploy config serves authenticated queries, refuses default, hides auth in
   const ports = [0, 0].map(() => Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data() {} } }));
   const [http, tcp] = ports.map(p => p.port); ports.forEach(p => p.stop(true));
   const template = readFileSync('config/clickhouse.xml.template', 'utf8');
-  writeFileSync(join(config, 'clickhouse.xml'), render(template, { HOME: root }).replace('<http_port>8123', `<http_port>${http}`).replace('<tcp_port>19000', `<tcp_port>${tcp}`));
+  writeFileSync(join(config, 'clickhouse.xml'), clickhouseConfig(root).replace('<http_port>8123', `<http_port>${http}`).replace('<tcp_port>19000', `<tcp_port>${tcp}`));
   const proc = startServer(Bun.which('clickhouse') ?? 'clickhouse', root);
   try {
     const password = parseEnv(readFileSync(join(config, 'clickhouse.env'), 'utf8')).CLICKHOUSE_PASSWORD;
