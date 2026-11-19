@@ -328,7 +328,7 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
   const lowWhileCopying = (low: () => Promise<number>) => async () => (await runningCopies(ch)) ? low() : 2 ** 50;
 
   test("S6: the watchdog kills at the floor plus a margin, before the floor itself breaks", async () => {
-    await bulk(ch, 20_000);
+    await freshMonthly(() => bulk(ch, 20_000)); // only the slow part, so a low read always lands during its copy
     const floorBytes = 2 ** 40;
     const report = await repartitionSessionEvents(ch.client, {
       floorBytes, freeBytes: lowWhileCopying(async () => floorBytes + 2 ** 30), extraCopySettings: SLOW_COPY, watchMs: 100,
@@ -340,7 +340,7 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
   }, 60_000);
 
   test("S7: free disk that cannot be read counts as unsafe and kills the copy", async () => {
-    await bulk(ch, 20_000);
+    await freshMonthly(() => bulk(ch, 20_000)); // only the slow part, so a low read always lands during its copy
     const report = await repartitionSessionEvents(ch.client, {
       floorBytes: 2 ** 40, freeBytes: lowWhileCopying(async () => { throw new Error("memory limit (total) exceeded"); }),
       extraCopySettings: SLOW_COPY, watchMs: 100,
@@ -365,7 +365,7 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
   };
 
   test("S7: a KILL that did nothing is re-issued until the copy is gone", async () => {
-    await bulk(ch, 20_000);
+    await freshMonthly(() => bulk(ch, 20_000)); // only the slow part, so a low read always lands during its copy
     const report = await repartitionSessionEvents(losingKills(1), {
       floorBytes: 2 ** 40, freeBytes: lowWhileCopying(async () => 0), extraCopySettings: SLOW_COPY, watchMs: 100,
     });
@@ -376,7 +376,7 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
   }, 60_000);
 
   test("S7: a kill that cannot be confirmed stops the run loudly", async () => {
-    await bulk(ch, 20_000);
+    await freshMonthly(() => bulk(ch, 20_000)); // only the slow part, so a low read always lands during its copy
     try {
       const outcome = await repartitionSessionEvents(losingKills(Infinity), {
         floorBytes: 2 ** 40, freeBytes: lowWhileCopying(async () => 0), extraCopySettings: SLOW_COPY, watchMs: 100, killConfirmMs: 1500,
