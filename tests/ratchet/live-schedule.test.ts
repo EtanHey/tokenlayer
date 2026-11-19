@@ -53,3 +53,15 @@ test("refuses to run without an explicit outbox", () => {
   expect(p.exitCode).not.toBe(0);
   expect(p.stderr.toString()).toContain("TOKENLAYER_RATCHET_OUTBOX");
 });
+
+test("a skipped measurement (the M4 asleep) holds the row's state and posts nothing", () => {
+  const usage = liveRows(rows).find((r) => r.id === "usage_json_age_s")!;
+  const now = new Date("2026-11-19T06:00:00Z");
+  expect(plan([{ row: usage, value: "skip" }], { usage_json_age_s: "fail" }, now)).toEqual({ lines: [], state: { usage_json_age_s: "fail" } });
+  expect(plan([{ row: usage, value: "skip" }], { usage_json_age_s: "pass" }, now)).toEqual({ lines: [], state: { usage_json_age_s: "pass" } });
+  expect(plan([{ row: usage, value: "skip" }], {}, now)).toEqual({ lines: [], state: {} });
+  // Asleep all night: one FAIL before, nothing while asleep, one cleared after the wake.
+  let state = plan([{ row: usage, value: null }], {}, now).state;
+  for (let i = 0; i < 30; i++) expect(plan([{ row: usage, value: "skip" }], state, now).lines).toEqual([]);
+  expect(plan([{ row: usage, value: 4 }], state, now).lines[0]).toContain("cleared usage_json_age_s: value 4");
+});

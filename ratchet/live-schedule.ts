@@ -8,7 +8,8 @@ import { dirname, join } from 'node:path';
 import { evaluate, parseRows } from './table.mjs';
 
 export type Row = { id: string; command: string; runner: string; direction: 'min' | 'max' | 'pass'; ceiling: number; unit?: string; timeout_s: number };
-export type Result = { row: Row; value: number | null; override?: boolean };
+/** value: null = MISSING (fails); 'skip' = not measurable right now (the M4 asleep), state held, nothing posted. */
+export type Result = { row: Row; value: number | null | 'skip'; override?: boolean };
 export type State = Record<string, 'fail' | 'pass'>;
 const LIVE = /^bun ratchet\/live\.ts ([\w.-]+)$/;
 
@@ -18,6 +19,7 @@ export function plan(results: Result[], previous: State, now: Date) {
   const stamp = now.toISOString().replace(/\.\d{3}Z$/, 'Z');
   const state: State = {}, lines: string[] = [];
   for (const { row, value, override } of results) {
+    if (value === 'skip') { if (previous[row.id]) state[row.id] = previous[row.id]!; continue; }
     const status = value !== null && evaluate(row, value) ? 'pass' : 'fail';
     state[row.id] = status;
     if (status === (previous[row.id] ?? 'pass')) continue;
@@ -28,9 +30,10 @@ export function plan(results: Result[], previous: State, now: Date) {
   return { lines, state };
 }
 
-function measure(row: Row, repo: string): number | null {
+function measure(row: Row, repo: string): number | null | 'skip' {
   const run = Bun.spawnSync([process.execPath, 'ratchet/live.ts', row.id], { cwd: repo, timeout: row.timeout_s * 1000, stdout: 'pipe', stderr: 'pipe' });
   const last = run.stdout.toString().trim().split('\n').pop() ?? '';
+  if (run.exitCode === 0 && last === 'skip') { console.error(`${row.id}: skipped, state held`); return 'skip'; }
   // Only the exit status is logged: probe errors may carry connection details.
   if (run.exitCode !== 0 || !/^\d+(\.\d+)?(e[+-]?\d+)?$/.test(last)) { console.error(`${row.id}: measurement failed (exit ${run.exitCode})`); return null; }
   return Number(last);
@@ -41,7 +44,7 @@ export function main(env = process.env, now = new Date()) {
   if (!outbox) throw Error('TOKENLAYER_RATCHET_OUTBOX must name the outbox file');
   const statePath = env.TOKENLAYER_RATCHET_STATE || join(homedir(), '.config/tokenlayer/ratchet-live-state.json');
   const repo = join(import.meta.dir, '..');
-  const overrides: Record<string, number | null> = env.TOKENLAYER_RATCHET_OVERRIDE ? JSON.parse(env.TOKENLAYER_RATCHET_OVERRIDE) : {};
+  const overrides: Record<string, number | null | 'skip'> = env.TOKENLAYER_RATCHET_OVERRIDE ? JSON.parse(env.TOKENLAYER_RATCHET_OVERRIDE) : {};
   const rows = liveRows(parseRows(JSON.parse(readFileSync(join(repo, 'ratchet/rows.json'), 'utf8'))));
   let previous: State = {};
   try { previous = JSON.parse(readFileSync(statePath, 'utf8')).rows ?? {}; }
