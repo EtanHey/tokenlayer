@@ -22,7 +22,8 @@ test('real writer rejects corrupted private prior state during SSH outage', asyn
     const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
     expect(code).toBe(0);
     expect(stdout + stderr).toBe('');
-    expect(JSON.parse(await readFile(target, 'utf8'))).toEqual({ generated_at: null, source: 'cliproxy-hub', stale: true, accounts: [], last_error: 'hub unavailable' });
+    const none = { pct: null, window: null, resets_at: null, observed_at: null, source: 't3-cache', stale: true, windows: [], last_error: 'no T3 usage cache' };
+    expect(JSON.parse(await readFile(target, 'utf8'))).toEqual({ generated_at: null, source: 'cliproxy-hub', stale: true, accounts: [], last_error: 'hub unavailable', vendors: { codex: none, cursor: none } });
     expect((await stat(target)).mode & 0o777).toBe(0o644);
     expect(await readdir(dir)).toEqual(['usage.json']);
   } finally { await rm(home, { recursive: true, force: true }); }
