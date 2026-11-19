@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { StoreUnreachableError } from "../../src/lib/clickhouse";
+import { StoreUnreachableError } from "../../src/lib/clickhouse-retry";
 import { errorClass, Heartbeat, HEARTBEAT_EVERY_MS, heartbeatRow } from "../../src/ship/heartbeat";
 
 const NOW = Date.parse("2026-11-19T16:00:00Z");
