@@ -86,7 +86,7 @@ function launchJob(o: Options, mac: Mac, name: string, extra: Partial<Step> & { 
     ],
     verify: [
       `! grep -q "<string>$REPO" "$LA/${label}.plist"`,
-      `launchctl print "$D/${label}" | grep -q "$CUR/"`,
+      `grep -q "$CUR/" <<<"$(launchctl print "$D/${label}")"`,
       // A KeepAlive job must come back on a new PID and stay up; an interval job has no PID between runs.
       // A rerun that skipped the apply restarted nothing, so it only needs the job running.
       ...(interval ? [] : [
@@ -135,7 +135,7 @@ export function drift(mac: Mac, allowClickhouse: boolean) {
     `set +e; out=$("$tree/scripts/deploy/setup.sh" drift ${mac} 2>&1); rc=$?; set -e; echo "$out"`,
     '(( rc == 0 )) && exit 0',
     allowClickhouse
-      ? `(( rc == 1 )) && grep -q '^DRIFT clickhouse:' <<<"$out" && ! grep '^DRIFT ' <<<"$out" | grep -qv '^DRIFT clickhouse:' && echo "only clickhouse drifts: it waits for its window (R10)"`
+      ? `(( rc == 1 )) && grep -q '^DRIFT clickhouse:' <<<"$out" && [[ $(grep '^DRIFT ' <<<"$out" | grep -vc '^DRIFT clickhouse:' || true) == 0 ]] && echo "only clickhouse drifts: it waits for its window (R10)"`
       : 'exit 1',
   ].join('\n');
 }
@@ -211,10 +211,9 @@ export function plan(o: Options): Step[] {
       ],
       verify: [
         '[[ $(chq "EXISTS TABLE tokenlayer.systemone_calls") == 1 && $(chq "EXISTS TABLE tokenlayer.ship_heartbeat") == 1 ]]',
-        'chq "SHOW CREATE TABLE tokenlayer.v_provider_usage_compare FORMAT TSVRaw" | grep -q raw_has_created_at',
-        'chq "SHOW CREATE TABLE tokenlayer.v_provider_usage_compare FORMAT TSVRaw" | grep -q "7d-utilization"',
-        'chq "SHOW CREATE TABLE tokenlayer.v_provider_usage_compare FORMAT TSVRaw" | grep -q typesafe',
-        'chq "SHOW CREATE TABLE tokenlayer.v_session_events_context FORMAT TSVRaw" | grep -q token_total',
+        'v9=$(chq "SHOW CREATE TABLE tokenlayer.v_provider_usage_compare FORMAT TSVRaw")',
+        'grep -q raw_has_created_at <<<"$v9" && grep -q 7d-utilization <<<"$v9" && grep -q typesafe <<<"$v9"',
+        'grep -q token_total <<<"$(chq "SHOW CREATE TABLE tokenlayer.v_session_events_context FORMAT TSVRaw")"',
         'chq "SELECT * FROM tokenlayer.v_provider_usage_compare LIMIT 0" && chq "SELECT * FROM tokenlayer.v_session_events_context LIMIT 0"',
       ].join(' && '),
       checks: 'both tables exist; 009 has R7 columns, C1 peaks from proxy_usage and J2 typesafe; 006 reads token_total; both views bind',
@@ -233,7 +232,7 @@ export function plan(o: Options): Step[] {
     launchJob(o, 'm1', 'drain', { title: 'drain on the pinned release (writer login)', from: 'R10 §4 B, R6', after: ['m1-ship'] }),
     launchJob(o, 'm1', 'fable', {
       title: 'fable daemon restarted on F3/F4 code; switch stays OFF', from: 'F3, F4, R10 §4 B, Sol §5', after: ['m1-pin'],
-      health: { mac: 'm1', script: '"$CUR/bin/tokenlayer" fable status --json | grep -q \'"applied":"OFF"\'', checks: 'fable status --json reads applied OFF (never turned ON here)' },
+      health: { mac: 'm1', script: 'grep -q \'"applied":"OFF"\' <<<"$("$CUR/bin/tokenlayer" fable status --json)"', checks: 'fable status --json reads applied OFF (never turned ON here)' },
     }),
     launchJob(o, 'm1', 'dashboard', {
       title: 'dashboard restarted on D1 code; burn reads proxy_usage', from: 'D1, R10 §4 B, Sol §5', after: ['m1-schema'],
@@ -264,7 +263,7 @@ export function plan(o: Options): Step[] {
       done: '[[ $(plutil -extract ProgramArguments.0 raw "$LA/com.tokenlayer.usage.plist") == /opt/homebrew/bin/bun ]]',
       capture: 'echo $(lf com.tokenlayer.usage runs)',
       apply: ['mkdir -m 700 -p "$B"', 'cp -p "$LA/com.tokenlayer.usage.plist" "$B/"', '"$APP/scripts/deploy/setup.sh" usage'],
-      verify: '[[ $(plutil -extract ProgramArguments.0 raw "$LA/com.tokenlayer.usage.plist") == /opt/homebrew/bin/bun ]] && within 90 ran_ok com.tokenlayer.usage && ! tail -n 5 "$HOME/Library/Logs/tokenlayer/usage.log" | grep -q "^vp:"',
+      verify: '[[ $(plutil -extract ProgramArguments.0 raw "$LA/com.tokenlayer.usage.plist") == /opt/homebrew/bin/bun ]] && within 90 ran_ok com.tokenlayer.usage && ! grep -q "^vp:" <<<"$(tail -n 5 "$HOME/Library/Logs/tokenlayer/usage.log")"',
       checks: 'ProgramArguments[0] is Homebrew bun; a run after the reload exits 0; no new vite-plus lines in usage.log',
       rollback: 'cp -p "$B/com.tokenlayer.usage.plist" "$LA/" && launchctl bootout "$D/com.tokenlayer.usage"; launchctl bootstrap "$D" "$LA/com.tokenlayer.usage.plist"',
     },
