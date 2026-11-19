@@ -1,9 +1,12 @@
 -- Query-time attribution only: archive columns remain pure functions of source-line bytes.
 -- Session/ordinal addresses are derived; attribution windows stay within each archive identity.
+-- FINAL merges per monthly partition: versions of a key never span partitions (see ratchet/live-sql.ts), so the
+-- answer is identical and the merge skips the whole-table pass (pre-November read: p50 991 → 316 ms, 2026-11-19).
 CREATE OR REPLACE VIEW tokenlayer.v_session_events_context AS
 WITH source AS (
     SELECT *, if(type = 'event_msg' AND role = 'token_count', coalesce(nullIf(JSONExtractRaw(raw, 'payload', 'info', 'total_token_usage'), ''), 'null'), '') AS token_total
     FROM tokenlayer.session_events FINAL
+    SETTINGS do_not_merge_across_partitions_select_final=1
 ), context AS (
     SELECT *,
         coalesce(anyLast(nullIf(session_id, '')) OVER w, path) AS context_session,

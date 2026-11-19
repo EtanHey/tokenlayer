@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { ClickHouse } from '../src/lib/clickhouse';
 import { loadEnvFiles } from '../src/lib/env';
 import { unreconciledSQL } from '../src/jev/unreconciled';
-import { LIVE_QUERY_SQL, shipperLagSQL } from './live-sql';
+import { LIVE_QUERY_SQL, liveRatioSQL, shipperLagSQL } from './live-sql';
 import { readUsageAge } from './usage-age';
 const env = loadEnvFiles(['~/.config/tokenlayer/hub.env', '~/.config/tokenlayer/clickhouse.env']);
 const ch = ClickHouse.fromEnv(env);
@@ -39,9 +39,7 @@ if (id === 'm1_disk_free_gb') {
   for (let i = 0; i < 20; i++) { const start = performance.now(); await ch.exec(LIVE_QUERY_SQL); times.push(performance.now() - start); }
   value = times.sort((a, b) => a - b)[18]!;
 } else {
-  const expr = id === 'cache_read_write_ratio_24h' ? "sum(cache_read_tokens)/nullIf(sum(cache_creation_tokens),0)"
-    : id === 'w1h_share_24h' ? "sum(JSONExtractUInt(raw,'message','usage','cache_creation','ephemeral_1h_input_tokens'))/nullIf(sum(cache_creation_tokens),0)" : 'NULL';
-  value = await scalar(`SELECT ${expr} FROM tokenlayer.session_events FINAL WHERE ts>now()-INTERVAL 1 DAY`);
+  value = await scalar(liveRatioSQL(id ?? ''));
 }
 if (!Number.isFinite(value) || value < 0) throw Error('missing live measurement');
 console.log(value);
