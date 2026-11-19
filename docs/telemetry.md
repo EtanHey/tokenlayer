@@ -178,8 +178,23 @@ ORDER BY cache_write DESC
 LIMIT 50
 ```
 
+**Memory cap.** The `tokenlayer` login (the dashboard, the ratchet rows and every ad-hoc reader) runs under the
+`reader` profile in `config/clickhouse.xml.template`:
+- Each query is capped at 8 GiB (`max_memory_usage`). A caller may lower the cap, but may not raise it or set 0
+  (ClickHouse refuses with code 452).
+- GROUP BY and ORDER BY spill to disk past 4 GiB, with at most 8 GiB of temporary disk per query.
+
+Ship and drain write as `tokenlayer_writer` (`CLICKHOUSE_USER` in their launchd plists, with the same password), which
+stays uncapped. Before the cap, one unbounded read of the context view reached the server's 28.8 GiB limit on the M1.
+The same read now fails in about 2 s with `MEMORY_LIMIT_EXCEEDED`. On 2026-11-19 (11.1M rows), these were the
+heavy reads:
+- The 30-day `v_sessions_daily` query below peaks at 5.1 GiB.
+- Credited sums from the context view need more than 8 GiB even for one day, because the window runs over every row.
+  This covers `output_tokens` and similar columns, and `v_provider_usage_compare` too.
+
 Activity per machine / harness / project: the context view reads the archive with `FINAL` and derives attribution/usage credit.
-Rewound/abandoned branches with different content remain distinct. Legacy migration or lineage loss can increase sums:
+Rewound/abandoned branches with different content remain distinct. Legacy migration or lineage loss can increase sums.
+Under the reader cap, this query fails at the current table size (see above):
 
 ```sql
 SELECT machine, harness, project, toDate(ts) AS day,

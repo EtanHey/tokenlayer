@@ -19,6 +19,9 @@
     <string>m1</string>
     <key>TOKENLAYER_HUB_URL</key>
     <string>http://127.0.0.1:8317</string>
+    <!-- Writes bypass the reader memory cap (config/clickhouse.xml.template); the password stays in clickhouse.env. -->
+    <key>CLICKHOUSE_USER</key>
+    <string>tokenlayer_writer</string>
     <key>TOKENLAYER_ENV_FILES</key>
     <string>__HOME__/.config/tokenlayer/hub.env:__HOME__/.config/tokenlayer/clickhouse.env</string>
   </dict>
