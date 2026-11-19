@@ -22,8 +22,10 @@ test('real writer rejects corrupted private prior state during SSH outage', asyn
     const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
     expect(code).toBe(0);
     expect(stdout + stderr).toBe('');
+    // No ship.env under this HOME: counted use says so instead of reaching for a default store.
+    const off = { observed_at: null, source: 'clickhouse:session_events', last_error: 'store unavailable' };
     const none = { pct: null, window: null, resets_at: null, observed_at: null, source: 't3-cache', stale: true, windows: [], last_error: 'no T3 usage cache' };
-    expect(JSON.parse(await readFile(target, 'utf8'))).toEqual({ generated_at: null, source: 'cliproxy-hub', stale: true, accounts: [], last_error: 'hub unavailable', vendors: { codex: none, cursor: none, antigravity: none, kiro: none } });
+    expect(JSON.parse(await readFile(target, 'utf8'))).toEqual({ generated_at: null, source: 'cliproxy-hub', stale: true, accounts: [], last_error: 'hub unavailable', vendors: { codex: { ...none, use: off }, cursor: none, antigravity: { ...none, use: off }, kiro: { ...none, use: off } } });
     expect((await stat(target)).mode & 0o777).toBe(0o644);
     expect(await readdir(dir)).toEqual(['usage.json']);
   } finally { await rm(home, { recursive: true, force: true }); }
