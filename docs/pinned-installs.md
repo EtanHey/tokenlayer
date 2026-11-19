@@ -12,6 +12,10 @@ From any checkout that has the commit (fetch first; the checkout's branch is nev
 scripts/deploy/setup.sh pin <sha> [--restart com.tokenlayer.ship ...]
 ```
 
+The commit must be on `origin/main` (`git merge-base --is-ancestor`), so fetch first. An unmerged branch or PR head is
+refused before anything is written: a pinned job runs with the hub management key and the writer login. For a
+rehearsal only, `setup.sh pin <sha> --allow-unmerged` installs it anyway and prints a warning.
+
 The install takes four steps:
 
 1. `git archive <sha>` into `app/.staging-<sha>-<pid>`.
