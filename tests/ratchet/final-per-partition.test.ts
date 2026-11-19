@@ -12,8 +12,10 @@ describe("session_events FINAL readers merge per partition", () => {
   test.each(["cache_read_write_ratio_24h", "w1h_share_24h"])("%s", (id) => {
     expect(liveRatioSQL(id)).toEndWith(`FROM tokenlayer.session_events FINAL WHERE ts>now()-INTERVAL 1 DAY SETTINGS ${FINAL_PER_PARTITION}`);
   });
-  test("v_session_events_context reads session_events FINAL per partition", () => {
-    expect(file("schema/006_session_context.sql")).toMatch(/FROM tokenlayer\.session_events FINAL\s+SETTINGS do_not_merge_across_partitions_select_final=1\n/);
+  test("v_session_events_context reads session_events FINAL per partition, in every FINAL subquery", () => {
+    const finals = file("schema/006_session_context.sql").split("FROM tokenlayer.session_events FINAL").slice(1);
+    expect(finals.length).toBe(3);
+    for (const rest of finals) expect(rest.slice(0, rest.indexOf("\n)"))).toMatch(/\n *SETTINGS do_not_merge_across_partitions_select_final=1$/);
   });
   test("archaeology existing.sql carries the setting for both FINAL reads", () => {
     expect(file("src/archaeology/existing.sql")).toMatch(/\nSETTINGS do_not_merge_across_partitions_select_final=1\nFORMAT TabSeparatedWithNames\n$/);
