@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ClickHouse } from '../src/lib/clickhouse';
 import { loadEnvFiles } from '../src/lib/env';
+import { unreconciledSQL } from '../src/jev/unreconciled';
 const env = loadEnvFiles(['~/.config/tokenlayer/hub.env', '~/.config/tokenlayer/clickhouse.env']);
 const ch = ClickHouse.fromEnv(env);
 const id = process.argv[2];
@@ -28,6 +29,8 @@ if (id === 'm1_disk_free_gb') {
   value = samples.sort((a, b) => a - b)[id.includes('p50') ? 9 : 18]!;
 } else if (id === 'shipper_live_lag_s') {
   value = await scalar('SELECT quantileExact(0.95)(dateDiff(\'millisecond\', ts, ingested_at))/1000 FROM tokenlayer.session_events FINAL WHERE ingested_at > now()-INTERVAL 1 DAY HAVING count()>0');
+} else if (id === 'jev_unreconciled_24h') {
+  value = await scalar(unreconciledSQL());
 } else if (id === 'ch_live_query_p95_ms') {
   const times: number[] = [];
   for (let i = 0; i < 20; i++) { const start = performance.now(); await ch.exec('SELECT session_id, count() FROM tokenlayer.session_events FINAL WHERE ts>now()-INTERVAL 1 DAY GROUP BY session_id SETTINGS use_query_cache=0'); times.push(performance.now() - start); }
