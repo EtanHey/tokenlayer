@@ -11,6 +11,8 @@ export const appRoot = (home = homedir()) => join(home, '.config/tokenlayer/app'
 export const appCurrent = (home = homedir()) => join(appRoot(home), 'current');
 
 type Deps = { install?: (dir: string) => void; kickstart?: (label: string) => void; labels?: string[] };
+/** Only reviewed code gets the hub management key and the writer login: a release must be on this ref. */
+export const MAIN = 'origin/main';
 const bunInstall = (dir: string) => {
   const r = spawnSync(process.execPath, ['install', '--production', '--frozen-lockfile'], { cwd: dir, stdio: 'inherit' });
   if (r.status !== 0) throw Error('bun install --production failed');
@@ -42,9 +44,23 @@ function resolveCommit(repo: string, rev: string) {
   return sha;
 }
 
-/** Copy the tree at rev into root/<sha> (git archive, then bun install --production), flip current, then kickstart labels. */
-export async function installRelease(o: { repo: string; rev: string; root: string } & Deps) {
+/** sha is reachable from origin/main (fetch first). Exit 1 is "not an ancestor"; anything else is a git failure. */
+export function onMain(repo: string, sha: string) {
+  const r = spawnSync('git', ['-C', repo, 'merge-base', '--is-ancestor', sha, MAIN], { encoding: 'utf8' });
+  if (r.status !== 0 && r.status !== 1) throw Error(`git merge-base ${sha} ${MAIN} failed: ${r.stderr.trim()}`);
+  return r.status === 0;
+}
+
+/**
+ * Copy the tree at rev into root/<sha> (git archive, then bun install --production), flip current, then kickstart labels.
+ * A commit that is not on origin/main is refused before anything is written, unless allowUnmerged (rehearsals only).
+ */
+export async function installRelease(o: { repo: string; rev: string; root: string; allowUnmerged?: boolean; warn?: (line: string) => void } & Deps) {
   const sha = resolveCommit(o.repo, o.rev);
+  if (!onMain(o.repo, sha)) {
+    if (!o.allowUnmerged) throw Error(`${sha} is not on ${MAIN}: only merged code is pinned (fetch first; --allow-unmerged for a rehearsal)`);
+    (o.warn ?? console.error)(`WARNING: ${sha} is not on ${MAIN}. Pinning unreviewed code: every repointed job runs it with the hub and writer credentials.`);
+  }
   mkdirSync(o.root, { recursive: true, mode: 0o700 });
   if (!installed(o.root, sha)) {
     if (existsSync(join(o.root, sha))) throw Error(`${join(o.root, sha)} exists without a ${MARKER}; inspect and remove it`);
@@ -98,14 +114,16 @@ function status(root: string) {
 if (import.meta.main) {
   process.umask(0o077);
   const [action, target, ...rest] = process.argv.slice(2);
-  const usage = 'usage: pin.ts install <rev> | use <sha> [--restart com.tokenlayer.<job>...] | repoint <plist> [checkout] | status';
+  const usage = 'usage: pin.ts install <rev> [--allow-unmerged] [--restart com.tokenlayer.<job>...] | use <sha> [--restart com.tokenlayer.<job>...] | repoint <plist> [checkout] | status';
+  const allowUnmerged = action === 'install' && rest[0] === '--allow-unmerged';
+  if (allowUnmerged) rest.shift();
   const labels = () => {
     if (rest.length && rest[0] !== '--restart') throw Error(usage);
     if (rest.slice(1).some(l => !/^com\.tokenlayer\.[a-z-]+$/.test(l))) throw Error('only com.tokenlayer.* labels can be restarted');
     return rest.slice(1);
   };
   const root = appRoot();
-  if (action === 'install' && target) console.log(`installed ${await installRelease({ repo: resolve(import.meta.dir, '../..'), rev: target, root, labels: labels() })}`);
+  if (action === 'install' && target) console.log(`installed ${await installRelease({ repo: resolve(import.meta.dir, '../..'), rev: target, root, labels: labels(), allowUnmerged })}`);
   else if (action === 'use' && target) useRelease({ root, sha: target, labels: labels() });
   else if (action === 'repoint' && target && rest.length <= 1) {
     // Rewrite one installed plist from the checkout to the pinned app; the caller lints and reloads it.
