@@ -108,3 +108,35 @@ test('writer publishes vendors next to unchanged Claude keys, even during a hub 
     expect(text).not.toMatch(/@|sk-|secret|workspace/i);
   } finally { await rm(home, { recursive: true, force: true }); }
 });
+
+// Shapes copied from the M4's T3 caches on 2026-11-19 (keys only); values invented.
+const antigravity = (checkedAt = '2026-11-18T10:14:40.000Z') => ({ driver: 'antigravity', instanceId: 'antigravity', enabled: true,
+  auth: { status: 'authenticated', type: 'google', label: 'Google AI Pro' },
+  usageLimits: { checkedAt, credentialFingerprint: 'f'.repeat(64), windows: [
+    { id: '3p-5h', kind: 'session', label: 'Third-party models (5 hours)', usedPercent: 0, windowDurationMins: 300 },
+    { id: 'gemini-5h', kind: 'session', label: 'Gemini models (5 hours)', usedPercent: 0.3, windowDurationMins: 300, resetsAt: '2026-11-18T14:42:12.000Z' },
+    { id: '3p-weekly', kind: 'weekly', label: 'Third-party models (weekly)', usedPercent: 100, windowDurationMins: 10080, resetsAt: '2026-11-25T00:26:21.000Z' },
+  ] } });
+const kiro = { driver: 'kiro', instanceId: 'kiro', enabled: true, installed: true, version: '1.0.0', status: 'ready', checkedAt: '2026-11-18T10:14:45.000Z',
+  auth: { status: 'authenticated', label: 'Builder ID', email: 'person@example.invalid' }, setup: { canAuthenticate: true, canInstall: true },
+  models: [{ slug: 'claude-x' }], versionAdvisory: { status: 'current' } };
+
+test('readVendors publishes Antigravity limits and a Kiro placeholder that says why it is empty', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tokenlayer-t3-caches-'));
+  try {
+    await writeFile(join(dir, 'antigravity.json'), JSON.stringify(antigravity()));
+    await writeFile(join(dir, 'kiro.json'), JSON.stringify(kiro));
+    const v = await readVendors(dir, now);
+    expect(Object.keys(v)).toEqual(['codex', 'cursor', 'antigravity', 'kiro']);
+    expect(v.antigravity).toEqual({ pct: 100, window: '7d', resets_at: '2026-11-25T00:26:21.000Z', observed_at: '2026-11-18T10:14:40.000Z',
+      source: 't3-cache:antigravity', stale: false, windows: [
+        { id: '3p-5h', window: '5h', pct: 0, resets_at: null },
+        { id: 'gemini-5h', window: '5h', pct: 0.3, resets_at: '2026-11-18T14:42:12.000Z' },
+        { id: '3p-weekly', window: '7d', pct: 100, resets_at: '2026-11-25T00:26:21.000Z' },
+      ] });
+    expect(v.kiro).toEqual({ pct: null, window: null, resets_at: null, observed_at: null, source: 't3-cache:kiro', stale: true, windows: [],
+      last_error: 'usage unavailable',
+      note: 'no usageLimits, only auth,checkedAt,driver,enabled,installed,instanceId,models,setup,status,version,versionAdvisory' });
+    expect(JSON.stringify(v)).not.toMatch(/@|fingerprint|f{64}|Builder|Google AI/i);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
