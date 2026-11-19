@@ -1,5 +1,5 @@
 -- Metadata only. Derive the owner once per file generation, including rows with no inline id.
--- Both FINAL reads merge per monthly partition: versions of a key never span partitions (ratchet/live-sql.ts).
+-- Both FINAL reads merge per partition: versions of a key never span partitions (ratchet/live-sql.ts).
 WITH files AS (
     SELECT machine, path, generation,
         multiIf(
