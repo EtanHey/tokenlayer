@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- tokenlayer-fable (M1 hub only). Render: replace __REPO__, __HOME__; install to ~/Library/LaunchAgents.
+<!-- tokenlayer-fable (M1 hub only). Install: scripts/deploy/setup.sh fable.
+     bun is named in full and PATH is set: launchd's default PATH has no Homebrew, so the bin/tokenlayer wrapper's bare `bun` would not resolve.
      Secrets are read at runtime from ~/.config/tokenlayer/{hub,clickhouse}.env (mode 600), never placed here. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -8,14 +9,16 @@
   <string>com.tokenlayer.fable</string>
   <key>ProgramArguments</key>
   <array>
-    <string>__REPO__/bin/tokenlayer</string>
-    <string>fable</string>
+    <string>__BUN__</string>
+    <string>__REPO__/src/fable/main.ts</string>
     <string>run</string>
   </array>
   <key>WorkingDirectory</key>
   <string>__REPO__</string>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin</string>
     <key>TOKENLAYER_HUB</key>
     <string>m1</string>
     <key>TOKENLAYER_HUB_URL</key>
