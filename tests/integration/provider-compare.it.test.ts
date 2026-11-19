@@ -34,6 +34,7 @@ test("comparison keeps UTC-day credits separate from rolling quota gauges and de
       { provider: "claude", tokens: 35, credits_used: null, daily_allowance_used_pct: null, peak_5h_used_pct: 25, peak_weekly_used_pct: 50, tokens_per_1pct_allowance: null },
       { provider: "codex", tokens: 35, credits_used: null, daily_allowance_used_pct: null, peak_5h_used_pct: 12, peak_weekly_used_pct: 30, tokens_per_1pct_allowance: null },
       { provider: "kiro", tokens: null, credits_used: 0.25, daily_allowance_used_pct: 0.5, peak_5h_used_pct: null, peak_weekly_used_pct: null, tokens_per_1pct_allowance: null },
+      { provider: "typesafe", tokens: null, credits_used: null, daily_allowance_used_pct: null, peak_5h_used_pct: null, peak_weekly_used_pct: null, tokens_per_1pct_allowance: null },
     ]);
     await put("kiro/unknown.jsonl", "kiro", {}, { ts: "2026-11-03 03:00:00.000", session_id: "cancelled", type: "kiro:usage_summary", message_id: "cancelled", credits: null });
     await put("kiro/only-unknown.jsonl", "kiro", {}, { ts: "2026-11-04 03:00:00.000", session_id: "only-unknown", type: "kiro:usage_summary", message_id: "cancelled", credits: null });
