@@ -212,7 +212,9 @@ A full `SELECT *` from the context view still sorts every row by session for `or
 No view reads `raw`. The facts they need are `MATERIALIZED` columns of `session_events`, extracted once at insert
 (schema/004): `raw_has_created_at` and `raw_has_message` (the compare's per-file provider hints), `token_total`
 (the context view's token_count credit) and `codex_{primary,secondary}_{pct,minutes}` (Codex rate limits). Before
-R7 the compare decompressed all of `raw` once per read for the hints, which was most of its time.
+R7 the compare decompressed all of `raw` once per read for the hints, which was most of its time. Live on the M1
+(2026-11-19, reader, 7 days): 4.9 GiB / 59 s before R7, 4.8 GiB / 49 s with the columns but old parts not yet
+backfilled, and 2.8–3.7 GiB / 7.5 s on a copy where every row carries the columns.
 
 `bun run schema:apply` adds the columns with `ADD COLUMN IF NOT EXISTS`, which is metadata only: no mutation, and
 existing parts are untouched. Parts written before that compute the columns from `raw` on read, so the views are
