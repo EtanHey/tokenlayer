@@ -119,7 +119,7 @@ for (const [name, snap] of Object.entries(STATES))
         if (name === "fresh") {
           expect(by.Codex.mark).toBe("OK");
           expect(by.Codex.text).toContain("100% of 7d");
-          expect(by.Codex.text).toMatch(/Resets \w{3} \d+ \w{3}, \d\d:\d\d \(in 3 h\)/);
+          expect(by.Codex.text).toMatch(/Resets \w{3} \d+ \w{3}, \d\d:\d\d (IST|IDT) \(in 3 h\)/);
           expect(by.Codex.text).toContain("7 d: 948 sessions · 38.9K req · 143.7M tok");
           expect(by.Kiro.text).toContain("7 d: 1 session · 89 req · 9.2 credits");
           expect(by.Cursor.text).toContain("24 h / 7 d use: no data");

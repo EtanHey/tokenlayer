@@ -27,12 +27,19 @@ async function api(path, body) {
   if (!r.ok) throw Error(data.error || "Request failed (" + r.status + ")");
   return data;
 }
+// Israel time with its zone beside it, from Asia/Jerusalem's offset on that date (ICU gives only "GMT+2"/"GMT+3").
+// Same rule as src/dashboard/israel-time.ts; tests/dashboard/israel-time.test.ts pins both.
+function israelZone(d) {
+  const off = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Jerusalem", timeZoneName: "shortOffset" })
+    .formatToParts(d).find((p) => p.type === "timeZoneName")?.value ?? "";
+  return off === "GMT+2" ? "IST" : off === "GMT+3" ? "IDT" : off;
+}
 function time(v) {
   if (!v) return "UNKNOWN";
   const d = new Date(typeof v === "number" ? v : /^\d+$/.test(v) ? Number(v) * 1000 : v);
   return isNaN(d)
     ? "UNKNOWN"
-    : d.toLocaleString("en-GB", { timeZone: "Asia/Jerusalem", timeZoneName: "short" });
+    : d.toLocaleString("en-GB", { timeZone: "Asia/Jerusalem" }) + " " + israelZone(d);
 }
 function meter(card, name, q) {
   card.append(
@@ -428,7 +435,7 @@ function when(v) {
   const rel = hours < 0 ? "passed" : hours < 1 ? "in " + Math.max(1, Math.round(hours * 60)) + " min"
     : hours < 48 ? "in " + Math.round(hours) + " h" : "in " + Math.round(hours / 24) + " d";
   return d.toLocaleString("en-GB", { timeZone: "Asia/Jerusalem", weekday: "short", day: "numeric",
-    month: "short", hour: "2-digit", minute: "2-digit" }) + " (" + rel + ")";
+    month: "short", hour: "2-digit", minute: "2-digit" }) + " " + israelZone(d) + " (" + rel + ")";
 }
 function useText(label, u) {
   if (!u) return label + ": no data";

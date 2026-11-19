@@ -1,4 +1,5 @@
 import { arrangement, cappedUntil, outsideDelta, sessionsSQL, weeklyCapped } from "./advice";
+import { israelClock } from "./israel-time";
 import { spillEnabled } from "../fable/core";
 import { status } from "../fable/status";
 import { migrate } from "../fable/baseline";
@@ -511,9 +512,7 @@ export function recommend(c: any, thresholds: any = {}, now = Date.now()) {
 }
 function clock(reset: unknown) {
   const at = parseTime(reset);
-  return !Number.isFinite(at) ? "time unknown" : new Date(at).toLocaleString("en-GB", {
-    timeZone: "Asia/Jerusalem", weekday: "short", hour: "2-digit", minute: "2-digit"
-  });
+  return !Number.isFinite(at) ? "time unknown" : israelClock(new Date(at));
 }
 
 export function resolveSession(id: string) {
