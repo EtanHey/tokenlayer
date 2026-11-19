@@ -122,5 +122,5 @@ if (import.meta.main) {
     const state = join(config, 'backfill-state.json');
     const proc = Bun.spawn([process.execPath, 'scripts/deploy/backfill.ts', ...flags], { cwd: repo, env: { ...process.env, TOKENLAYER_SHIP_STATE: state }, stdout: Bun.file(join(logs, 'backfill.log')), stderr: Bun.file(join(logs, 'backfill.err.log')) });
     process.exit(await proc.exited);
-  } else throw Error('usage: setup.sh pin <sha> [--restart label...] | use <sha> | hub | ship m1 | ship m4 https://hub.ts.net:8123');
+  } else throw Error('usage: setup.sh pin <sha> [--allow-unmerged] [--restart label...] | use <sha> | hub | ship m1 | ship m4 https://hub.ts.net:8123');
 }
