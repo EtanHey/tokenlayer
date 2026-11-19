@@ -20,7 +20,7 @@ test.skipIf(!clickhouseBinary())(`MUST-1 ${root} cold zst: ${first} first has on
   utimesSync(packed, new Date("2026-01-01"), new Date("2026-01-01"));
   const row: Inventory = { machine: "m4", source_kind: "live", container: "", member_path: packed, session_id: "child", harness: root === "t3-codex" ? "t3" : "codex", bytes: String(bytes.length), lines: "2", first_ts: "2026-01-01", last_ts: "2026-01-01", cwd: "/Users/etanheyman/Gits/example", sha256: sha256(bytes), mtime: "" };
   const entries = () => manifest([row, { ...row, source_kind: "archive_dir", member_path: packed }], [], { m4: [sessions] });
-  const local = await startLocalClickHouse();
+  const local = await startLocalClickHouse({ prepare: applySchema });
   const opts = { machine: "m4", roots: [{ kind: "codex" as const, dir: sessions }], statePath: join(dir, "state"), clickhouse: local.client, rateBytesPerSec: 0 };
   const backfill = async () => {
     const proc = Bun.spawn([process.execPath, "src/ship/main.ts", "--backfill", "--rate-mb", "0"], { env: {
@@ -32,7 +32,6 @@ test.skipIf(!clickhouseBinary())(`MUST-1 ${root} cold zst: ${first} first has on
     expect(await proc.exited, error).toBe(0);
   };
   try {
-    await applySchema(local.client);
     expect((await shipOnce({ ...opts, sinceMs: Date.now() - 86_400_000 })).lines).toBe(0);
     if (first === "shipper") await backfill();
     const exported = join(dir, "existing.tsv"); await exportExisting(local.client, exported);
@@ -62,9 +61,8 @@ test.skipIf(!clickhouseBinary())("NIT-C unresolved owner fails closed with an eg
   const dir = realpathSync(mkdtempSync(".local/unresolved-owner-")), sessions = join(dir, "sessions"); mkdirSync(sessions);
   const secret = "sk-ant-api03-" + "x".repeat(48), path = join(sessions, `unattributed-${secret}.jsonl`), out = join(dir, "existing.tsv");
   writeFileSync(path, '{}\n');
-  const local = await startLocalClickHouse();
+  const local = await startLocalClickHouse({ prepare: applySchema });
   try {
-    await applySchema(local.client);
     await shipOnce({ machine: "m4", roots: [{ kind: "claude", dir: sessions }], statePath: join(dir, "state"), clickhouse: local.client, rateBytesPerSec: 0 });
     let message = "";
     try { await exportExisting(local.client, out); } catch (error) { message = error instanceof Error ? error.message : ""; }

@@ -64,9 +64,8 @@ test('N4 real importer matrices carry the same explicit resource bounds', async 
     } finally { capture.mockRestore(); await local.stop(); }
 }, 60000);
 test('N9 zero/unknown local space refuses before ledger append or HTTP; importer refuses before local writes', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE });
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema });
     try {
-        await applySchema(local.client);
         for (const sample of [{ bsize: 4096n, bavail: 0n }, { bsize: 0n, bavail: 1n }, { bsize: 4096n }, undefined]) {
             const f = fixture(), ledger = join(f.history, 'ledger');
             const localSpace = () => sample;
@@ -80,9 +79,8 @@ test('N9 zero/unknown local space refuses before ledger append or HTTP; importer
     } finally { await local.stop(); }
 }, 60000);
 test('N4 real owner result overflow fails closed without ledger; empty owner set skips hash checks', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), root = dir();
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), root = dir();
     try {
-        await applySchema(local.client);
         const client = new StreamingHistoryClient(local.client.config, { ledger: join(root, 'ledger'), manifest: 'bounds', run: 'bounds', sessionId: 'native' });
         const queries: string[] = [], query = client.queryJSON.bind(client);
         const capture = spyOn(client, 'queryJSON').mockImplementation((sql: string) => { queries.push(sql); return query(sql) as any; });
@@ -114,10 +112,9 @@ test('N9 exact local floor includes pending bytes; append/rotation recheck witho
     expect(existsSync(path + '.next')).toBe(false); expect(existsSync(join(root, 'audit'))).toBe(false);
 });
 test('N9 local-space drop after initial receipt stops guarded checkpoint writes with zero ingestion', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), f = fixture();
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), f = fixture();
     const stateDir = join(f.history, sha256Hex(readFileSync(f.manifest, 'utf8'))), receipt = join(stateDir, 'receipts.ndjson');
     try {
-        await applySchema(local.client);
         let before = Buffer.alloc(0);
         const localSpace = () => {
             if (existsSync(receipt)) { before = readFileSync(receipt); return { bsize: 1n, bavail: 0n }; }

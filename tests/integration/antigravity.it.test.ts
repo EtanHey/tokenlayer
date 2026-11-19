@@ -11,8 +11,7 @@ let ch: LocalClickHouse, dir: string, cli: string, t3: string, opts: ShipOptions
 const line = (created_at?: string) => JSON.stringify({ step_index: 0, type: "user", source: "user", status: "done", ...(created_at ? { created_at } : {}), content: "synthetic fixture" }) + "\r\n";
 const put = (path: string, text: string) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text); };
 beforeAll(async () => {
-  ch = await startLocalClickHouse();
-  await applySchema(ch.client);
+  ch = await startLocalClickHouse({ prepare: applySchema });
   dir = mkdtempSync(join(import.meta.dir, "../../.local/agy-it-"));
   cli = join(dir, "cli/brain/native-cli/.system_generated/logs/transcript.jsonl");
   t3 = join(dir, "t3/hash/antigravity-acp/brain/native-t3/.system_generated/logs/transcript.jsonl");
