@@ -12,15 +12,19 @@ import { SCHEMA_DIR } from "./schema";
  * change a partition key in place, nor attach a monthly partition into daily ones, so this copies the rows.
  *
  * Order, all resumable from what the database shows:
- *   1. Refuse, changing nothing, unless free disk covers the floor plus the most demanding part: COPY_GROWTH times
- *      the part (its copied days stay until it drops) plus DAY_AMPLIFICATION times its largest day. Create
+ *   1. Refuse, changing nothing, unless both Macs' shippers run a client that can write more than 100 days in one
+ *      insert (shipper-ready.ts), and free disk covers the floor and the watchdog's margin plus the most demanding
+ *      part: COPY_GROWTH times the part (its copied days stay until it drops) plus DAY_AMPLIFICATION times its largest
+ *      day. A day's size is its share of the part's bytes, by source-line bytes or rows, whichever is larger. Create
  *      session_events_daily_next from schema/004 with migration 011's TTL, then EXCHANGE it with the live table and
  *      rename the old one to session_events_monthly. Shippers keep inserting; from here they write daily parts.
  *   2. With the archive's merges stopped and the live table in WINDOW_SETTINGS, for each archive part, smallest
- *      first, one day of the part at a time: skip the day if the live table already holds every kept key at the same
- *      or a newer version (a rerun after a kill); otherwise wait until free disk covers DAY_AMPLIFICATION times the
- *      day, then INSERT the day's kept rows under their own query_id while a watchdog KILLs that query if free disk
- *      falls under the floor. Free disk is read before every day, so garbage from earlier days' merges is counted
+ *      first: find the days not yet in the live table at the same or a newer version (a rerun after a kill), and wait
+ *      until free disk covers what those days need (step 1's test, on fresh runs and resumes alike). Then one day at a
+ *      time: wait until free disk covers DAY_AMPLIFICATION times the day above the floor and margin, then INSERT the
+ *      day's kept rows under their own query_id while a watchdog KILLs that query once free disk falls under the floor
+ *      plus KILL_MARGIN (merges already running finish after a kill), or after FAILED_READS_TO_KILL failed reads, and
+ *      checks the query is gone. Free disk is read before every day, so garbage from earlier days' merges is counted
  *      and waited out. Once every day is in, check every kept key of the part arrived, then DROP the part.
  *      Every version of a key is copied as it is and the TTL's per-row predicate applies, so the result equals what
  *      the monthly table would keep. Duplicate versions collapse as each day's parts merge (FINAL reads already do).
@@ -48,6 +52,15 @@ export const DAY_AMPLIFICATION = 3;
 /** Copied rows take a little more disk than the source part they came from (measured 1.05x); the gate uses 1.1. */
 export const COPY_GROWTH = 1.1;
 /**
+ * The watchdog kills a copy this far above the floor, so the floor holds through what a kill cannot stop: merges of the
+ * day's copied parts already running (each writes up to the 1 GiB merge cap) and a ship burst between two reads.
+ */
+export const KILL_MARGIN = 2 * GiB;
+/** Consecutive failed free-disk reads after which the watchdog kills the copy: a server too stressed to answer is unsafe. */
+export const FAILED_READS_TO_KILL = 3;
+/** How long the watchdog keeps re-issuing KILL before it stops the run loudly, the copy perhaps still writing. */
+export const KILL_CONFIRM_MS = 60_000;
+/**
  * A session line averages about 5.5 KB. With default blocks (65k rows per read thread, 256 MiB insert squashing) a
  * local copy of 464 MiB peaked at 4.85 GiB of memory (the hub login caps a query at 8 GiB); these bounds held it to
  * 884 MiB at about 0.6x the time of OPTIMIZE FINAL on the same parts (receipt R12). Dedup tokens
@@ -65,11 +78,50 @@ const COPY_SETTINGS: Record<string, string | number> = {
  */
 const WINDOW_SETTINGS = { old_parts_lifetime: 10, fsync_after_insert: 1, min_compressed_bytes_to_fsync_after_merge: 1 };
 const RESET_WINDOW_SETTINGS = (table: string) => `ALTER TABLE ${table} RESET SETTING ${Object.keys(WINDOW_SETTINGS).join(", ")}`;
+/** Where a back-out puts the daily table, so it cannot pass for the monthly archive this run always drops. */
+export const BACKED_OUT = "tokenlayer.session_events_daily_backed_out";
 /**
  * Runbook back-out: the monthly archive goes live again with the merges this run stopped on it restarted, and the
- * daily table (now named session_events_monthly) drops its window settings.
+ * daily table is renamed to BACKED_OUT without its window settings. Stop the CLI first, and confirm no `r12-` query runs.
+ * BACKED_OUT is then the only copy of the days already copied (their archive parts were dropped) and of every row
+ * shipped during the window: copy it back day by day with copyBackSQL before dropping it.
  */
-export const BACK_OUT_SQL = [`EXCHANGE TABLES ${LIVE} AND ${ARCHIVE}`, `SYSTEM START MERGES ${LIVE}`, RESET_WINDOW_SETTINGS(ARCHIVE)];
+export const BACK_OUT_SQL = [
+  `EXCHANGE TABLES ${LIVE} AND ${ARCHIVE}`, `RENAME TABLE ${ARCHIVE} TO ${BACKED_OUT}`, `SYSTEM START MERGES ${LIVE}`, RESET_WINDOW_SETTINGS(BACKED_OUT),
+];
+/** schema/004's stored columns (no MATERIALIZED, ALIAS or EPHEMERAL), in its order. */
+export function storedColumns004(): string[] {
+  const ddl = readFileSync(join(SCHEMA_DIR, "004_session_events.sql"), "utf8");
+  const body = ddl.slice(ddl.indexOf("(\n") + 2, ddl.indexOf("\n    INDEX "));
+  return body.split("\n").flatMap(l => {
+    const m = /^ {4}(\w+)\s+\S/.exec(l);
+    return m && !/\b(MATERIALIZED|ALIAS|EPHEMERAL)\b/.test(l) ? [m[1]] : [];
+  });
+}
+/** Days the back-out copy-back still has to move, with their bytes on disk. */
+export const COPY_BACK_DAYS_SQL = `SELECT partition_id AS day, toString(sum(bytes_on_disk)) AS bytes FROM system.parts
+  WHERE database = 'tokenlayer' AND table = '${BACKED_OUT.split(".")[1]}' AND active GROUP BY day ORDER BY day`;
+/**
+ * The back-out copy-back of one UTC day (`day` as YYYYMMDD), run after BACK_OUT_SQL, in order:
+ *   1. only when `df` free is at least the floor + KILL_MARGIN + DAY_AMPLIFICATION x the day's bytes (COPY_BACK_DAYS_SQL),
+ *      INSERT the day into the restored live table (watch df meanwhile; KILL QUERY it if df nears the floor);
+ *   2. a check that must read 0: keys of the day whose newest version the live table lacks;
+ *   3. only then DROP the day from BACKED_OUT, which frees its disk before the next day.
+ * Once COPY_BACK_DAYS_SQL is empty, DROP TABLE BACKED_OUT.
+ */
+export function copyBackSQL(day: string): { insert: string; check: string; drop: string } {
+  if (!/^\d{8}$/.test(day)) throw new Error(`copy-back day must be YYYYMMDD, not ${day}`);
+  const columns = storedColumns004().map(c => `\`${c}\``).join(", ");
+  const settings = Object.entries(COPY_SETTINGS).map(([n, v]) => `${n} = ${v}`).join(", ");
+  return {
+    insert: `INSERT INTO ${LIVE} (${columns}) SELECT ${columns} FROM ${BACKED_OUT} WHERE toYYYYMMDD(ts) = ${day} SETTINGS ${settings}`,
+    check: `SELECT countIf(l.at < a.at) FROM
+      (SELECT ${KEY} AS k, max(ingested_at) AS at FROM ${BACKED_OUT} WHERE toYYYYMMDD(ts) = ${day} GROUP BY k) AS a
+      LEFT JOIN (SELECT ${KEY} AS k, max(ingested_at) AS at FROM ${LIVE} WHERE toYYYYMMDD(ts) = ${day} GROUP BY k) AS l USING (k)
+      SETTINGS join_use_nulls = 0, max_threads = 2`,
+    drop: `ALTER TABLE ${BACKED_OUT} DROP PARTITION ${day}`,
+  };
+}
 
 export type PartPlan = { partition: string; part: string; bytes: number; rows: number; maxDayBytes: number };
 export type CopiedPart = PartPlan & { kept: number; days: number; skippedDays: number; seconds: number };
@@ -78,8 +130,9 @@ export type RepartitionReport = {
   freeBytes: number;
   floorBytes: number;
   /**
-   * Free disk the most demanding remaining part needs to finish without the floor breaking: the floor, plus its
-   * copied days (COPY_GROWTH times the part, kept until the part drops), plus DAY_AMPLIFICATION times its largest day.
+   * Free disk the most demanding remaining part needs to finish without the floor breaking: the floor and the
+   * watchdog's margin, plus its copied days (COPY_GROWTH times the part, kept until the part drops), plus
+   * DAY_AMPLIFICATION times its largest day.
    */
   needBytes: number;
   copied: CopiedPart[];
@@ -93,6 +146,12 @@ export type RepartitionReport = {
 export type RepartitionOptions = {
   /** Free disk that must remain throughout the copy. Default 30 GiB (the M1's floor). */
   floorBytes?: number;
+  /** The watchdog kills a copy once free disk falls under floor + this. Default KILL_MARGIN. */
+  killMarginBytes?: number;
+  /** How long the watchdog keeps re-issuing KILL before the run stops loudly. Default KILL_CONFIRM_MS. */
+  killConfirmMs?: number;
+  /** Why the shippers are not ready for daily partitions (empty: ready). Checked before the swap. Default: shipper-ready.ts. */
+  shipperCheck?: () => Promise<string[]>;
   /** Disk multiplier per copied day; default DAY_AMPLIFICATION. */
   amplification?: number;
   /** Stop after this many parts; a rerun resumes. */
@@ -146,16 +205,38 @@ async function tableKeys(ch: ClickHouse): Promise<Map<string, string>> {
   return new Map(rows.map(r => [r.name, r.partition_key]));
 }
 
+export type DaySize = { day: string; rows: number; lineBytes: number; bytes: number };
+/**
+ * Each day's share of a part's `bytes` on disk. Session text is most of the disk and its size varies by day (live, one
+ * day held 14.5% of a part's rows and 21.2% of its line bytes), so a day counts as the larger of its share of
+ * line_bytes (the source line's size) and of rows (the per-row columns).
+ */
+export function sizeDays(bytes: number, days: { day: string; rows: number; lineBytes: number }[]): DaySize[] {
+  const rows = days.reduce((a, d) => a + d.rows, 0), lineBytes = days.reduce((a, d) => a + d.lineBytes, 0);
+  return days.map(d => ({ ...d, bytes: Math.ceil(bytes * Math.max(d.rows / Math.max(1, rows), lineBytes > 0 ? d.lineBytes / lineBytes : 0)) }));
+}
+
+async function dayRows(ch: ClickHouse, table: string, part?: string) {
+  const rows = await ch.queryJSON<{ part: string; day: string; rows: string; line_bytes: string }>(
+    `SELECT _part AS part, toString(toYYYYMMDD(ts)) AS day, toString(count()) AS rows, toString(sum(line_bytes)) AS line_bytes
+     FROM tokenlayer.${table} ${part ? `WHERE _part = '${part}'` : ""} GROUP BY part, day ORDER BY part, day`);
+  const byPart = new Map<string, { day: string; rows: number; lineBytes: number }[]>();
+  for (const r of rows) {
+    if (!/^\d{8}$/.test(r.day)) throw new Error(`unexpected day ${r.day} in ${r.part}`);
+    byPart.set(r.part, [...byPart.get(r.part) ?? [], { day: r.day, rows: Number(r.rows), lineBytes: Number(r.line_bytes) }]);
+  }
+  return byPart;
+}
+
 async function parts(ch: ClickHouse, table: string): Promise<PartPlan[]> {
-  const rows = await ch.queryJSON<{ partition: string; part: string; bytes: string; rows: string; max_day: string }>(
-    `SELECT partition_id AS partition, name AS part, toString(bytes_on_disk) AS bytes, toString(rows) AS rows, toString(d.max_day) AS max_day
-     FROM system.parts AS p LEFT JOIN (
-       SELECT _part, max(c) AS max_day FROM (SELECT _part, toYYYYMMDD(ts) AS day, count() AS c FROM tokenlayer.${table} GROUP BY _part, day) GROUP BY _part
-     ) AS d ON d._part = p.name
-     WHERE p.database = 'tokenlayer' AND p.table = '${table}' AND p.active ORDER BY p.bytes_on_disk, p.name`);
+  const rows = await ch.queryJSON<{ partition: string; part: string; bytes: string; rows: string }>(
+    `SELECT partition_id AS partition, name AS part, toString(bytes_on_disk) AS bytes, toString(rows) AS rows
+     FROM system.parts WHERE database = 'tokenlayer' AND table = '${table}' AND active ORDER BY bytes_on_disk, name`);
+  const days = await dayRows(ch, table);
   return rows.map(r => {
-    const bytes = Number(r.bytes), n = Number(r.rows);
-    return { partition: r.partition, part: r.part, bytes, rows: n, maxDayBytes: Math.ceil(bytes * Number(r.max_day) / Math.max(1, n)) };
+    const bytes = Number(r.bytes);
+    const maxDayBytes = Math.max(0, ...sizeDays(bytes, days.get(r.part) ?? []).map(d => d.bytes));
+    return { partition: r.partition, part: r.part, bytes, rows: Number(r.rows), maxDayBytes };
   });
 }
 
@@ -211,15 +292,23 @@ export async function repartitionSessionEvents(ch: ClickHouse, options: Repartit
   const db = options.dryRun ? selectOnly(ch) : ch;
   const floorBytes = options.floorBytes ?? 30 * GiB;
   const k = options.amplification ?? DAY_AMPLIFICATION;
+  const margin = options.killMarginBytes ?? KILL_MARGIN;
   const settleMs = options.settleMs ?? 600_000;
   const watchMs = options.watchMs ?? 1_000;
+  const killConfirmMs = options.killConfirmMs ?? KILL_CONFIRM_MS;
+  // A NaN or negative bound passes every comparison the wrong way and turns the disk checks off.
+  const bad = Object.entries({ floorBytes, margin, settleMs, watchMs, killConfirmMs }).filter(([, v]) => !Number.isFinite(v) || v < 0);
+  if (!Number.isFinite(k) || k < 1) bad.push(["amplification", k]);
+  if (options.maxParts !== undefined && !(Number.isInteger(options.maxParts) && options.maxParts >= 0)) bad.push(["maxParts", options.maxParts]);
+  if (bad.length) throw new Error(`refusing malformed options: ${bad.map(([n, v]) => `${n} = ${v}`).join(", ")}`);
+  const shipperCheck = options.shipperCheck ?? (async () => (await import("./shipper-ready")).shipperProblems());
   const log = options.log ?? (() => {});
   const signal = options.signal;
   const free = () => (options.freeBytes ?? diskFreeBytes)(db);
   const partNeed = (p: PartPlan) => COPY_GROWTH * p.bytes + k * p.maxDayBytes;
-  const need = (plan: PartPlan[]) => floorBytes + Math.max(0, ...plan.map(partNeed));
+  const need = (plan: PartPlan[]) => floorBytes + margin + Math.max(0, ...plan.map(partNeed));
   const largest = (plan: PartPlan[]) => plan.reduce<PartPlan | undefined>((a, p) => (!a || partNeed(p) > partNeed(a) ? p : a), undefined);
-  const needText = (p: PartPlan) => `the part ${p.part} needs (${COPY_GROWTH} x ${gib(p.bytes)} GiB, plus ${k} x its largest day of ${gib(p.maxDayBytes)} GiB)`;
+  const needText = (p: PartPlan) => `the ${gib(margin)} GiB kill margin and the part ${p.part} need (${COPY_GROWTH} x ${gib(p.bytes)} GiB, plus ${k} x its largest day of ${gib(p.maxDayBytes)} GiB)`;
   const abortIfAsked = () => { if (signal?.aborted) throw new Error("aborted before the next step; nothing is running on the server. Rerun to resume"); };
   const runStarted = Date.now();
   const runId = `${COPY_QUERY_PREFIX}${runStarted.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -253,9 +342,11 @@ export async function repartitionSessionEvents(ch: ClickHouse, options: Repartit
       "DROP the empty archive",
     ];
     const big = largest(plan);
-    const refusal = big && freeNow < need(plan)
-      ? `free ${gib(freeNow)} GiB is under the ${gib(need(plan))} GiB that the ${gib(floorBytes)} GiB floor plus what ${needText(big)}`
-      : undefined;
+    const shippers = source === "session_events" ? await shipperCheck() : [];
+    const refusal = [
+      ...(big && freeNow < need(plan) ? [`free ${gib(freeNow)} GiB is under the ${gib(need(plan))} GiB that the ${gib(floorBytes)} GiB floor plus ${needText(big)}`] : []),
+      ...shippers.map(s => `shipper not ready: ${s}`),
+    ].join("; ") || undefined;
     return { state: "dry-run", freeBytes: freeNow, floorBytes, needBytes: need(plan), copied, remaining: plan, actions, ...(refusal ? { refusal } : {}) };
   }
 
@@ -267,7 +358,11 @@ export async function repartitionSessionEvents(ch: ClickHouse, options: Repartit
     const big = largest(plan);
     if (big && freeNow < need(plan)) {
       throw new Error(`disk floor: free ${gib(freeNow)} GiB is under the ${gib(need(plan))} GiB that the ${gib(floorBytes)} GiB floor ` +
-        `plus what ${needText(big)}; nothing changed`);
+        `plus ${needText(big)}; nothing changed`);
+    }
+    const shippers = await shipperCheck();
+    if (shippers.length) {
+      throw new Error(`shippers not ready for daily partitions (a batch over 100 days would fail on every retry): ${shippers.join("; ")}; nothing changed`);
     }
     if (keys.has("session_events_daily_next")) {
       if (!daily(keys.get("session_events_daily_next"))) throw new Error("session_events_daily_next is not daily; inspect before retrying");
@@ -309,33 +404,42 @@ export async function repartitionSessionEvents(ch: ClickHouse, options: Repartit
     if (!/^\d{6}$/.test(p.partition) || !/^\w+$/.test(p.part)) throw new Error(`unexpected archive part ${p.part}`);
     const started = Date.now();
     const cutoff = `toDateTime('${await utcNow(ch)}', 'UTC')`;
-    const days = await ch.queryJSON<{ day: string; rows: string }>(
-      `SELECT toString(toYYYYMMDD(ts)) AS day, toString(count()) AS rows FROM ${ARCHIVE} WHERE _part = '${p.part}' GROUP BY day ORDER BY day`);
-    let skippedDays = 0;
+    const days = sizeDays(p.bytes, (await dayRows(ch, "session_events_monthly", p.part)).get(p.part) ?? []);
+    // Days still to copy: a rerun skips days an earlier run's copy already landed (or with nothing kept).
+    const todo: DaySize[] = [];
     for (const d of days) {
-      if (!/^\d{8}$/.test(d.day)) throw new Error(`unexpected day ${d.day} in ${p.part}`);
       abortIfAsked();
-      const dayWhere = `_part = '${p.part}' AND toYYYYMMDD(ts) = ${d.day}`;
-      const before = await missingKeys(ch, dayWhere, `toYYYYMMDD(ts) = ${d.day}`, cutoff);
-      if (before.missing === 0) { skippedDays++; continue; } // nothing kept, or an earlier run's copy already landed
-      // The day's share of the part's bytes; its copy and the merges of it take about `k` times that.
-      const dayBytes = Math.ceil(p.bytes * Number(d.rows) / Math.max(1, p.rows));
+      const before = await missingKeys(ch, `_part = '${p.part}' AND toYYYYMMDD(ts) = ${d.day}`, `toYYYYMMDD(ts) = ${d.day}`, cutoff);
+      if (before.missing !== 0) todo.push(d);
+    }
+    const skippedDays = days.length - todo.length;
+    // The up-front test again, for what is left of this part: it also holds a resumed run, which skips step 1.
+    const todoNeed = todo.length
+      ? floorBytes + margin + COPY_GROWTH * Math.min(p.bytes, todo.reduce((a, d) => a + d.bytes, 0)) + k * Math.max(...todo.map(d => d.bytes)) : 0;
+    const settled = async (needBytes: number, what: string) => {
       let freeNow = await free();
-      if (freeNow - k * dayBytes < floorBytes) log(`  waiting up to ${settleMs / 1000} s for free disk: ${gib(freeNow)} GiB, ${p.part} day ${d.day} needs ${gib(floorBytes + k * dayBytes)}`);
-      for (const deadline = Date.now() + settleMs; freeNow - k * dayBytes < floorBytes && Date.now() < deadline; freeNow = await free()) {
+      if (freeNow < needBytes) log(`  waiting up to ${settleMs / 1000} s for free disk: ${gib(freeNow)} GiB, ${what} needs ${gib(needBytes)}`);
+      for (const deadline = Date.now() + settleMs; freeNow < needBytes && Date.now() < deadline; freeNow = await free()) {
         abortIfAsked();
         await Bun.sleep(Math.min(5_000, settleMs));
       }
-      if (freeNow - k * dayBytes < floorBytes) {
-        stopped = `free ${gib(freeNow)} GiB minus ${k} x ${gib(dayBytes)} GiB for ${p.part} day ${d.day} is under the ${gib(floorBytes)} GiB floor`;
-        break copying;
-      }
+      return freeNow < needBytes ? `free ${gib(freeNow)} GiB is under the ${gib(needBytes)} GiB ${what} needs (floor ${gib(floorBytes)} + margin ${gib(margin)} GiB)` : undefined;
+    };
+    if (todo.length) {
+      stopped = await settled(todoNeed, `${p.part}'s ${todo.length} days left to copy`);
+      if (stopped) break copying;
+    }
+    for (const d of todo) {
+      abortIfAsked();
+      // The day's share of the part's bytes; its copy and the merges of it take about `k` times that.
+      stopped = await settled(floorBytes + margin + k * d.bytes, `${p.part} day ${d.day} (${k} x ${gib(d.bytes)} GiB)`);
+      if (stopped) break copying;
       const queryId = `${runId}-${p.part}-${d.day}`;
-      stopped = await copyWatched(ch, `INSERT INTO ${LIVE} (${columns}) SELECT ${columns} FROM ${ARCHIVE} WHERE ${dayWhere} AND ${keptRowsSQL(cutoff)}
-        SETTINGS ${settings}`, queryId, { free, floorBytes, watchMs, signal });
+      stopped = await copyWatched(ch, `INSERT INTO ${LIVE} (${columns}) SELECT ${columns} FROM ${ARCHIVE} WHERE _part = '${p.part}' AND toYYYYMMDD(ts) = ${d.day} AND ${keptRowsSQL(cutoff)}
+        SETTINGS ${settings}`, queryId, { free, killBelow: floorBytes + margin, watchMs, killConfirmMs, signal });
       if (signal?.aborted) throw new Error(`aborted: killed ${queryId} on the server; ${p.part} stays in the archive. Rerun to resume`);
       if (stopped) break copying;
-      log(`  ${p.part} day ${d.day}: ${d.rows} rows (~${gib(dayBytes)} GiB) copied, ${((Date.now() - started) / 1000).toFixed(1)} s into the part`);
+      log(`  ${p.part} day ${d.day}: ${d.rows} rows (~${gib(d.bytes)} GiB) copied, ${((Date.now() - started) / 1000).toFixed(1)} s into the part`);
     }
     // Every kept key must be in the live table before its archive part goes. A day that expires completely between
     // the copy and this check may already be dropped by the live TTL, so the check leaves out the next hour: those
@@ -371,53 +475,92 @@ export async function repartitionSessionEvents(ch: ClickHouse, options: Repartit
 }
 
 /**
- * Run one copy under `queryId` and watch it: if free disk falls under the floor, or `signal` aborts, KILL the query on
- * the server (rows it already wrote stay; the archive part is kept, so a rerun copies the day again). Returns why it
- * was killed, or undefined when it finished.
+ * Run one copy under `queryId` and watch it. KILL it on the server when free disk falls under `killBelow`, when free
+ * disk cannot be read FAILED_READS_TO_KILL times in a row, or when `signal` aborts; rows it already wrote stay, and the
+ * archive part is kept, so a rerun copies the day again. A KILL is confirmed: it is re-issued until the INSERT has
+ * ended and system.processes no longer lists it (a KILL sent before the query is listed does nothing). Returns why it
+ * was killed, or undefined when it finished; throws when the kill cannot be confirmed within `killConfirmMs`.
  */
 async function copyWatched(ch: ClickHouse, sql: string, queryId: string,
-  o: { free: () => Promise<number>; floorBytes: number; watchMs: number; signal?: AbortSignal }): Promise<string | undefined> {
-  let reason: string | undefined;
-  let killing: Promise<unknown> = Promise.resolve();
-  const kill = (why: string) => {
-    if (reason) return;
-    reason = why;
-    killing = ch.exec(`KILL QUERY WHERE query_id = '${queryId}' SYNC`).catch(() => {});
-  };
-  const onAbort = () => kill("aborted");
+  o: { free: () => Promise<number>; killBelow: number; watchMs: number; killConfirmMs: number; signal?: AbortSignal }): Promise<string | undefined> {
   if (o.signal?.aborted) return "aborted";
+  let reason: string | undefined;
+  let ended = false, failure: unknown;
+  const insert = ch.exec(sql, { queryId }).then(() => {}, error => { failure = error; }).finally(() => { ended = true; });
+  let onAbort = () => {};
+  const aborted = new Promise<void>(resolve => { onAbort = () => { reason ??= "aborted"; resolve(); }; });
   o.signal?.addEventListener("abort", onAbort, { once: true });
-  let finished = false;
-  const insert = ch.exec(sql, { queryId }).finally(() => { finished = true; });
-  const watch = (async () => {
-    while (!finished && !reason) {
-      await Promise.race([Bun.sleep(o.watchMs), insert.catch(() => {})]);
-      if (finished || reason) break;
-      const f = await o.free().catch(() => Number.POSITIVE_INFINITY);
-      if (f < o.floorBytes) kill(`free ${gib(f)} GiB fell under the ${gib(o.floorBytes)} GiB floor during ${queryId}; killed it`);
-    }
-  })();
+  const tick = () => Promise.race([Bun.sleep(o.watchMs), insert, aborted]);
   try {
-    await insert;
-  } catch (error) {
-    if (!reason) throw error;
+    for (let failedReads = 0; !ended && !reason;) {
+      await tick();
+      if (ended || reason) break;
+      try {
+        const f = await o.free();
+        failedReads = 0;
+        if (f < o.killBelow) reason = `free ${gib(f)} GiB fell under ${gib(o.killBelow)} GiB (floor plus kill margin) during ${queryId}; killed it`;
+      } catch (error) {
+        if (++failedReads >= FAILED_READS_TO_KILL) {
+          reason = `free disk could not be read ${failedReads} times in a row during ${queryId} (${String(error).slice(0, 120)}); killed it`;
+        }
+      }
+    }
+    if (reason) {
+      for (const deadline = Date.now() + o.killConfirmMs; ;) {
+        await ch.exec(`KILL QUERY WHERE query_id = '${queryId}' ASYNC`).catch(() => {});
+        await Promise.race([Bun.sleep(o.watchMs), insert]);
+        const listed = ended ? await ch.queryJSON(`SELECT 1 FROM system.processes WHERE query_id = '${queryId}'`).then(r => r.length > 0, () => true) : true;
+        if (!listed) break;
+        if (Date.now() >= deadline) {
+          throw new Error(`${reason}, but the kill of ${queryId} is not confirmed after ${o.killConfirmMs / 1000} s: it may still be writing. ` +
+            `Run KILL QUERY WHERE query_id = '${queryId}' SYNC, watch df, and rerun only once system.processes no longer lists it`);
+        }
+      }
+    }
   } finally {
     o.signal?.removeEventListener("abort", onAbort);
-    await watch;
-    await killing;
   }
+  if (!reason && failure) throw failure;
   return reason;
+}
+
+/** The CLI's flags. Anything malformed refuses before connecting: a NaN floor would pass every disk check. */
+export function parseRepartitionArgs(args: string[]): { dryRun: boolean; floorBytes?: number; maxParts?: number; amplification?: number } {
+  const numeric: Record<string, RegExp> = { "--floor-gib": /^\d+(\.\d+)?$/, "--disk-multiplier": /^\d+(\.\d+)?$/, "--max-parts": /^\d+$/ };
+  const seen = new Map<string, number>();
+  let dryRun = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--dry-run") { if (dryRun) throw new Error("--dry-run given twice"); dryRun = true; continue; }
+    const shape = numeric[a];
+    if (!shape) throw new Error(`unknown argument ${JSON.stringify(a)}; flags: --dry-run, --floor-gib <GiB>, --disk-multiplier <x>, --max-parts <n>`);
+    if (seen.has(a)) throw new Error(`${a} given twice`);
+    const v = args[++i];
+    if (v === undefined || !shape.test(v)) throw new Error(`${a} needs ${a === "--max-parts" ? "a whole number" : "a plain number"}, not ${JSON.stringify(v ?? "")}`);
+    seen.set(a, Number(v));
+  }
+  const floorGiB = seen.get("--floor-gib"), multiplier = seen.get("--disk-multiplier");
+  if (floorGiB !== undefined && !(floorGiB > 0)) throw new Error("--floor-gib must be over 0");
+  if (multiplier !== undefined && !(multiplier >= 1)) throw new Error("--disk-multiplier must be at least 1: a day's copy takes more disk than the day");
+  return {
+    dryRun,
+    ...(floorGiB !== undefined ? { floorBytes: floorGiB * GiB } : {}),
+    ...(seen.has("--max-parts") ? { maxParts: seen.get("--max-parts") } : {}),
+    ...(multiplier !== undefined ? { amplification: multiplier } : {}),
+  };
 }
 
 if (import.meta.main) {
   const { installErrorHandlers, writeErr, writeOut } = await import("./egress");
   installErrorHandlers();
   const { ClickHouse } = await import("./clickhouse");
-  const args = process.argv.slice(2);
-  const flag = (name: string) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
-  const floorGiB = flag("--floor-gib");
-  const maxParts = flag("--max-parts");
-  const multiplier = flag("--disk-multiplier");
+  let parsed: ReturnType<typeof parseRepartitionArgs>;
+  try {
+    parsed = parseRepartitionArgs(process.argv.slice(2));
+  } catch (error) {
+    writeErr(`schema:repartition: ${(error as Error).message}; nothing ran`);
+    process.exit(2);
+  }
   // Ctrl-C (or a kill) must not leave the INSERT … SELECT running on the server: abort kills it first.
   const abort = new AbortController();
   let signals = 0;
@@ -429,10 +572,7 @@ if (import.meta.main) {
     });
   }
   const report = await repartitionSessionEvents(ClickHouse.fromEnv(), {
-    dryRun: args.includes("--dry-run"),
-    floorBytes: floorGiB === undefined ? undefined : Number(floorGiB) * GiB,
-    maxParts: maxParts === undefined ? undefined : Number(maxParts),
-    amplification: multiplier === undefined ? undefined : Number(multiplier),
+    ...parsed,
     signal: abort.signal,
     log: line => writeOut(line),
   });

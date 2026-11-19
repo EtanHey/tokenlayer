@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { applySchema } from "../../src/lib/schema";
 import * as repartition from "../../src/lib/session-repartition";
-const { repartitionSessionEvents } = repartition;
+import type { ClickHouse } from "../../src/lib/clickhouse";
+/** Every run here takes both Macs' shippers as ready unless a test says otherwise (the real probe reads launchd and ssh). */
+const repartitionSessionEvents = (c: ClickHouse, o: repartition.RepartitionOptions = {}) =>
+  repartition.repartitionSessionEvents(c, { shipperCheck: async () => [], ...o });
 import { clickhouseBinary, startLocalClickHouse, type LocalClickHouse } from "../../src/lib/local-clickhouse";
 
 /** The live table before R12: schema/004 with monthly partitions and row-rewriting TTL merges. */
@@ -271,5 +274,148 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
       await writer;
     }
     expect((await repartitionSessionEvents(ch.client, { floorBytes: 0 })).state).toBe("done");
+  }, 60_000);
+
+  // ---- Round 2 (re-review S5–S10) ----
+  const archiveCount = async (where = "1") =>
+    Number((await ch.client.exec(`SELECT count() FROM tokenlayer.session_events_monthly WHERE ${where}`)).trim());
+  const liveCount = async (where = "1") => Number((await ch.client.exec(`SELECT count() FROM tokenlayer.session_events WHERE ${where}`)).trim());
+  /** A fresh monthly table holding only what `fill` inserts. */
+  async function freshMonthly(fill: () => Promise<unknown>) {
+    await ch.client.exec("DROP TABLE tokenlayer.session_events SYNC");
+    await ch.client.exec(legacyMonthlyDDL());
+    await ch.client.exec("SYSTEM STOP MERGES tokenlayer.session_events");
+    await fill();
+  }
+  const partBytes = async (table: string) => Number((await ch.client.exec(
+    `SELECT sum(bytes_on_disk) FROM system.parts WHERE database = 'tokenlayer' AND table = '${table}' AND active`)).trim());
+  /** One insert (one part) of `n` claude rows spread evenly over `days` recent UTC days, `text` bytes of incompressible raw each. */
+  const spread = (n: number, days: number, text: (i: string) => string = () => "'x'") => ch.client.exec(
+    `INSERT INTO tokenlayer.session_events (machine, harness, path, generation, byte_offset, content_hash, line_bytes, ts, ingested_at, raw)
+     SELECT 'm4', 'claude', concat('spread-', toString(number)), 'g1', number, toString(number), length(${text("number")}),
+       toStartOfDay(now64(3, 'UTC')) - INTERVAL 5 DAY + toIntervalDay(number % ${days}) + INTERVAL 1 HOUR, now64(3, 'UTC') - INTERVAL 1 HOUR, ${text("number")}
+     FROM numbers(${n})`);
+
+  test("S5: a day is sized by its text, so a day with few rows but most of the bytes sets the need", async () => {
+    // Days 1 and 3: 450 tiny rows each. Day 2: 100 rows carrying nearly all the bytes. By rows the largest day is 45%
+    // of the part; by bytes, day 2 is about 97%.
+    await freshMonthly(() => ch.client.exec(
+      `INSERT INTO tokenlayer.session_events (machine, harness, path, generation, byte_offset, content_hash, line_bytes, ts, ingested_at, raw)
+       SELECT 'm4', 'claude', concat('s5-', toString(number)), 'g1', number, toString(number), length(raw),
+         toStartOfDay(now64(3, 'UTC')) - INTERVAL 5 DAY + toIntervalDay(if(number < 100, 1, if(number < 550, 0, 2))) + INTERVAL 1 HOUR,
+         now64(3, 'UTC') - INTERVAL 1 HOUR, if(number < 100, randomPrintableASCII(20000), 'x') AS raw
+       FROM numbers(1000)`));
+    const bytes = await partBytes("session_events");
+    const plan = await repartitionSessionEvents(ch.client, { floorBytes: 0, killMarginBytes: 0, dryRun: true });
+    expect(plan.remaining).toHaveLength(1);
+    expect(plan.remaining[0].maxDayBytes).toBeGreaterThan(0.9 * bytes);
+    expect(plan.needBytes).toBeGreaterThan(1.1 * bytes + 3 * 0.9 * bytes);
+  }, 60_000);
+
+  test("S5/N8: a resumed run tests what is left of a part before copying any of it", async () => {
+    await freshMonthly(() => spread(4000, 4));
+    expect((await repartitionSessionEvents(ch.client, { floorBytes: 0, maxParts: 0 })).state).toBe("partial"); // swap only
+    const bytes = await partBytes("session_events_monthly");
+    const floorBytes = 2 ** 40;
+    // Room for the part once: each quarter-day passes "free - 3 x day >= floor", the whole part does not.
+    const report = await repartitionSessionEvents(ch.client, { floorBytes, killMarginBytes: 0, settleMs: 0, freeBytes: async () => floorBytes + bytes });
+    expect(report.state).toBe("partial");
+    expect(report.stopped).toMatch(/4 days left to copy/);
+    expect(await liveCount()).toBe(0);
+    expect(await archiveCount()).toBe(4000);
+  }, 60_000);
+
+  const lowWhileCopying = (low: () => Promise<number>) => async () => (await runningCopies(ch)) ? low() : 2 ** 50;
+
+  test("S6: the watchdog kills at the floor plus a margin, before the floor itself breaks", async () => {
+    await bulk(ch, 20_000);
+    const floorBytes = 2 ** 40;
+    const report = await repartitionSessionEvents(ch.client, {
+      floorBytes, freeBytes: lowWhileCopying(async () => floorBytes + 2 ** 30), extraCopySettings: SLOW_COPY, watchMs: 100,
+    });
+    expect(report.state).toBe("partial");
+    expect(report.stopped).toMatch(/kill margin/);
+    expect(await runningCopies(ch)).toBe(0);
+    expect(await archiveCount("startsWith(path, 'bulk-')")).toBe(20000);
+  }, 60_000);
+
+  test("S7: free disk that cannot be read counts as unsafe and kills the copy", async () => {
+    await bulk(ch, 20_000);
+    const report = await repartitionSessionEvents(ch.client, {
+      floorBytes: 2 ** 40, freeBytes: lowWhileCopying(async () => { throw new Error("memory limit (total) exceeded"); }),
+      extraCopySettings: SLOW_COPY, watchMs: 100,
+    });
+    expect(report.state).toBe("partial");
+    expect(report.stopped).toMatch(/could not be read 3 times/);
+    expect(await runningCopies(ch)).toBe(0);
+    expect(await liveCount("startsWith(path, 'bulk-')")).toBeLessThan(20000);
+  }, 60_000);
+
+  /** The client with its first `n` KILL statements answered but never sent, like a KILL that runs before the query is listed. */
+  const losingKills = (n: number) => {
+    let lost = 0;
+    return new Proxy(ch.client, {
+      get(target, prop, receiver) {
+        if (prop === "exec") {
+          return (sql: string, o?: { queryId?: string }) => (/^\s*KILL /.test(sql) && lost++ < n ? Promise.resolve("") : target.exec(sql, o));
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+  };
+
+  test("S7: a KILL that did nothing is re-issued until the copy is gone", async () => {
+    await bulk(ch, 20_000);
+    const report = await repartitionSessionEvents(losingKills(1), {
+      floorBytes: 2 ** 40, freeBytes: lowWhileCopying(async () => 0), extraCopySettings: SLOW_COPY, watchMs: 100,
+    });
+    expect(report.state).toBe("partial");
+    expect(await runningCopies(ch)).toBe(0);
+    // The old watchdog stopped watching after its one KILL, and the copy ran to the end.
+    expect(await liveCount("startsWith(path, 'bulk-')")).toBeLessThan(20000);
+  }, 60_000);
+
+  test("S7: a kill that cannot be confirmed stops the run loudly", async () => {
+    await bulk(ch, 20_000);
+    try {
+      await expect(repartitionSessionEvents(losingKills(Infinity), {
+        floorBytes: 2 ** 40, freeBytes: lowWhileCopying(async () => 0), extraCopySettings: SLOW_COPY, watchMs: 100, killConfirmMs: 1500,
+      })).rejects.toThrow(/not confirmed.*may still be writing/);
+    } finally {
+      await ch.client.exec("KILL QUERY WHERE startsWith(query_id, 'r12-') SYNC");
+    }
+    expect(await archiveCount("startsWith(path, 'bulk-')")).toBe(20000);
+  }, 60_000);
+
+  test("S9: no swap while a shipper runs a client that cannot write over 100 days at once", async () => {
+    const shipperCheck = async () => ["M4 (macbook-pro): old client"];
+    await expect(repartition.repartitionSessionEvents(ch.client, { floorBytes: 0, shipperCheck })).rejects.toThrow(/shippers not ready.*M4.*nothing changed/);
+    expect(await tables()).toEqual([{ name: "session_events", partition_key: "toYYYYMM(ts)" }]);
+    const plan = await repartition.repartitionSessionEvents(ch.client, { floorBytes: 0, shipperCheck, dryRun: true });
+    expect(plan.refusal).toMatch(/shipper not ready: M4/);
+  }, 60_000);
+
+  test("S10: the back-out renames the daily table unmistakably and its copy-back restores every row", async () => {
+    expect((await repartitionSessionEvents(ch.client, { floorBytes: 0, maxParts: 1 })).state).toBe("partial");
+    // Shipped during the window: only the daily table has it.
+    await insert(ch, "session_events", [row("window-row", "codex", "now64(3, 'UTC') - INTERVAL 1 DAY", "now64(3, 'UTC')")]);
+    for (const sql of repartition.BACK_OUT_SQL) await ch.client.exec(sql);
+    expect(await tables()).toEqual([
+      { name: "session_events", partition_key: "toYYYYMM(ts)" },
+      { name: "session_events_daily_backed_out", partition_key: "toYYYYMMDD(ts)" },
+    ]);
+    const days = await ch.client.queryJSON<{ day: string; bytes: string }>(repartition.COPY_BACK_DAYS_SQL);
+    expect(days.length).toBeGreaterThan(0);
+    for (const { day } of days) {
+      const step = repartition.copyBackSQL(day);
+      await ch.client.exec(step.insert);
+      expect((await ch.client.exec(step.check)).trim()).toBe("0");
+      await ch.client.exec(step.drop);
+    }
+    expect(await ch.client.queryJSON(repartition.COPY_BACK_DAYS_SQL)).toEqual([]);
+    await ch.client.exec(`DROP TABLE ${repartition.BACKED_OUT} SYNC`);
+    // The restored monthly table may still hold the expired row (its TTL merge has not run yet); every kept row is back.
+    expect(await finalRows()).toEqual(expect.arrayContaining([...expected, { path: "window-row", harness: "codex" }]));
+    expect((await ch.client.exec("SELECT sum(raw_has_message) + countIf(raw = '') FROM tokenlayer.session_events")).trim()).toBe("0");
   }, 60_000);
 });
