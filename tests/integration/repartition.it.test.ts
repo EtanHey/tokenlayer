@@ -378,9 +378,10 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
   test("S7: a kill that cannot be confirmed stops the run loudly", async () => {
     await bulk(ch, 20_000);
     try {
-      await expect(repartitionSessionEvents(losingKills(Infinity), {
+      const outcome = await repartitionSessionEvents(losingKills(Infinity), {
         floorBytes: 2 ** 40, freeBytes: lowWhileCopying(async () => 0), extraCopySettings: SLOW_COPY, watchMs: 100, killConfirmMs: 1500,
-      })).rejects.toThrow(/not confirmed.*may still be writing/);
+      }).then(report => ({ report }), error => ({ error: String(error) }));
+      expect(outcome).toEqual({ error: expect.stringMatching(/not confirmed.*may still be writing/) });
     } finally {
       await ch.client.exec("KILL QUERY WHERE startsWith(query_id, 'r12-') SYNC");
     }
