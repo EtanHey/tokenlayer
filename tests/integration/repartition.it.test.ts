@@ -353,7 +353,8 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
 
   /**
    * The client with its first `n` KILL statements answered but never sent, like a KILL that runs before the query is
-   * listed. Its copies sleep 1 ms a row (20 s for the bulk day): SLOW_COPY's speed limit let a CI copy end within 1.5 s.
+   * listed. Its copies sleep 0.3 ms a row (about 6 s for the bulk day; ClickHouse caps a sleep at 3 s per 8192-row
+   * granule): SLOW_COPY's speed limit let a CI copy end within 1.5 s.
    */
   const losingKills = (n: number) => {
     let lost = 0;
@@ -362,7 +363,7 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
         if (prop === "exec") {
           return (sql: string, o?: { queryId?: string }) => {
             if (/^\s*KILL /.test(sql) && lost++ < n) return Promise.resolve("");
-            const slowed = o?.queryId?.startsWith("r12-") ? sql.replace(/\n\s*SETTINGS /, " AND sleepEachRow(0.001) = 0\n SETTINGS ") : sql;
+            const slowed = o?.queryId?.startsWith("r12-") ? sql.replace(/\n\s*SETTINGS /, " AND sleepEachRow(0.0003) = 0\n SETTINGS ") : sql;
             if (o?.queryId?.startsWith("r12-") && slowed === sql) throw new Error("test proxy could not slow the copy");
             return target.exec(slowed, o);
           };
@@ -391,7 +392,7 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
       }).then(report => ({ report }), error => ({ error: String(error) }));
       expect(outcome).toEqual({ error: expect.stringMatching(/not confirmed.*may still be writing/) });
     } finally {
-      await ch.client.exec("KILL QUERY WHERE startsWith(query_id, 'r12-') SYNC");
+      await ch.client.exec("KILL QUERY WHERE startsWith(query_id, 'r12-') SYNC").catch(() => {}); // 26.11 throws when none runs
     }
     expect(await archiveCount("startsWith(path, 'bulk-')")).toBe(20000);
   }, 60_000);
