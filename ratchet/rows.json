@@ -99,6 +99,8 @@
     {"id": "shipper_live_lag_s", "metric": "shipper_live_lag_s", "kind": "unit", "runner": "m1", "direction": "max", "ceiling": 60, "unit": "s", "command": "bun ratchet/live.ts shipper_live_lag_s", "timeout_s": 30},
     {"id": "usage_json_age_s", "metric": "usage_json_age_s", "kind": "unit", "runner": "m1", "direction": "max", "ceiling": 120, "unit": "s", "command": "bun ratchet/live.ts usage_json_age_s", "timeout_s": 30},
     {"id": "ch_live_query_p95_ms", "metric": "ch_live_query_p95_ms", "kind": "unit", "runner": "m1", "direction": "max", "ceiling": 250, "unit": "ms", "command": "bun ratchet/live.ts ch_live_query_p95_ms", "timeout_s": 30},
-    {"id": "m1_disk_free_gb", "metric": "m1_disk_free_gb", "kind": "unit", "runner": "m1", "direction": "min", "ceiling": 20, "unit": "GB", "command": "bun ratchet/live.ts m1_disk_free_gb", "timeout_s": 30}
+    {"id": "jev_unreconciled_24h", "metric": "Jev calls still unreconciled 15 min after their reservation (last 24 h)", "kind": "unit", "runner": "m1", "direction": "max", "ceiling": 0, "unit": "calls", "command": "bun ratchet/live.ts jev_unreconciled_24h", "timeout_s": 30},
+    {"id": "m1_disk_free_gb", "metric": "m1_disk_free_gb", "kind": "unit", "runner": "m1", "direction": "min", "ceiling": 20, "unit": "GB", "command": "bun ratchet/live.ts m1_disk_free_gb", "timeout_s": 30},
+    {"id": "claude_burn_2h", "metric": "Claude weekly quota used over the last 2 h, %/h; fails under half of orc's rate in ~/.config/tokenlayer/burn-target.json (no target: report only)", "kind": "unit", "runner": "m1", "direction": "min", "ceiling": 0, "unit": "%/h", "command": "bun ratchet/live.ts claude_burn_2h", "timeout_s": 30}
   ]
 }

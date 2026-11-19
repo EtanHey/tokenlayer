@@ -39,6 +39,7 @@ and the existing mode-600 `~/.config/tokenlayer/hub.env` with `CLIPROXY_MGMT_KEY
 
    ```sh
    bash scripts/deploy/copy-password.sh m1
+   bash scripts/deploy/copy-password.sh m1 clickhouse-writer.env   # ship's own uncapped login
    ```
 
    The helper uses umask 077, writes to a same-directory temporary file, requires a successful nonempty transfer,

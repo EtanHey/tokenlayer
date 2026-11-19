@@ -1,4 +1,5 @@
 -- Metadata only. Derive the owner once per file generation, including rows with no inline id.
+-- Both FINAL reads merge per monthly partition: versions of a key never span partitions (ratchet/live-sql.ts).
 WITH files AS (
     SELECT machine, path, generation,
         multiIf(
@@ -17,4 +18,5 @@ FROM {database:Identifier}.session_events AS e FINAL
 INNER JOIN files AS f ON e.machine = f.machine AND e.path = f.path AND e.generation = f.generation
 GROUP BY e.machine, f.owner, e.path, e.generation, e.content_hash
 ORDER BY machine, session_id, path, generation, content_hash
+SETTINGS do_not_merge_across_partitions_select_final=1
 FORMAT TabSeparatedWithNames
