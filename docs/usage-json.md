@@ -43,6 +43,27 @@ no numbers; then the numbers are null and `last_error` says why. Kiro's cache ca
 usage at all (status, auth, version and models only), so `vendors.kiro` stays null with a
 `note` listing the cache's top-level key names.
 
+### Counted use (`vendors.<v>.use`)
+
+Antigravity and Kiro publish no quota, so `vendors.{antigravity,kiro,codex}.use` counts
+what the shippers recorded in `tokenlayer.session_events`. Each run reads it once, bounded
+to the last 7 days, capped at 2 GB and 20 seconds; on 19 Nov the read took 0.15 s and 0.3 GB.
+The address and the capped `tokenlayer` login come from `~/.config/tokenlayer/ship.env` and
+`clickhouse.env`, which the M4 already has for ship. The writer never falls back to a default store.
+
+`use` has `observed_at`, `source` (`clickhouse:session_events`), and `24h` and `7d` windows.
+Each window has:
+
+- `sessions`: session files.
+- `requests`: model responses. These are Antigravity planner responses, Kiro assistant messages and Codex `token_count` events.
+- `input_tokens` and `output_tokens`: Antigravity and Codex only. Kiro rows carry none, so they are null.
+- `credits`: Kiro only. This is the sum of known `usage_summary` credits; it is null when no turn reported any.
+
+A vendor is matched by session path: `/.kiro/`, `antigravity`, `/.codex`. That covers native
+and T3-run sessions alike. A replayed line or a later revision of the same Kiro turn counts once,
+at its latest value. Cursor sessions are not shipped, so `vendors.cursor` has no `use`. On any
+failure, `use` is `{observed_at: null, source, last_error: "store unavailable"}`.
+
 ## M4 installation
 
 Build with `bun build --target=bun src/usage/main.ts --outfile ~/.config/tokenlayer/bin/usage.js`.

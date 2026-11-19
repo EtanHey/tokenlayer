@@ -3,12 +3,13 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { iso } from './projection';
+import type { Use } from './use';
 
 export const VENDOR_STALE_MS = 600_000;
 const DRIVERS = ['codex', 'cursor', 'antigravity', 'kiro'];
 type Win = { id: string; window: string | null; pct: number; resets_at: string | null };
 export type VendorReading = { pct: number | null; window: string | null; resets_at: string | null; observed_at: string | null;
-  source: string; stale: boolean; windows: Win[]; last_error?: string; note?: string };
+  source: string; stale: boolean; windows: Win[]; last_error?: string; note?: string; use?: Use };
 
 const obj = (v: unknown): Record<string, any> => v && typeof v === 'object' ? v : {};
 const at = (v: string | null) => Date.parse(v ?? '') || 0;
