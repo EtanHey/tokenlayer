@@ -54,7 +54,8 @@ test("Kiro native capture: metadata, fractional credits, late T3 attribution and
       await ch.client.insert(...args);
     };
     await expect(shipOnce({ ...opts, clickhouse: interrupted })).rejects.toThrow("ship failed");
-    expect((await shipOnce(opts)).lines).toBe(2); // Resume with no skipped prefix or duplicate credit.
+    // Resume from the acknowledged t3 line 1 (R8): only the failed line 2 re-ships, with no skipped prefix or duplicate credit.
+    expect((await shipOnce(opts)).lines).toBe(1);
     expect(await ch.client.queryJSON("SELECT DISTINCT harness FROM tokenlayer.session_events FINAL")).toEqual([{ harness: "t3" }]);
     appendFileSync(path, summary(0.25, "turn-2"));
     expect((await shipOnce(opts)).lines).toBe(1);

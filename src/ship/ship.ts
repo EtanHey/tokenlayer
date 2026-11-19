@@ -234,10 +234,23 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             hash = createHash("sha256");
             result.resets++;
           } else if (cp && replay) {
-            const generation = cp.generation;
-            cp = fresh();
-            cp.generation = generation;
-            hash = createHash("sha256");
+            // The journal ran ahead of acknowledged progress on the same generation: an insert failed, or the
+            // process stopped between the write-ahead record and the checkpoint. The journal's longer prefix just
+            // verified, so resume from the acknowledged checkpoint. Replaying from 0 re-inserted whole files after
+            // every network blip (R8: 22% of session_events). Lost checkpoints and compressed files still replay.
+            const acked = state.files[path];
+            const resumable = acked && !compressed && !acked.compressed && acked.generation === cp.generation
+              && acked.offset > 0 && acked.offset < cp.offset && acked.parser.harness === cp.parser.harness;
+            const ackedHash = resumable ? prefixHash(path, acked.offset) : undefined;
+            if (resumable && ackedHash!.copy().digest("hex") === acked.fingerprint) {
+              cp = structuredClone(acked);
+              hash = ackedHash!;
+            } else {
+              const generation = cp.generation;
+              cp = fresh();
+              cp.generation = generation;
+              hash = createHash("sha256");
+            }
           }
           if (cp && !cp.harnessDecided) {
             const decided = detectHarness(root.kind, head());

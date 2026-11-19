@@ -209,6 +209,41 @@ describe("shipOnce", () => {
     expect(db.tokens[1]).toBe(token);
   });
 
+  test("an insert failure on an append resumes from the acknowledged checkpoint, not from offset 0", async () => {
+    // R8: the write-ahead journal runs ahead of the checkpoint on every failed insert. Replaying the whole
+    // file from 0 re-inserted ~2.5M rows (22% of session_events) after M4 DNS blips.
+    const head = `${claudeLine(1)}\n${claudeLine(2)}\n`;
+    writeFileSync(claudeFile(), head);
+    expect((await shipOnce(opts)).lines).toBe(2);
+    const generation = db.rows[0].generation;
+    appendFileSync(claudeFile(), `${claudeLine(3)}\n`);
+    db.setFail(true);
+    await expect(shipOnce(opts)).rejects.toThrow();
+    db.setFail(false);
+    expect(loadState(`${opts.statePath}.generations`).files[claudeFile()].offset).toBeGreaterThan(loadState(opts.statePath).files[claudeFile()].offset);
+    const before = db.rows.length;
+    expect(await shipOnce(opts)).toMatchObject({ lines: 1, resets: 0 });
+    expect(db.rows.slice(before).map(r => [r.byte_offset, r.generation])).toEqual([[Buffer.byteLength(head), generation]]);
+    appendFileSync(claudeFile(), `${claudeLine(4)}\n`);
+    expect((await shipOnce(opts)).lines).toBe(1);
+    expect(db.rows.slice(before).map(r => JSON.parse(String(r.raw)).message.content)).toEqual(["m3", "m4"]);
+  });
+
+  test("a journal ahead of an acknowledged checkpoint whose prefix no longer verifies still replays from 0", async () => {
+    writeFileSync(claudeFile(), `${claudeLine(1)}\n${claudeLine(2)}\n`);
+    await shipOnce(opts);
+    appendFileSync(claudeFile(), `${claudeLine(3)}\n`);
+    db.setFail(true);
+    await expect(shipOnce(opts)).rejects.toThrow();
+    db.setFail(false);
+    const state = loadState(opts.statePath);
+    state.files[claudeFile()].fingerprint = "0".repeat(64);
+    saveState(opts.statePath, state);
+    const before = db.rows.length;
+    expect((await shipOnce(opts)).lines).toBe(3);
+    expect(db.rows.slice(before).map(r => r.byte_offset)).toEqual([0, claudeLine(1).length + 1, 2 * (claudeLine(1).length + 1)]);
+  });
+
   test("throughput cap paces the backfill", async () => {
     writeFileSync(claudeFile(), `${Array.from({ length: 40 }, (_, i) => claudeLine(i % 10)).join("\n")}\n`);
     const t0 = performance.now();
