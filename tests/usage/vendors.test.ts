@@ -11,11 +11,11 @@ const codex = (instanceId = 'codex', checkedAt = '2026-11-18T10:14:30.000Z', win
   { id: 'primary', kind: 'weekly', label: 'Weekly', usedPercent: 100, windowDurationMins: 10080, resetsAt: '2026-11-20T00:02:00.000Z' },
   { id: 'secondary', kind: 'session', label: '5-hour', usedPercent: 12.5, windowDurationMins: 300, resetsAt: '2026-11-18T13:00:00.000Z' },
 ]) => ({ driver: 'codex', instanceId, enabled: true, auth, models: [{ slug: 'gpt-x' }], usageLimits: { checkedAt, windows, resetCredits: { availableCount: 1, nextCreditId: 'credit-secret' } } });
-const cursor = (checkedAt = '2026-11-18T10:14:50.000Z') => ({ driver: 'cursor', instanceId: 'cursor', enabled: true,
+const cursor = (checkedAt = '2026-11-18T10:14:50.000Z', resetsAt = '2026-11-18T20:43:56.746Z') => ({ driver: 'cursor', instanceId: 'cursor', enabled: true,
   auth: { status: 'authenticated', type: 'browser', email: 'person@example.invalid', token: 'sk-synthetic' },
   usageLimits: { checkedAt, windows: [
-    { id: 'autoPercentUsed', kind: 'monthly', label: 'Cursor Models', usedPercent: 40, windowDurationMins: 10080, resetsAt: '2026-11-18T20:43:56.746Z' },
-    { id: 'totalPercentUsed', kind: 'monthly', label: 'Overall', usedPercent: 63.25, windowDurationMins: 10080, resetsAt: '2026-11-18T20:43:56.746Z' },
+    { id: 'autoPercentUsed', kind: 'monthly', label: 'Cursor Models', usedPercent: 40, windowDurationMins: 10080, resetsAt },
+    { id: 'totalPercentUsed', kind: 'monthly', label: 'Overall', usedPercent: 63.25, windowDurationMins: 10080, resetsAt },
   ] } });
 
 test('codex reading reports the binding window with reset, observation and source', () => {
@@ -94,7 +94,7 @@ test('writer publishes vendors next to unchanged Claude keys, even during a hub 
     await mkdir(join(home, '.t3/caches'), { recursive: true });
     const fresh = new Date().toISOString();
     await writeFile(join(home, '.t3/caches/codex.json'), JSON.stringify(codex('codex', fresh)));
-    await writeFile(join(home, '.t3/caches/cursor.json'), JSON.stringify(cursor(fresh)));
+    await writeFile(join(home, '.t3/caches/cursor.json'), JSON.stringify(cursor(fresh, new Date(Date.now() + 86_400_000).toISOString())));
     const preload = join(home, 'offline.ts');
     await writeFile(preload, "Bun.spawn = (() => ({ stdout: new Blob(['']).stream(), exited: Promise.resolve(1), kill() {} })) as typeof Bun.spawn;\n");
     const proc = Bun.spawn([process.execPath, '--preload', preload, resolve('src/usage/main.ts')], { env: { ...process.env, HOME: home }, stdout: 'pipe', stderr: 'pipe' });
