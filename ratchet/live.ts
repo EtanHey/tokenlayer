@@ -6,7 +6,7 @@ import { loadEnvFiles } from '../src/lib/env';
 import { unreconciledSQL } from '../src/jev/unreconciled';
 import { LIVE_QUERY_SQL, liveRatioSQL, shipperLagSQL } from './live-sql';
 import { readUsageAge } from './usage-age';
-import { HEARTBEAT_MACHINES, readHeartbeatAge, type HeartbeatMachine } from './heartbeat-age';
+import { HEARTBEAT_MACHINES, readHeartbeatAge, readHeartbeatFailing, type HeartbeatMachine } from './heartbeat-age';
 import { burnSQL, burnVerdict, parsePoints, readTarget } from './burn';
 const env = loadEnvFiles(['~/.config/tokenlayer/hub.env', '~/.config/tokenlayer/clickhouse.env']);
 const ch = ClickHouse.fromEnv(env);
@@ -32,6 +32,13 @@ if (id === 'claude_burn_2h') {
   // 'skip': the M4 is asleep, off the tailnet or just woke; live-schedule holds the row's state.
   if (age === 'skip') { console.log('skip'); process.exit(0); }
   value = age ?? NaN;
+} else if (id?.startsWith('ship_heartbeat_failing_')) {
+  const machine = id.slice('ship_heartbeat_failing_'.length) as HeartbeatMachine;
+  if (!HEARTBEAT_MACHINES.includes(machine)) throw Error('unknown heartbeat machine');
+  // One JSON line, like claude_burn_2h, so the posted line says which error classes; 'skip' holds the state.
+  const m = await readHeartbeatFailing(machine, (sql) => ch.queryJSON(sql));
+  console.log(m === 'skip' ? 'skip' : JSON.stringify(m));
+  process.exit(0);
 } else if (id?.startsWith('hub_mgmt_latency_')) {
   if (!env.CLIPROXY_MGMT_KEY) throw Error('management credential unavailable');
   const samples: number[] = [];
