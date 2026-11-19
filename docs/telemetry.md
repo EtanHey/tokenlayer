@@ -295,16 +295,17 @@ A table created before R12 is monthly. On monthly partitions, TTL merges rewrite
 hourly to remove one hour's rows. They never delete rows in a part over 1 GiB, and parts written
 before migration 011 carry no TTL information until they merge. Move it with
 `bun run schema:repartition` in an announced window (`--dry-run` first; `--floor-gib`, default 30;
-`--max-partitions` to stop early). It does the following:
+`--max-parts` to stop early). It does the following:
 1. Exchanges in an empty daily table built from `schema/004` and migration 011, and keeps the old
    one as `session_events_monthly`, with merges stopped. Shippers keep writing to the daily table.
-2. For each archive partition, smallest first: it waits until free disk (`df`, which is
-   `free_space + keep_free_space`) minus the partition's bytes clears the floor. It then inserts
-   the rows the TTL keeps, `FINAL` (one version per key), and checks that every kept key arrived.
-   Only then does it drop that archive partition.
+2. For each archive part, smallest first: it waits until free disk (`df`, which is
+   `free_space + keep_free_space`) minus the part's bytes clears the floor. It then inserts the
+   rows the TTL keeps, every version as it is, and checks that every kept key arrived. Only then
+   does it drop that archive part. The disk peak is the largest part, not the largest month.
+   Duplicate versions collapse as each day's parts merge.
 3. Drops the archive once it is empty.
 
-Rerunning resumes from what the database shows. Until a partition is copied, views do not show its
+Rerunning resumes from what the database shows. Until a part is copied, views do not show its
 rows. Before R12, this retention was applied in two separate steps:
 
 1. Apply the schema with `bun run schema:apply`. Migration 011 is metadata only:

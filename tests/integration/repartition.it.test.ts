@@ -50,7 +50,7 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
   }, 40_000);
   afterEach(async () => { await ch?.stop(); });
 
-  test("copies kept rows deduplicated into daily partitions, drops the archive, keeps the views working", async () => {
+  test("copies kept rows part by part into daily partitions, drops the archive, keeps the views working", async () => {
     const report = await repartitionSessionEvents(ch.client, { floorBytes: 0 });
     expect(report.state).toBe("done");
     expect(await tables()).toEqual([{ name: "session_events", partition_key: "toYYYYMMDD(ts)" }]);
@@ -60,7 +60,8 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
     expect(t.create_table_query).toContain("merge_with_ttl_timeout = 3600");
     expect(t.create_table_query).toMatch(/TTL toDateTime\(ts\) \+ toIntervalDay\(30\) WHERE \(harness != 'antigravity'\) AND \(toYYYYMM\(ts\) != 197001\)/);
     expect(await finalRows()).toEqual(expected);
-    // Already deduplicated on the way in: one row per key without FINAL.
+    // Both versions of recent-a are copied as they are; the day's merge collapses them like any replay.
+    await ch.client.exec("OPTIMIZE TABLE tokenlayer.session_events FINAL");
     expect((await ch.client.exec("SELECT count() FROM tokenlayer.session_events")).trim()).toBe("5");
     // MATERIALIZED columns are recomputed from raw by the insert.
     expect((await ch.client.exec("SELECT sum(raw_has_message) + countIf(raw = '') FROM tokenlayer.session_events")).trim()).toBe("0");
@@ -72,7 +73,7 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
   }, 60_000);
 
   test("a window cut short resumes, and rows shipped meanwhile win over the archive's older versions", async () => {
-    const first = await repartitionSessionEvents(ch.client, { floorBytes: 0, maxPartitions: 1 });
+    const first = await repartitionSessionEvents(ch.client, { floorBytes: 0, maxParts: 1 });
     expect(first.state).toBe("partial");
     expect(first.copied).toHaveLength(1);
     expect((await tables()).map(t => t.name)).toEqual(["session_events", "session_events_monthly"]);

@@ -14,9 +14,12 @@ import { SCHEMA_DIR } from "./schema";
  * Order, all resumable from what the database shows:
  *   1. Create session_events_daily_next from schema/004 with migration 011's TTL, then EXCHANGE it with the live table
  *      and rename the old one to session_events_monthly. Shippers keep inserting; from here they write daily parts.
- *   2. For each archive partition, smallest first, while free disk minus the partition's bytes stays above the floor:
- *      INSERT the kept rows (FINAL: one version per key; expired rows skipped), check every kept key arrived, then
- *      DROP that archive partition. Until a partition is copied, views do not show its rows.
+ *   2. With the archive's merges stopped, for each archive part, smallest first, while free disk minus the part's
+ *      bytes stays above the floor: INSERT the rows the TTL keeps, check every kept key arrived, then DROP that part.
+ *      Part by part, the disk peak is the largest part (6.75 GiB live), not the largest month (12 GiB and growing).
+ *      Every version of a key is copied as it is and the TTL's per-row predicate applies, so the result equals what
+ *      the monthly table would keep. Duplicate versions collapse as each day's parts merge (FINAL reads already do).
+ *      Until a part is copied, views do not show its rows.
  *   3. Drop the archive once it holds no parts.
  */
 
@@ -31,26 +34,26 @@ const GiB = 1024 ** 3;
  * 884 MiB at about 0.6x the time of OPTIMIZE FINAL on the same parts (receipt R12). Dedup tokens
  * stay off so the copy does not fill the shippers' insert-dedup window.
  */
-const COPY_SETTINGS = "do_not_merge_across_partitions_select_final = 1, max_partitions_per_insert_block = 0, insert_deduplicate = 0, " +
+const COPY_SETTINGS = "max_partitions_per_insert_block = 0, insert_deduplicate = 0, " +
   "max_threads = 2, max_insert_threads = 1, max_block_size = 4096, min_insert_block_size_rows = 65536, min_insert_block_size_bytes = 33554432";
 
-export type PartitionPlan = { partition: string; bytes: number; rows: number };
-export type CopiedPartition = PartitionPlan & { kept: number; seconds: number };
+export type PartPlan = { partition: string; part: string; bytes: number; rows: number };
+export type CopiedPart = PartPlan & { kept: number; seconds: number };
 export type RepartitionReport = {
   state: "dry-run" | "already-daily" | "partial" | "done";
   freeBytes: number;
   floorBytes: number;
-  copied: CopiedPartition[];
-  remaining: PartitionPlan[];
+  copied: CopiedPart[];
+  remaining: PartPlan[];
 };
 export type RepartitionOptions = {
-  /** Free disk that must remain after a partition's copy lands. Default 30 GiB (the M1's floor). */
+  /** Free disk that must remain after a part's copy lands. Default 30 GiB (the M1's floor). */
   floorBytes?: number;
-  /** Stop after this many partitions; a rerun resumes. */
-  maxPartitions?: number;
+  /** Stop after this many parts; a rerun resumes. */
+  maxParts?: number;
   /** Report the plan only. */
   dryRun?: boolean;
-  /** How long to wait for a dropped partition's disk to come back before the next one. Default 600 s. */
+  /** How long to wait for a dropped part's disk to come back before the next one. Default 600 s. */
   settleMs?: number;
   log?: (line: string) => void;
 };
@@ -72,11 +75,11 @@ async function tableKeys(ch: ClickHouse): Promise<Map<string, string>> {
   return new Map(rows.map(r => [r.name, r.partition_key]));
 }
 
-async function partitions(ch: ClickHouse, table: string): Promise<PartitionPlan[]> {
-  const rows = await ch.queryJSON<{ partition: string; bytes: string; rows: string }>(
-    `SELECT partition_id AS partition, toString(sum(bytes_on_disk)) AS bytes, toString(sum(rows)) AS rows FROM system.parts
-     WHERE database = 'tokenlayer' AND table = '${table}' AND active GROUP BY partition_id ORDER BY sum(bytes_on_disk), partition_id`);
-  return rows.map(r => ({ partition: r.partition, bytes: Number(r.bytes), rows: Number(r.rows) }));
+async function parts(ch: ClickHouse, table: string): Promise<PartPlan[]> {
+  const rows = await ch.queryJSON<{ partition: string; part: string; bytes: string; rows: string }>(
+    `SELECT partition_id AS partition, name AS part, toString(bytes_on_disk) AS bytes, toString(rows) AS rows FROM system.parts
+     WHERE database = 'tokenlayer' AND table = '${table}' AND active ORDER BY bytes_on_disk, name`);
+  return rows.map(r => ({ partition: r.partition, part: r.part, bytes: Number(r.bytes), rows: Number(r.rows) }));
 }
 
 /** Migration 011's session_events statements (settings, then TTL), aimed at `table`. */
@@ -105,7 +108,7 @@ export async function repartitionSessionEvents(ch: ClickHouse, options: Repartit
   const floorBytes = options.floorBytes ?? 30 * GiB;
   const settleMs = options.settleMs ?? 600_000;
   const log = options.log ?? (() => {});
-  const copied: CopiedPartition[] = [];
+  const copied: CopiedPart[] = [];
   let keys = await tableKeys(ch);
   const liveKey = keys.get("session_events");
   if (!liveKey) throw new Error("tokenlayer.session_events does not exist");
@@ -115,13 +118,13 @@ export async function repartitionSessionEvents(ch: ClickHouse, options: Repartit
 
   // Step 1 (or its crash leftovers).
   if (monthly(liveKey)) {
-    const plan = await partitions(ch, "session_events");
+    const plan = await parts(ch, "session_events");
     const free = await freeBytes(ch);
     if (options.dryRun) return { state: "dry-run", freeBytes: free, floorBytes, copied, remaining: plan };
     if (keys.has("session_events_monthly")) throw new Error("session_events is monthly but session_events_monthly exists; inspect before retrying");
     const first = plan[0];
     if (first && free - first.bytes < floorBytes) {
-      throw new Error(`disk floor: free ${(free / GiB).toFixed(2)} GiB minus partition ${first.partition} (${(first.bytes / GiB).toFixed(2)} GiB) is under ${(floorBytes / GiB).toFixed(2)} GiB; nothing changed`);
+      throw new Error(`disk floor: free ${(free / GiB).toFixed(2)} GiB minus part ${first.part} (${(first.bytes / GiB).toFixed(2)} GiB) is under ${(floorBytes / GiB).toFixed(2)} GiB; nothing changed`);
     }
     if (keys.has("session_events_daily_next")) {
       if (!daily(keys.get("session_events_daily_next"))) throw new Error("session_events_daily_next is not daily; inspect before retrying");
@@ -145,43 +148,42 @@ export async function repartitionSessionEvents(ch: ClickHouse, options: Repartit
     return { state: "already-daily", freeBytes: await freeBytes(ch), floorBytes, copied, remaining: [] };
   }
   if (!monthly(keys.get("session_events_monthly"))) throw new Error("session_events_monthly is not monthly; inspect before retrying");
-  // The archive's own TTL and merges would only rewrite parts that are about to be copied and dropped.
+  // Parts must hold still while they are copied and dropped one by one; the archive's TTL merges would also rewrite them.
   await ch.exec(`SYSTEM STOP MERGES ${ARCHIVE}`);
 
   // Step 2.
-  let remaining = await partitions(ch, "session_events_monthly");
+  let remaining = await parts(ch, "session_events_monthly");
   if (options.dryRun) return { state: "dry-run", freeBytes: await freeBytes(ch), floorBytes, copied, remaining };
   const columns = (await storedColumns(ch)).join(", ");
   while (remaining.length) {
-    if (options.maxPartitions !== undefined && copied.length >= options.maxPartitions) break;
+    if (options.maxParts !== undefined && copied.length >= options.maxParts) break;
     const p = remaining[0];
-    if (!/^\d{6}$/.test(p.partition)) throw new Error(`unexpected archive partition id ${p.partition}`);
-    // A dropped partition's files go after old_parts_lifetime; wait for them rather than refuse at once.
+    if (!/^\d{6}$/.test(p.partition) || !/^\w+$/.test(p.part)) throw new Error(`unexpected archive part ${p.part}`);
+    // A dropped part's files can outlive the DROP while a query still reads them; wait rather than refuse at once.
     let free = await freeBytes(ch);
     for (const deadline = Date.now() + settleMs; free - p.bytes < floorBytes && Date.now() < deadline; free = await freeBytes(ch)) {
       await Bun.sleep(Math.min(10_000, settleMs));
     }
     if (free - p.bytes < floorBytes) {
-      log(`stop: free ${(free / GiB).toFixed(2)} GiB minus ${p.partition} (${(p.bytes / GiB).toFixed(2)} GiB) is under the ${(floorBytes / GiB).toFixed(2)} GiB floor`);
+      log(`stop: free ${(free / GiB).toFixed(2)} GiB minus ${p.part} (${(p.bytes / GiB).toFixed(2)} GiB) is under the ${(floorBytes / GiB).toFixed(2)} GiB floor`);
       break;
     }
     const started = Date.now();
     const cutoff = `toDateTime('${await utcNow(ch)}', 'UTC')`;
-    const source = `FROM ${ARCHIVE} FINAL WHERE _partition_id = '${p.partition}' AND ${keptRowsSQL(cutoff)}`;
+    const source = `FROM ${ARCHIVE} WHERE _part = '${p.part}' AND ${keptRowsSQL(cutoff)}`;
     await ch.exec(`INSERT INTO ${LIVE} (${columns}) SELECT ${columns} ${source}
       SETTINGS ${COPY_SETTINGS}`);
-    // Every kept key must be in the live table before its archive partition goes. A day that expires completely
-    // between the copy and this check may already be dropped by the live TTL, so the check leaves out the next hour.
+    // Every kept key must be in the live table before its archive part goes. A day that expires completely between
+    // the copy and this check may already be dropped by the live TTL, so the check leaves out the next hour.
     const [check] = await ch.queryJSON<{ kept: string; missing: string }>(`
       SELECT toString(count()) AS kept, toString(countIf(k NOT IN (SELECT ${KEY} FROM ${LIVE} WHERE toYYYYMM(ts) = ${p.partition}))) AS missing
-      FROM (SELECT ${KEY} AS k ${source} AND ${keptRowsSQL(`(${cutoff} + INTERVAL 1 HOUR)`)})
-      SETTINGS do_not_merge_across_partitions_select_final = 1`);
-    if (!check || check.missing !== "0") throw new Error(`partition ${p.partition}: ${check?.missing ?? "?"} kept keys missing after the copy; the archive partition is kept`);
-    await ch.exec(`ALTER TABLE ${ARCHIVE} DROP PARTITION ID '${p.partition}'`);
+      FROM (SELECT ${KEY} AS k ${source} AND ${keptRowsSQL(`(${cutoff} + INTERVAL 1 HOUR)`)})`);
+    if (!check || check.missing !== "0") throw new Error(`part ${p.part}: ${check?.missing ?? "?"} kept keys missing after the copy; the archive part is kept`);
+    await ch.exec(`ALTER TABLE ${ARCHIVE} DROP PART '${p.part}'`);
     const done = { ...p, kept: Number(check.kept), seconds: (Date.now() - started) / 1000 };
     copied.push(done);
-    log(`copied ${p.partition}: ${p.rows} rows (${(p.bytes / GiB).toFixed(2)} GiB) → ${done.kept} kept in ${done.seconds.toFixed(1)} s`);
-    remaining = await partitions(ch, "session_events_monthly");
+    log(`copied ${p.part}: ${p.rows} rows (${(p.bytes / GiB).toFixed(2)} GiB) → ${done.kept} kept in ${done.seconds.toFixed(1)} s`);
+    remaining = await parts(ch, "session_events_monthly");
   }
 
   // Step 3.
@@ -199,11 +201,11 @@ if (import.meta.main) {
   const args = process.argv.slice(2);
   const flag = (name: string) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
   const floorGiB = flag("--floor-gib");
-  const maxPartitions = flag("--max-partitions");
+  const maxParts = flag("--max-parts");
   const report = await repartitionSessionEvents(ClickHouse.fromEnv(), {
     dryRun: args.includes("--dry-run"),
     floorBytes: floorGiB === undefined ? undefined : Number(floorGiB) * GiB,
-    maxPartitions: maxPartitions === undefined ? undefined : Number(maxPartitions),
+    maxParts: maxParts === undefined ? undefined : Number(maxParts),
     log: line => writeOut(line),
   });
   writeOut(JSON.stringify(report));
