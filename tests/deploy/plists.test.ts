@@ -10,6 +10,7 @@ mkdirSync('.local', { recursive: true });
 const home = '/Users/synthetic';
 const repo = `${home}/Gits/tokenlayer`;
 const values = { HOME: home, REPO: repo, BUN: '/opt/homebrew/Cellar/bun/1.4.4_1/bin/bun', CLICKHOUSE: `${home}/.local/bin/clickhouse-d1-26.10.2.103` };
+Object.assign(values, { OUTBOX: `${home}/outbox.md` });
 const parse = (xml: string) => {
   const result = spawnSync('python3', ['-c', 'import json,plistlib,sys;json.dump(plistlib.loads(sys.stdin.buffer.read()),sys.stdout)'], { input: xml, encoding: 'utf8' });
   expect(result.status).toBe(0);
@@ -25,6 +26,12 @@ for (const machine of ['m1', 'm4']) test(`${machine}: every rendered plist avoid
     if (agent in names) expect(basename(plist.ProgramArguments[0])).toBe(names[agent]);
     if (['com.tokenlayer.usage', 'com.tokenlayer.steer', 'com.tokenlayer.jev'].includes(plist.Label)) expect(plist.ProgramArguments[0]).toBe('/opt/homebrew/bin/bun');
   }
+});
+test('ratchet-live: snapshot runner every 15 min posts to the rendered outbox', () => {
+  const plist = parse(render(readFileSync('launchd/com.tokenlayer.ratchet-live.plist.template', 'utf8'), values));
+  expect(plist.ProgramArguments).toEqual(['/opt/homebrew/bin/bun', `${repo}/ratchet/live-schedule.ts`]);
+  expect(plist.StartInterval).toBe(900);
+  expect(plist.EnvironmentVariables.TOKENLAYER_RATCHET_OUTBOX).toBe(`${home}/outbox.md`);
 });
 test('jev: bundled one-shot every minute reads credentials from env files only', () => {
   const plist = parse(render(readFileSync('launchd/com.tokenlayer.jev.plist.template', 'utf8'), values));
