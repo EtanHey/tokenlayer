@@ -19,7 +19,10 @@ export function runRows(rows, cwd) {
       });
       if (suite && run.status === 0) writeFileSync(unitOutput, (run.stdout ?? '') + (run.stderr ?? ''));
       else if (suite) rmSync(unitJunit, { force: true });
-      console.error(`ratchet row ${row.id}: ${((Date.now() - started) / 1000).toFixed(1)}s in ${cwd}`);
+      const took = (Date.now() - started) / 1000;
+      console.error(`ratchet row ${row.id}: ${took.toFixed(1)}s in ${cwd}`);
+      // Visible on the run page before a growing row reaches its timeout and fails.
+      if (run.status === 0 && took > 0.75 * row.timeout_s) console.log(`::warning title=Ratchet timeout headroom::${row.id} took ${took.toFixed(1)}s of its ${row.timeout_s}s timeout_s`);
       const last = (run.stdout ?? '').trim().split('\n').pop();
       const value = run.status !== 0 ? null : row.direction === 'pass' ? true
         : last && /^\d+(\.\d+)?$/.test(last) ? Number(last) : null;
