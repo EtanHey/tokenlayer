@@ -47,7 +47,7 @@ export class ClickHouse {
    * wait_end_of_query=1 (errors then get a real status) and still checks X-ClickHouse-Exception-Code.
    * Error text is redacted: ClickHouse echoes the rows it could not parse.
    */
-  private async post(what: string, params: URLSearchParams, body: string | Buffer, bodyIsResult: boolean): Promise<string> {
+  protected async post(what: string, params: URLSearchParams, body: string | Buffer, bodyIsResult: boolean): Promise<string> {
     params.set("wait_end_of_query", "1");
     const res = await fetch(`${this.config.url}/?${params}`, { method: "POST", headers: { "X-ClickHouse-User": this.config.user, "X-ClickHouse-Key": this.config.password }, body: typeof body === "string" ? body : new Uint8Array(body) });
     const text = await res.text();
