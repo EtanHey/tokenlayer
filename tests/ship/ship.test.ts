@@ -4,6 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClickHouse } from "../../src/lib/clickhouse";
+import { RetryingClickHouse } from "../../src/lib/clickhouse-retry";
 import { shipOnce, type ShipOptions } from "../../src/ship/ship";
 import { loadState, saveState } from "../../src/ship/state";
 
@@ -248,7 +249,7 @@ describe("shipOnce", () => {
   // walk every file's write-ahead journal past its checkpoint.
   const dnsFailure = (() => Promise.reject(Object.assign(new Error("getaddrinfo ENOTFOUND hub.example"), { code: "ENOTFOUND" }))) as unknown as typeof fetch;
   test("a DNS blip on an insert is retried inside the pass: nothing fails and nothing re-ships", async () => {
-    const quick = { ...opts, clickhouse: new ClickHouse(db.client.config, [1, 1, 1]) };
+    const quick = { ...opts, clickhouse: new RetryingClickHouse(db.client.config, [1, 1, 1]) };
     writeFileSync(claudeFile(), `${claudeLine(1)}\n${claudeLine(2)}\n`);
     expect((await shipOnce(quick)).lines).toBe(2);
     appendFileSync(claudeFile(), `${claudeLine(3)}\n`);
@@ -262,7 +263,7 @@ describe("shipOnce", () => {
   });
 
   test("a store that stays unreachable stops the pass at the first file, so no other journal runs ahead", async () => {
-    const quick = { ...opts, clickhouse: new ClickHouse(db.client.config, [1, 1]) };
+    const quick = { ...opts, clickhouse: new RetryingClickHouse(db.client.config, [1, 1]) };
     writeFileSync(claudeFile(), `${claudeLine(1)}\n`);
     writeFileSync(codexFile(), `${codexMeta("codex_cli_rs")}\n`);
     await shipOnce(quick);
