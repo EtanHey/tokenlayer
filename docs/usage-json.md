@@ -9,7 +9,7 @@ curl with `-H @-`; the key never appears in curl argv and no header file is crea
 `~/.config/tokenlayer/usage.json` contains Claude OAuth accounts plus a `vendors` block (below). Labels are
 `labelHash(auth_index || id)` from `src/lib/hash.ts`: 16 hex characters using the
 shared `tokenlayer:v1:` domain prefix. The hub credential auth_index is preferred over
-the filename (which may contain an email). Labels equal steer credentials_snap and
+the filename (which may contain an email). Labels equal steer and
 proxy_usage credential values, allowing direct joins. The prefix is public, not a
 secret salt; this is pseudonymization, not protection against guessing known IDs.
 Old eight-character labels are rejected on stale reload and replaced on the next

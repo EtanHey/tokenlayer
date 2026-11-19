@@ -12,11 +12,11 @@ export interface SteerHub {
 export interface TickOptions {
   now?: number;
   dryRun?: boolean;
-  /** `hub` column of credentials_snap. */
+  /** `hub` field of each snapshot row. */
   hub?: string;
   tiers?: Tiers;
   log?: (line: string) => void;
-  /** Called once per tick with one row per credential (P4 persists these to ClickHouse credentials_snap). */
+  /** Called once per tick with one row per credential. Nothing stores them; quota history is proxy_usage.ratelimit. */
   onSnapshot?: (rows: SnapshotRow[]) => void | Promise<void>;
 }
 

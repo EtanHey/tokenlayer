@@ -90,7 +90,7 @@ describe("tick", () => {
   });
 });
 
-describe("onSnapshot rows match P4's credentials_snap columns", () => {
+describe("onSnapshot rows carry the snapshot columns", () => {
   const COLUMNS = [
     "ts", "hub", "credential", "provider", "priority", "status", "disabled", "unavailable", "next_retry_after",
     "reset_5h", "reset_7d", "utilization_5h", "utilization_7d", "signals", "action",

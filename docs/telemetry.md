@@ -6,12 +6,16 @@ Apply the schema with `bun run schema:apply` (reads `CLICKHOUSE_*` from the envi
 | Table | Feed | Sort key | Engine |
 |---|---|---|---|
 | `proxy_usage` | `tokenlayer-drain` ← `GET /v8/management/observability/usage/queue` | `(credential, toDate(ts), ts, execution_id)` | ReplacingMergeTree, monthly partitions |
-| `credentials_snap` | `tokenlayer-steer` (P3) | `(credential, ts)` | MergeTree, monthly partitions |
 | `session_events` | `tokenlayer-ship` on each Mac | `(machine, path, generation, byte_offset, content_hash)` | ReplacingMergeTree, monthly partitions |
 
 Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
 `account_hash` = `labelHash(source)` (email / project / upstream key), `client_key_hash` = `labelHash(api_key)`.
-`labelHash` is `sha256("tokenlayer:v1:" + value)[:16]` (`src/lib/hash.ts`), shared by steer so the tables join.
+`labelHash` is `sha256("tokenlayer:v1:" + value)[:16]` (`src/lib/hash.ts`), shared by steer and usage.json so their labels match `proxy_usage.credential`.
+
+Quota history (5h, 7d and Fable `7d_oi` utilization, resets, status) is the `ratelimit` map of `proxy_usage`:
+the hub's rate-limit headers from every served response. There is no per-credential snapshot table.
+`credentials_snap` (schema 003) was meant for steer snapshots, but steer was never deployed, so it never had a row;
+it was removed from the schema on 2026-11-19. A hub that already has the empty table keeps it until a lead drops it.
 
 ## Drain guarantees
 
