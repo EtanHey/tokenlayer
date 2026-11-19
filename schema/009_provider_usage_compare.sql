@@ -17,6 +17,12 @@ WITH streams AS (
     FROM tokenlayer.v_session_events_context INNER JOIN streams USING (machine, path, generation)
     WHERE provider IN ('claude', 'codex', 'antigravity') AND ts > toDateTime64(0, 3, 'UTC')
     GROUP BY day, provider
+    UNION ALL
+    -- Jev calls go straight to api.typesafe.ai, so they come from the ledger drain, not the hub or sessions.
+    SELECT toDate(ts) AS day, 'typesafe' AS provider, sumOrNull(toUInt64(input_tokens)) AS tokens
+    FROM tokenlayer.systemone_calls FINAL GROUP BY day
+), typesafe_daily AS (
+    SELECT toDate(ts) AS day, sumOrNull(cost_usd) AS cost_usd FROM tokenlayer.systemone_calls FINAL GROUP BY day
 ), kiro_turns AS (
     -- Raw archive revisions survive rewrites. A native turn must contribute once across revisions.
     SELECT argMax(tuple(ts, credits), tuple(ingested_at, byte_offset, content_hash)) AS latest
@@ -52,6 +58,7 @@ WITH streams AS (
     SELECT day FROM token_totals UNION DISTINCT SELECT day FROM kiro_daily UNION DISTINCT SELECT day FROM quota_peaks
     UNION DISTINCT SELECT toDate(ts) AS day FROM tokenlayer.session_events FINAL
                    WHERE startsWith(type, 'kiro:') AND ts > toDateTime64(0, 3, 'UTC')
+    UNION DISTINCT SELECT day FROM typesafe_daily
 )
 SELECT day, provider, tokens, if(provider = 'kiro', credits_used, NULL) AS credits_used,
        if(provider = 'kiro', unknown_kiro_turns, CAST(NULL, 'Nullable(UInt64)')) AS unknown_kiro_turns,
@@ -60,10 +67,13 @@ SELECT day, provider, tokens, if(provider = 'kiro', credits_used, NULL) AS credi
        peak_5h_used_pct, peak_weekly_used_pct,
        -- Kiro has no measured tokens. Other providers' rolling gauges do not measure UTC-day burn.
        CAST(NULL, 'Nullable(Float64)') AS tokens_per_1pct_allowance,
+       if(provider = 'typesafe', cost_usd, NULL) AS cost_usd,
        multiIf(provider = 'kiro', 'Known-credit subtotal. See unknown_kiro_turns for missing telemetry. No token counters or balance logged. Not full account usage. Monthly cycle start unknown.',
                provider = 'antigravity', 'Tokens only. No allowance percentage source.',
+               provider = 'typesafe', 'Jev (Typesafe /v1/systemone) direct calls from usage.jsonl ledgers. Tokens are reconciled input tokens. cost_usd is the ledger net and keeps the held maximum for unreconciled calls.',
                'Quota percentages are observed daily peaks across accounts/limits, not daily burn. Tokens per allowance percent is unknown.') AS note
-FROM (SELECT day, arrayJoin(['kiro', 'codex', 'claude', 'antigravity']) AS provider FROM days) AS grid
+FROM (SELECT day, arrayJoin(['kiro', 'codex', 'claude', 'antigravity', 'typesafe']) AS provider FROM days) AS grid
 LEFT JOIN token_totals USING (day, provider)
 LEFT JOIN kiro_daily USING (day)
-LEFT JOIN quota_peaks USING (day, provider);
+LEFT JOIN quota_peaks USING (day, provider)
+LEFT JOIN typesafe_daily USING (day);
