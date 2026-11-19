@@ -21,7 +21,7 @@ test('real Hub fixture: mutating HTTP switch replay, email join and planted key 
       expect(r.headers.get('X-ClickHouse-Key')).toBe(secrets[2]);
       if (fail) return new Response(secrets.join(' '), { status: 500 });
       const sql = await r.text();
-      if (sql.includes('UNION ALL')) return new Response([0.2, 0.4].map((u, i) => JSON.stringify({
+      if (sql.includes('ratelimit')) return new Response([0.2, 0.4].map((u, i) => JSON.stringify({
         credential: labelHash('a'), window: 'weekly', ts: '2026-11-10 0' + i + ':00:00',
         utilization: u })).join('\n'));
       return new Response(sql.includes('GROUP BY')

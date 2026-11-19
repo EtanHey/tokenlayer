@@ -1,13 +1,15 @@
 import { test, expect } from "bun:test";
 import { createHandler } from "../../src/dashboard/server";
+// Provider-shaped, so a future redaction regex is exercised too (r5).
+const leak = "sk-ant-api03-" + "q".repeat(80);
 test("identity, CSRF and safe failures", async () => {
   const handler = createHandler({
     logins: ["owner"],
     origin: "https://dash.test",
-    secret: "canary-secret",
+    secret: leak,
     hub: {
       observations: async () => {
-        throw Error("canary-secret");
+        throw Error(leak);
       },
     } as any,
     ch: {} as any,
@@ -17,7 +19,7 @@ test("identity, CSRF and safe failures", async () => {
     new Request("https://dash.test/api/accounts", { headers: { "Tailscale-User-Login": "owner" } }),
   );
   expect(r.status).toBe(503);
-  expect(await r.text()).not.toContain("canary-secret");
+  expect(await r.text()).not.toContain(leak);
   expect(
     (
       await handler(
