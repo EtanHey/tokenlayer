@@ -294,19 +294,34 @@ TTL merge, which never touches a part over the 1 GiB cap. Ship inserts set
 A table created before R12 is monthly. On monthly partitions, TTL merges rewrite a part up to
 hourly to remove one hour's rows. They never delete rows in a part over 1 GiB, and parts written
 before migration 011 carry no TTL information until they merge. Move it with
-`bun run schema:repartition` in an announced window (`--dry-run` first; `--floor-gib`, default 30;
-`--max-parts` to stop early). It does the following:
-1. Exchanges in an empty daily table built from `schema/004` and migration 011, and keeps the old
-   one as `session_events_monthly`, with merges stopped. Shippers keep writing to the daily table.
-2. For each archive part, smallest first: it waits until free disk (`df`, which is
-   `free_space + keep_free_space`) minus the part's bytes clears the floor. It then inserts the
-   rows the TTL keeps, every version as it is, and checks that every kept key arrived. Only then
-   does it drop that archive part. The disk peak is the largest part, not the largest month.
+`bun run schema:repartition` in an announced window (`--dry-run` first, which sends SELECTs only;
+`--floor-gib`, default 30; `--max-parts` to stop early; `--disk-multiplier`, default 3). It does the
+following:
+1. Refuses, changing nothing, unless free disk (`df`, which is `free_space + keep_free_space`) covers
+   the floor plus the most demanding part: 1.1 times the part (its copied days stay until the part
+   drops) plus 3 times its largest day. It then exchanges in an empty daily table built from
+   `schema/004` and migration 011, and keeps the old one as `session_events_monthly`, with merges
+   stopped. Shippers keep writing to the daily table. During the copy the daily table fsyncs inserted
+   and merged parts and keeps outdated parts 10 s (`old_parts_lifetime`); step 3 resets both.
+2. For each archive part, smallest first, one UTC day at a time: it skips a day whose kept keys the
+   live table already holds at the same or a newer version (a rerun after a kill), waits until free
+   disk minus 3 times the day clears the floor, then inserts the day's kept rows under a
+   `query_id` starting `r12-`, every version as it is. A watchdog reads free disk every second and
+   `KILL QUERY`s the copy if it falls under the floor; the run then stops `partial` and the archive
+   part stays. Once every day is in and every kept key checks out, it drops that archive part.
    Duplicate versions collapse as each day's parts merge.
-3. Drops the archive once it is empty.
+3. Drops the archive once it is empty and no insert older than the run is still running.
 
-Rerunning resumes from what the database shows. Until a part is copied, views do not show its
-rows. Before R12, this retention was applied in two separate steps:
+Ctrl-C (or SIGTERM) kills the running copy on the server before the command exits; a second Ctrl-C
+exits at once. A run refuses to start while any `r12-` query still runs (a killed client's copy):
+wait for it or `KILL QUERY WHERE startsWith(query_id, 'r12-') SYNC`. `SYSTEM STOP MERGES` on the
+archive does not survive a ClickHouse restart, so rerun promptly after one. The key check leaves out
+rows due to expire within the hour: they are copied but not verified. To back out mid-window, run
+the statements in `BACK_OUT_SQL` (`src/lib/session-repartition.ts`): exchange the tables back,
+`SYSTEM START MERGES` on the restored table, and reset the daily table's window settings.
+
+Rerunning resumes from what the database shows. Until a part is copied, views show only the days
+of it already copied. Before R12, this retention was applied in two separate steps:
 
 1. Apply the schema with `bun run schema:apply`. Migration 011 is metadata only:
    `materialize_ttl_after_modify = 0` prevents a rewrite, and the runner skips statements
