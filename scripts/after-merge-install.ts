@@ -209,11 +209,12 @@ import { readFileSync } from 'node:fs'; process.exit(clickhouseConfig() === read
 import { readFileSync } from 'node:fs'; process.exit(clickhouseConfig() === readFileSync(process.env.HOME + '/.config/tokenlayer/clickhouse.xml', 'utf8') ? 0 : 1)")`,
         '[[ $(chq "SELECT getSetting(\'max_memory_usage\')") == 8589934592 ]]',
         '[[ $(chq "SELECT getSetting(\'optimize_read_in_window_order\')") == true ]]',
+        '[[ $(chq "SELECT getSetting(\'allow_ddl\')") == false ]]',
         '[[ $(chq "SELECT getSetting(\'max_memory_usage\')" clickhouse-writer.env) == 0 ]]',
         '[[ $(stat -f %Lp "$TL/clickhouse-writer.env") == 600 ]]',
         '(( $(chq "SELECT uptime()") >= ${BEFORE:-0} ))',
       ].join(' && '),
-      checks: 'live file = render; tokenlayer capped at 8 GiB with window-order read; writer logs in uncapped; writer env 600; no restart (uptime grew)',
+      checks: 'live file = render; tokenlayer capped at 8 GiB with window-order read and no DDL; writer logs in uncapped; writer env 600; no restart (uptime grew)',
       rollback: 'cp -p "$(ls -t ~/.config/tokenlayer/backups/clickhouse.xml.* | head -1)" ~/.config/tokenlayer/clickhouse.xml && (set -a; . ~/.config/tokenlayer/clickhouse.env; set +a; "$CH" client --port 19000 --user "$CLICKHOUSE_USER" -q "SYSTEM RELOAD CONFIG")',
     },
     {
@@ -224,13 +225,14 @@ import { readFileSync } from 'node:fs'; process.exit(clickhouseConfig() === read
       checks: 'clickhouse-writer.env mode 600, user tokenlayer_writer (value of the password never read)', rollback: 'nothing reads it until the M4 ship restarts; leave it',
     },
     {
-      id: 'm1-schema', mac: 'm1', title: 'tables 008a and 012, views 006 and 009 (one file each, as tokenlayer)', from: 'J2 (#175 008a), R5 (#181), C1 (#187), R7 (#191), H1 (#200 012), Sol §5', after: ['m1-clickhouse-config'],
+      id: 'm1-schema', mac: 'm1', title: 'tables 008a and 012, views 006 and 009 (one file each, as tokenlayer_writer)', from: 'J2 (#175 008a), R5 (#181), C1 (#187), R7 (#191), H1 (#200 012), Sol §5', after: ['m1-clickhouse-config'],
       apply: [
         'mkdir -m 700 -p "$B"',
         'chq "SHOW CREATE TABLE tokenlayer.v_session_events_context FORMAT TSVRaw" > "$B/006.sql"',
         'chq "SHOW CREATE TABLE tokenlayer.v_provider_usage_compare FORMAT TSVRaw" > "$B/009.sql"',
         // Single files, not schema:apply: that re-runs every file and migrateSessionSchema (Sol §5).
-        'for f in 008a_systemone_calls 006_session_context 009_provider_usage_compare 012_ship_heartbeat; do ( set -a; . "$TL/clickhouse.env"; set +a; "$CH" client --port 19000 --user "$CLICKHOUSE_USER" --queries-file "$APP/schema/$f.sql" ); echo "applied $f"; done',
+        // DDL runs as the writer: the reader profile refuses it (allow_ddl=0, security pre-review S3).
+        'for f in 008a_systemone_calls 006_session_context 009_provider_usage_compare 012_ship_heartbeat; do ( set -a; . "$TL/clickhouse.env"; . "$TL/clickhouse-writer.env"; set +a; "$CH" client --port 19000 --user "$CLICKHOUSE_USER" --queries-file "$APP/schema/$f.sql" ); echo "applied $f"; done',
       ],
       verify: [
         '[[ $(chq "EXISTS TABLE tokenlayer.systemone_calls") == 1 && $(chq "EXISTS TABLE tokenlayer.ship_heartbeat") == 1 ]]',
@@ -240,7 +242,7 @@ import { readFileSync } from 'node:fs'; process.exit(clickhouseConfig() === read
         'chq "SELECT * FROM tokenlayer.v_provider_usage_compare LIMIT 0" && chq "SELECT * FROM tokenlayer.v_session_events_context LIMIT 0"',
       ].join(' && '),
       checks: 'both tables exist; 009 has R7 columns, C1 peaks from proxy_usage and J2 typesafe; 006 reads token_total; both views bind',
-      rollback: 'for v in 006 009; do sed "1s/^CREATE VIEW/CREATE OR REPLACE VIEW/" "$B/$v.sql" | (set -a; . ~/.config/tokenlayer/clickhouse.env; set +a; "$CH" client --port 19000 --user "$CLICKHOUSE_USER" --multiquery); done   # 008a/012 stay (new tables; dropping data is Etan\'s call)',
+      rollback: 'for v in 006 009; do sed "1s/^CREATE VIEW/CREATE OR REPLACE VIEW/" "$B/$v.sql" | (set -a; . ~/.config/tokenlayer/clickhouse.env; . ~/.config/tokenlayer/clickhouse-writer.env; set +a; "$CH" client --port 19000 --user "$CLICKHOUSE_USER" --multiquery); done   # 008a/012 stay (new tables; dropping data is Etan\'s call)',
     },
     // ── Ship code on both Macs after the heartbeat table, before the ratchet snapshot (H1's order) ──
     launchJob(o, 'm1', 'ship', {

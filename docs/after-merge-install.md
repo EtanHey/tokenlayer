@@ -28,7 +28,7 @@ bun scripts/after-merge-install.ts --commit <full sha on origin/main> --apply   
 | 5–6 | both | `setup.sh pin` | nothing reads `app/current` until a job is repointed (R10) | current → sha, marker |
 | 7 | M1 | `setup.sh config` | the reader profile must be live before R5's views (R4, R5, R6) | live = render; 8 GiB cap; window order; writer uncapped; no restart |
 | 8 | M4 | writer env | before the M4 ship restarts on the writer login (R6) | mode 600, user name |
-| 9 | M1 | schema 008a, 006, 009, 012 | the table before ship code (H1); one file each (Sol §5) | tables exist; view markers; views bind |
+| 9 | M1 | schema 008a, 006, 009, 012, as the writer (the reader runs no DDL) | the table before ship code (H1); one file each (Sol §5) | tables exist; view markers; views bind |
 | 10–11 | both | ship | before the ratchet snapshot (H1); the M4 after #192/#195 (R10) | off the checkout; new PID; ok heartbeat in 120 s |
 | 12–15 | M1 | drain, fable, dashboard, hubupdate | R10 §4 B; F3/F4; D1 | new PID; fable OFF; `/api/burn` rows |
 | 16–17 | both | jev bundle | J2 | built = installed; a run exits 0 |

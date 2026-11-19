@@ -60,6 +60,13 @@ describe('order', () => {
     expect(at('m1-clickhouse', w)).toBeGreaterThan(at('m4-ship', w));
     expect(at('m1-clickhouse', w)).toBeLessThan(at('m1-drift', w));
   });
+  test('schema DDL runs as the writer (the reader runs none), and the config step checks the reader has DDL off', () => {
+    const step = (id: string) => plan(o).find(s => s.id === id)!;
+    const ddl = step('m1-schema').apply.find(c => c.includes('--queries-file'))!;
+    expect(ddl).toContain('. "$TL/clickhouse.env"; . "$TL/clickhouse-writer.env"');
+    expect(step('m1-schema').rollback).toContain('. ~/.config/tokenlayer/clickhouse-writer.env');
+    expect(step('m1-clickhouse-config').verify).toContain(`getSetting('allow_ddl')") == false`);
+  });
   test('the preflights come first and change nothing', () => {
     expect(ids().slice(0, 2)).toEqual(['m1-commit', 'm4-reachable']);
     for (const s of plan(o).slice(0, 2)) expect(s.apply).toEqual([]);
