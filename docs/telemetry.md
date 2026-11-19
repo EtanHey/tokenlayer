@@ -295,20 +295,27 @@ A table created before R12 is monthly. On monthly partitions, TTL merges rewrite
 hourly to remove one hour's rows. They never delete rows in a part over 1 GiB, and parts written
 before migration 011 carry no TTL information until they merge. Move it with
 `bun run schema:repartition` in an announced window (`--dry-run` first, which sends SELECTs only;
-`--floor-gib`, default 30; `--max-parts` to stop early; `--disk-multiplier`, default 3). It does the
-following:
-1. Refuses, changing nothing, unless free disk (`df`, which is `free_space + keep_free_space`) covers
-   the floor plus the most demanding part: 1.1 times the part (its copied days stay until the part
-   drops) plus 3 times its largest day. It then exchanges in an empty daily table built from
+`--floor-gib`, default 30; `--max-parts` to stop early; `--disk-multiplier`, default 3). A flag that is
+not a plain number refuses before connecting. It does the following:
+1. Refuses, changing nothing, unless both Macs' running shippers load a client that sets
+   `max_partitions_per_insert_block = 0` (it reads launchd on this Mac and, over ssh, on the M4
+   (`TOKENLAYER_M4_HOST`, default `macbook-pro`); an older shipper would retry a batch spanning
+   over 100 days for ever), and free disk (`df`, which is `free_space + keep_free_space`) covers
+   the floor plus a 2 GiB kill margin plus the most demanding part: 1.1 times the part (its copied
+   days stay until the part drops) plus 3 times its largest day. A day's size is its share of the
+   part by source-line bytes or by rows, whichever is larger. It then exchanges in an empty daily table built from
    `schema/004` and migration 011, and keeps the old one as `session_events_monthly`, with merges
    stopped. Shippers keep writing to the daily table. During the copy the daily table fsyncs inserted
    and merged parts and keeps outdated parts 10 s (`old_parts_lifetime`); step 3 resets both.
-2. For each archive part, smallest first, one UTC day at a time: it skips a day whose kept keys the
-   live table already holds at the same or a newer version (a rerun after a kill), waits until free
-   disk minus 3 times the day clears the floor, then inserts the day's kept rows under a
-   `query_id` starting `r12-`, every version as it is. A watchdog reads free disk every second and
-   `KILL QUERY`s the copy if it falls under the floor; the run then stops `partial` and the archive
-   part stays. Once every day is in and every kept key checks out, it drops that archive part.
+2. For each archive part, smallest first: it skips days whose kept keys the live table already
+   holds at the same or a newer version (a rerun after a kill), and waits until free disk covers
+   step 1's test for the days left (a resumed run is held to it too). Then one UTC day at a time:
+   it waits until free disk minus 3 times the day clears the floor plus the margin, then inserts
+   the day's kept rows under a `query_id` starting `r12-`, every version as it is. A watchdog
+   reads free disk every second and `KILL QUERY`s the copy once it falls under the floor plus
+   2 GiB (merges already running finish after a kill), or after 3 failed reads in a row; it
+   re-issues the KILL until the query is gone, and stops the run with an error if that is not
+   confirmed within 60 s. The run then stops `partial` and the archive part stays. Once every day is in and every kept key checks out, it drops that archive part.
    Duplicate versions collapse as each day's parts merge.
 3. Drops the archive once it is empty and no insert older than the run is still running.
 
@@ -316,9 +323,15 @@ Ctrl-C (or SIGTERM) kills the running copy on the server before the command exit
 exits at once. A run refuses to start while any `r12-` query still runs (a killed client's copy):
 wait for it or `KILL QUERY WHERE startsWith(query_id, 'r12-') SYNC`. `SYSTEM STOP MERGES` on the
 archive does not survive a ClickHouse restart, so rerun promptly after one. The key check leaves out
-rows due to expire within the hour: they are copied but not verified. To back out mid-window, run
-the statements in `BACK_OUT_SQL` (`src/lib/session-repartition.ts`): exchange the tables back,
-`SYSTEM START MERGES` on the restored table, and reset the daily table's window settings.
+rows due to expire within the hour: they are copied but not verified. To back out mid-window,
+Ctrl-C the command and confirm `SELECT query_id FROM system.processes WHERE startsWith(query_id, 'r12-')`
+is empty, then run the statements in `BACK_OUT_SQL` (`src/lib/session-repartition.ts`): exchange
+the tables back, rename the daily table to `session_events_daily_backed_out`, `SYSTEM START MERGES`
+on the restored table, and reset the daily table's window settings. The backed-out table is the
+only copy of the days already copied and of the rows shipped during the window: copy it back day
+by day with `copyBackSQL(day)` (insert, a check that must read 0, then drop that day), each day
+only while `df` free is at least the floor + 2 GiB + 3 times the day's bytes (`COPY_BACK_DAYS_SQL`),
+then drop the empty table. Never drop it before that.
 
 Rerunning resumes from what the database shows. Until a part is copied, views show only the days
 of it already copied. Before R12, this retention was applied in two separate steps:
