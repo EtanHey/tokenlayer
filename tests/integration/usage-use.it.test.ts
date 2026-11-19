@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { expect } from "bun:test";
+import { test } from "../support/clickhouse-gate";
 import { applySchema } from "../../src/lib/schema";
 import { startLocalClickHouse } from "../../src/lib/local-clickhouse";
 import { readUse } from "../../src/usage/use";
