@@ -25,7 +25,7 @@ rebinding."
 
 ```sh
 bun src/steer/main.ts --once --dry-run   # GET only: log what it would PATCH
-bun src/steer/main.ts --snapshots        # loop; one credentials_snap JSON row per credential per tick on stdout
+bun src/steer/main.ts --snapshots        # loop; one snapshot JSON row per credential per tick on stdout (not stored)
 ```
 
 Env comes from `TOKENLAYER_ENV` (default `~/.config/tokenlayer/hub.env`); the process env wins.

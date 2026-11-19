@@ -88,7 +88,7 @@ describe("fixed-schema database admission", () => {
       } finally { console.log(`DATABASE_ADMISSION ${name} requests=${seen.length}`); s.stop(true); }
     });
   }
-  for (const table of ["session_events", "proxy_usage", "credentials_snap", "archaeology_sample"]) {
+  for (const table of ["session_events", "proxy_usage", "archaeology_sample"]) {
     test(`direct ${table} insert refuses before encoding or HTTP`, async () => {
       const { s, seen, client } = server(() => new Response(""));
       try {
@@ -152,7 +152,7 @@ describe("fixed-schema database admission", () => {
   test("direct admissions recheck a client's current database", async () => {
     const { s, seen, client } = server(() => new Response(""));
     try {
-      for (const table of ["session_events", "proxy_usage", "credentials_snap", "archaeology_sample"]) {
+      for (const table of ["session_events", "proxy_usage", "archaeology_sample"]) {
         client.config.database = "tokenlayer";
         await client.insert(table, []);
         client.config.database = "other";
