@@ -521,6 +521,9 @@ async function copyWatched(ch: ClickHouse, sql: string, queryId: string,
     o.signal?.removeEventListener("abort", onAbort);
   }
   if (!reason && failure) throw failure;
+  // Say how the copy ended when the kill may not have been what ended it.
+  if (reason && failure && !/QUERY_WAS_CANCELLED|exception 394\b/.test(String(failure))) reason += ` (the copy itself ended: ${String(failure).slice(0, 160)})`;
+  else if (reason && !failure) reason += " (the copy had already finished)";
   return reason;
 }
 

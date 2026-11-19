@@ -351,13 +351,21 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
     expect(await liveCount("startsWith(path, 'bulk-')")).toBeLessThan(20000);
   }, 60_000);
 
-  /** The client with its first `n` KILL statements answered but never sent, like a KILL that runs before the query is listed. */
+  /**
+   * The client with its first `n` KILL statements answered but never sent, like a KILL that runs before the query is
+   * listed. Its copies sleep 1 ms a row (20 s for the bulk day): SLOW_COPY's speed limit let a CI copy end within 1.5 s.
+   */
   const losingKills = (n: number) => {
     let lost = 0;
     return new Proxy(ch.client, {
       get(target, prop, receiver) {
         if (prop === "exec") {
-          return (sql: string, o?: { queryId?: string }) => (/^\s*KILL /.test(sql) && lost++ < n ? Promise.resolve("") : target.exec(sql, o));
+          return (sql: string, o?: { queryId?: string }) => {
+            if (/^\s*KILL /.test(sql) && lost++ < n) return Promise.resolve("");
+            const slowed = o?.queryId?.startsWith("r12-") ? sql.replace(/\n\s*SETTINGS /, " AND sleepEachRow(0.001) = 0\n SETTINGS ") : sql;
+            if (o?.queryId?.startsWith("r12-") && slowed === sql) throw new Error("test proxy could not slow the copy");
+            return target.exec(slowed, o);
+          };
         }
         return Reflect.get(target, prop, receiver);
       },
