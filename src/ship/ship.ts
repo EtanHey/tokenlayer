@@ -3,7 +3,7 @@ import { redactText } from "../lib/redact";
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, openSync, readdirSync, readSync, statSync, type Stats } from "node:fs";
 import { join } from "node:path";
-import { RAW_BYTES, type ClickHouse } from "../lib/clickhouse";
+import { RAW_BYTES, StoreUnreachableError, type ClickHouse } from "../lib/clickhouse";
 import { sha256Hex } from "../lib/hash";
 import { detectHarness, newFileState, parseLine, type Harness, type SourceKind } from "./parse";
 import { loadState, saveState, type FileCheckpoint, type ShipState } from "./state";
@@ -366,6 +366,9 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           const reason = err instanceof Error ? err.message : String(err);
           const message = compressed ? `${sanitizeOutput(physical)}: ${sanitizeOutput(reason)}` : redactText(reason);
           failures.push(new Error(message));
+          // The store is unreachable (DNS or connect, after the client's retries): every later file would
+          // also write its journal ahead and fail. Stop the pass; acknowledged progress is saved below.
+          if (err instanceof StoreUnreachableError) throw new AggregateError(failures, "ship failed for some files");
         }
       }
     }

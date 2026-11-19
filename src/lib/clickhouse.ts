@@ -28,9 +28,27 @@ export function encodeRow(row: unknown): Buffer {
   return Buffer.concat([Buffer.from('{'), ...fields.flatMap((f, i) => i ? [Buffer.from(','), f] : [f]), Buffer.from('}')]);
 }
 
+/**
+ * Fetch errors raised before the request left this machine: the name did not resolve, or nothing
+ * accepted the TCP connection. ClickHouse never saw the request, so retrying is safe for any statement.
+ * A reset or timeout can come after the server read the request, so those are not retried here.
+ */
+const UNSENT_CODES = new Set(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED"]);
+
+/** The store could not be reached after every retry; nothing was sent. */
+export class StoreUnreachableError extends Error {
+  constructor(readonly code: string, message: string, readonly attempts: number) {
+    super(message);
+    this.name = "StoreUnreachableError";
+  }
+}
+
+/** Backoff before each retry of an unsent request: a DNS or connect blip after wake usually clears in seconds. */
+export const DEFAULT_UNSENT_RETRY_MS: readonly number[] = [1_000, 3_000, 10_000];
+
 /** Minimal ClickHouse HTTP client: JSONEachRow inserts and plain queries. */
 export class ClickHouse {
-  constructor(readonly config: ClickHouseConfig) {}
+  constructor(readonly config: ClickHouseConfig, readonly unsentRetryMs: readonly number[] = DEFAULT_UNSENT_RETRY_MS) {}
 
   static fromEnv(env: Record<string, string | undefined> = process.env): ClickHouse {
     return new ClickHouse({
@@ -49,7 +67,20 @@ export class ClickHouse {
    */
   private async post(what: string, params: URLSearchParams, body: string | Buffer, bodyIsResult: boolean): Promise<string> {
     params.set("wait_end_of_query", "1");
-    const res = await fetch(`${this.config.url}/?${params}`, { method: "POST", headers: { "X-ClickHouse-User": this.config.user, "X-ClickHouse-Key": this.config.password }, body: typeof body === "string" ? body : new Uint8Array(body) });
+    const url = `${this.config.url}/?${params}`;
+    const init = { method: "POST", headers: { "X-ClickHouse-User": this.config.user, "X-ClickHouse-Key": this.config.password }, body: typeof body === "string" ? body : new Uint8Array(body) };
+    let res: Response;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        res = await fetch(url, init);
+        break;
+      } catch (err) {
+        const code = (err as { code?: unknown }).code;
+        if (typeof code !== "string" || !UNSENT_CODES.has(code)) throw err;
+        if (attempt >= this.unsentRetryMs.length) throw new StoreUnreachableError(code, (err as Error).message, attempt + 1);
+        await Bun.sleep(this.unsentRetryMs[attempt]);
+      }
+    }
     const text = await res.text();
     const code = res.headers.get("x-clickhouse-exception-code");
     // An insert answers with an empty body, so any exception text in it means the insert failed.

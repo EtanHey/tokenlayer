@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -242,6 +242,47 @@ describe("shipOnce", () => {
     const before = db.rows.length;
     expect((await shipOnce(opts)).lines).toBe(3);
     expect(db.rows.slice(before).map(r => r.byte_offset)).toEqual([0, claudeLine(1).length + 1, 2 * (claudeLine(1).length + 1)]);
+  });
+
+  // R9: the M4 lost DNS for the hub in bursts. A blip must not fail the insert, and an outage must not
+  // walk every file's write-ahead journal past its checkpoint.
+  const dnsFailure = (() => Promise.reject(Object.assign(new Error("getaddrinfo ENOTFOUND hub.example"), { code: "ENOTFOUND" }))) as unknown as typeof fetch;
+  test("a DNS blip on an insert is retried inside the pass: nothing fails and nothing re-ships", async () => {
+    const quick = { ...opts, clickhouse: new ClickHouse(db.client.config, [1, 1, 1]) };
+    writeFileSync(claudeFile(), `${claudeLine(1)}\n${claudeLine(2)}\n`);
+    expect((await shipOnce(quick)).lines).toBe(2);
+    appendFileSync(claudeFile(), `${claudeLine(3)}\n`);
+    const spy = spyOn(globalThis, "fetch");
+    spy.mockImplementationOnce(dnsFailure).mockImplementationOnce(dnsFailure);
+    try {
+      expect(await shipOnce(quick)).toMatchObject({ lines: 1, resets: 0 });
+    } finally { spy.mockRestore(); }
+    expect(loadState(`${opts.statePath}.generations`).files[claudeFile()].offset).toBe(loadState(opts.statePath).files[claudeFile()].offset);
+    expect(db.rows.map(r => r.byte_offset)).toEqual([0, claudeLine(1).length + 1, 2 * (claudeLine(1).length + 1)]);
+  });
+
+  test("a store that stays unreachable stops the pass at the first file, so no other journal runs ahead", async () => {
+    const quick = { ...opts, clickhouse: new ClickHouse(db.client.config, [1, 1]) };
+    writeFileSync(claudeFile(), `${claudeLine(1)}\n`);
+    writeFileSync(codexFile(), `${codexMeta("codex_cli_rs")}\n`);
+    await shipOnce(quick);
+    appendFileSync(claudeFile(), `${claudeLine(2)}\n`);
+    appendFileSync(codexFile(), `${codexMeta("codex_cli_rs")}\n`);
+    const spy = spyOn(globalThis, "fetch").mockImplementation(dnsFailure);
+    let err: unknown;
+    try {
+      err = await shipOnce(quick).catch((e: unknown) => e);
+      expect(spy).toHaveBeenCalledTimes(3);
+    } finally { spy.mockRestore(); }
+    expect(err).toBeInstanceOf(AggregateError);
+    expect((err as AggregateError).errors.map(e => (e as Error).message)).toEqual(["getaddrinfo ENOTFOUND hub.example"]);
+    const journal = loadState(`${opts.statePath}.generations`).files, acked = loadState(opts.statePath).files;
+    const ahead = [claudeFile(), codexFile()].filter(f => journal[f].offset > acked[f].offset);
+    expect(ahead).toHaveLength(1);
+    // Once the store answers again only the unacknowledged lines ship.
+    const before = db.rows.length;
+    expect((await shipOnce(quick)).lines).toBe(2);
+    expect(db.rows.length - before).toBe(2);
   });
 
   test("throughput cap paces the backfill", async () => {
