@@ -121,12 +121,14 @@ function useLine(w: any): UseLine | null {
 
 export function toolRows(i: {
   m4: M4Snapshot;
-  claude: Observation[];
+  /** null: the hub readback failed. */
+  claude: Observation[] | null;
   claudeUse: { credential: string; r1: unknown; r7: unknown; t1: unknown; t7: unknown }[] | null;
   now?: number;
 }): ToolRow[] {
   const now = i.now ?? Date.now();
-  const rows: ToolRow[] = i.claude.map((c) => {
+  const rows: ToolRow[] = i.claude === null ? [{ name: "Claude", tool: "claude", pct: null, window: null, resets_at: null,
+    observed_at: null, use: null, mark: "UNKNOWN", why: "hub readback unavailable" }] : i.claude.map((c) => {
     const pct = num(signal(c.quota, "anthropic-ratelimit-unified-7d-utilization"));
     const observed_at = c.quota?.observed_at ?? null, old = now - ts(observed_at);
     const fable = num(signal(c.model_quotas?.["claude-fable-5-2"], "anthropic-ratelimit-unified-7d_oi-utilization"));

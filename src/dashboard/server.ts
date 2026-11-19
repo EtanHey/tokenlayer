@@ -381,7 +381,8 @@ export function createHandler(o: {
     }));
   }
   async function tools() {
-    const [snap, obs, use] = await Promise.all([m4(), o.hub.observations(),
+    // A hub failure becomes one Claude UNKNOWN row; it must not hide the vendor rows.
+    const [snap, obs, use] = await Promise.all([m4(), o.hub.observations().catch(() => null),
       o.ch.queryJSON<any>(claudeUseSQL).catch(() => null)]);
     return {
       rows: toolRows({ m4: snap, claude: obs, claudeUse: use }),

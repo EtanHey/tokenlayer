@@ -170,3 +170,22 @@ test("GET /api/tools serves the rows and the M4 state; no account labels or raw 
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("hub down: one Claude UNKNOWN row, and the vendor rows still show", async () => {
+  const tmp = mkdtempSync(tmpdir() + "/dash-tools-");
+  try {
+    const hub = { ...fakeHub(), observations: async () => { throw Error("hub transport failure"); } };
+    const handler = createHandler({
+      logins: ["etan"], origin: "https://x", secret: "s", hub: hub as any,
+      ch: { queryJSON: async () => [] as any }, path: tmp + "/state.json", events: tmp + "/events.jsonl",
+      m4: reader(ok()).read,
+    });
+    const r = await handler(new Request("https://x/api/tools", { headers: { "Tailscale-User-Login": "etan" } }));
+    expect(r.status).toBe(200);
+    const body = await r.json();
+    expect(body.rows.map((x: any) => x.name)).toEqual(["Claude", "Codex", "Cursor", "Antigravity", "Kiro"]);
+    expect(body.rows[0]).toMatchObject({ mark: "UNKNOWN", pct: null, why: "hub readback unavailable" });
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
