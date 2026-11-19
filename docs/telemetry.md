@@ -6,7 +6,7 @@ Apply the schema with `bun run schema:apply` (reads `CLICKHOUSE_*` from the envi
 | Table | Feed | Sort key | Engine |
 |---|---|---|---|
 | `proxy_usage` | `tokenlayer-drain` ← `GET /v8/management/observability/usage/queue` | `(credential, toDate(ts), ts, execution_id)` | ReplacingMergeTree, monthly partitions |
-| `session_events` | `tokenlayer-ship` on each Mac | `(machine, path, generation, byte_offset, content_hash)` | ReplacingMergeTree, monthly partitions |
+| `session_events` | `tokenlayer-ship` on each Mac | `(machine, path, generation, byte_offset, content_hash)` | ReplacingMergeTree, daily partitions (R12) |
 
 Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
 `account_hash` = `labelHash(source)` (email / project / upstream key), `client_key_hash` = `labelHash(api_key)`.
@@ -279,10 +279,33 @@ see the runbook's compressed-history gap before claiming all 90 days are present
 ## Session text retention
 
 `bun run schema:apply` expands `{{SESSION_RETENTION_DAYS}}` in migration 011 from
-`src/lib/session-retention.ts` (30 days). The TTL deletes expired session rows in background
-merges, with a one-hour minimum interval between TTL merges. It preserves `harness = 'antigravity'`
+`src/lib/session-retention.ts` (30 days). It preserves `harness = 'antigravity'`
 and all UTC January 1970 timestamps until undated rows are resolved. Both session and proxy tables
-cap background merge size at 1 GiB. Apply retention in two separate steps:
+cap background merge size at 1 GiB.
+
+**Daily partitions, whole-part drops (R12).** `session_events` has one partition per UTC day
+(`toYYYYMMDD(ts)`) and `ttl_only_drop_parts = 1`. A day's parts go once their last row is 30 days
+old, so a row lives 30 to 31 days, and the TTL never rewrites a part to trim an hour of rows.
+Because the TTL has a `WHERE`, that drop still reads the part and writes back its Antigravity and
+January 1970 rows; a day without them leaves nothing. The drop has no size cap, unlike a row-delete
+TTL merge, which never touches a part over the 1 GiB cap. Ship inserts set
+`max_partitions_per_insert_block = 0`, because an Antigravity replay can span more than 100 days.
+
+A table created before R12 is monthly. On monthly partitions, TTL merges rewrite a part up to
+hourly to remove one hour's rows. They never delete rows in a part over 1 GiB, and parts written
+before migration 011 carry no TTL information until they merge. Move it with
+`bun run schema:repartition` in an announced window (`--dry-run` first; `--floor-gib`, default 30;
+`--max-partitions` to stop early). It does the following:
+1. Exchanges in an empty daily table built from `schema/004` and migration 011, and keeps the old
+   one as `session_events_monthly`, with merges stopped. Shippers keep writing to the daily table.
+2. For each archive partition, smallest first: it waits until free disk (`df`, which is
+   `free_space + keep_free_space`) minus the partition's bytes clears the floor. It then inserts
+   the rows the TTL keeps, `FINAL` (one version per key), and checks that every kept key arrived.
+   Only then does it drop that archive partition.
+3. Drops the archive once it is empty.
+
+Rerunning resumes from what the database shows. Until a partition is copied, views do not show its
+rows. Before R12, this retention was applied in two separate steps:
 
 1. Apply the schema with `bun run schema:apply`. Migration 011 is metadata only:
    `materialize_ttl_after_modify = 0` prevents a rewrite, and the runner skips statements

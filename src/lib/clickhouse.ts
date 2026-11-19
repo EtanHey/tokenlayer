@@ -69,6 +69,8 @@ export class ClickHouse {
     if (rows.length === 0) return;
     const params = new URLSearchParams({ query: `INSERT INTO ${this.config.database}.${table} FORMAT JSONEachRow`, async_insert: "0" });
     if (dedupToken) params.set("insert_deduplication_token", dedupToken);
+    // session_events has a partition per day, and Antigravity rows are kept for ever: a replay can span over 100 days.
+    if (table === "session_events") params.set("max_partitions_per_insert_block", "0");
     const body = Buffer.concat(rows.flatMap((r) => [encodeRow(r), Buffer.from("\n")]));
     await this.post(`insert into ${table}`, params, body, false);
   }

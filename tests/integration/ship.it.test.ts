@@ -14,7 +14,8 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse", () => {
   let opts: ShipOptions;
   const now = new Date();
   const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
-  const partition = (date: Date) => date.toISOString().slice(0, 7).replace("-", "");
+  // R12: session_events has one partition per UTC day.
+  const partition = (date: Date) => date.toISOString().slice(0, 10).replaceAll("-", "");
 
   beforeAll(async () => {
     ch = await startLocalClickHouse();
@@ -78,7 +79,7 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse", () => {
     expect(Number(n)).toBe(5);
   });
 
-  test("appended lines land in order; rows span monthly partitions", async () => {
+  test("appended lines land in order; rows span daily partitions", async () => {
     appendFileSync(join(dir, "codex", "r.jsonl"), JSON.stringify({ timestamp: nextMonth.toISOString(), type: "turn_context", payload: { model: "gpt-5.5" } }) + "\n");
     await shipOnce(opts);
     const parts = await ch.client.queryJSON<{ partition: string }>(

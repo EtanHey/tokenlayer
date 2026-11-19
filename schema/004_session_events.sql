@@ -5,6 +5,10 @@
 -- harness stays out of the key so a late harness decision replaces rows.
 -- Reads that count rows need FINAL (or a GROUP BY on the key): a replay with new chunk boundaries inserts
 -- duplicates that only a background merge collapses. raw retains the source line including its terminator.
+-- R12: one partition per UTC day, and the 30-day TTL (migration 011) only drops parts whose rows have all expired.
+-- A day therefore goes as a whole once its last row is 30 days old (rows live 30 to 31 days), and TTL never
+-- rewrites a part to trim an hour of rows; the TTL's WHERE still keeps Antigravity and January 1970 rows through it.
+-- Tables created before R12 are monthly: `bun run schema:repartition` moves them (docs/telemetry.md).
 CREATE TABLE IF NOT EXISTS tokenlayer.session_events
 (
     machine               LowCardinality(String),
@@ -46,6 +50,6 @@ CREATE TABLE IF NOT EXISTS tokenlayer.session_events
     INDEX idx_project project    TYPE set(1024)           GRANULARITY 4
 )
 ENGINE = ReplacingMergeTree(ingested_at)
-PARTITION BY toYYYYMM(ts)
+PARTITION BY toYYYYMMDD(ts)
 ORDER BY (machine, path, generation, byte_offset, content_hash)
-SETTINGS non_replicated_deduplication_window = 10000, max_bytes_to_merge_at_max_space_in_pool = 1073741824;
+SETTINGS non_replicated_deduplication_window = 10000, max_bytes_to_merge_at_max_space_in_pool = 1073741824, ttl_only_drop_parts = 1;

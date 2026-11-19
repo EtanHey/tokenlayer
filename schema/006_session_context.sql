@@ -1,6 +1,6 @@
 -- Query-time attribution only: archive columns remain pure functions of source-line bytes.
 -- Session/ordinal addresses are derived; attribution windows stay within each archive identity.
--- FINAL merges per monthly partition: versions of a key never span partitions (see ratchet/live-sql.ts), so the
+-- FINAL merges per partition: versions of a key never span partitions (see ratchet/live-sql.ts), so the
 -- answer is identical and the merge skips the whole-table pass (pre-November read: p50 991 → 316 ms, 2026-11-19).
 -- Memory: the stream windows sort only narrow columns, and with optimize_read_in_window_order (reader profile)
 -- they read in table order without a sort. raw (51 GiB uncompressed) stays out of every window: the planner moved
