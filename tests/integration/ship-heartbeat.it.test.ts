@@ -93,10 +93,10 @@ describe.skipIf(!clickhouseBinary())("ship heartbeat → real local ClickHouse �
     expect(measure("ship_heartbeat_age_s_m4", { TOKENLAYER_M4_HOST: "h1-unreachable.invalid" })).toEqual({ exit: 0, out: "skip" });
   });
 
-  /** n beats for a Mac, one a minute back from now, each 'ok' or an error class. */
-  const insertBeats = (machine: string, classes: string[]) => ch.client.exec(
+  /** Beats for a Mac, one a minute back from `fromMin` minutes ago, each 'ok' or an error class. */
+  const insertBeats = (machine: string, classes: string[], fromMin = 0) => ch.client.exec(
     `INSERT INTO tokenlayer.ship_heartbeat (machine, ts, result, error_class, files, lines, bytes, duration_ms, ingested_at) VALUES ${classes.map((c, i) =>
-      `('${machine}', now64(3) - INTERVAL ${i} MINUTE, '${c === "ok" ? "ok" : "error"}', '${c === "ok" ? "" : c}', 0, 0, 0, 5, now64(3) - INTERVAL ${i} MINUTE)`).join(", ")}`);
+      `('${machine}', now64(3) - INTERVAL ${fromMin + i} MINUTE, '${c === "ok" ? "ok" : "error"}', '${c === "ok" ? "" : c}', 0, 0, 0, 5, now64(3) - INTERVAL ${fromMin + i} MINUTE)`).join(", ")}`);
   const failing = (machine: string, extra: Record<string, string> = {}) => {
     const { exit, out } = measure(`ship_heartbeat_failing_${machine}`, extra);
     expect(exit).toBe(0);
@@ -105,8 +105,9 @@ describe.skipIf(!clickhouseBinary())("ship heartbeat → real local ClickHouse �
 
   test("failing shipper: every M1 beat in the last 15 min is an error → the failing row trips; an older ok beat doesn't save it", async () => {
     await ch.client.exec("TRUNCATE TABLE tokenlayer.ship_heartbeat");
-    // 14 failing beats in the window, the last ok pass 20 min ago, and a healthy M4 that must not hide the M1.
-    await insertBeats("m1", [...Array(14).fill("file_errors"), "ok", "ok", "ok", "ok", "ok", "ok", "ok"]);
+    // 14 failing beats in the window, the last ok passes 16–20 min ago, and a healthy M4 that must not hide the M1.
+    await insertBeats("m1", Array(14).fill("file_errors"));
+    await insertBeats("m1", Array(5).fill("ok"), 16);
     await insertBeats("m4", Array(15).fill("ok"));
     const m = failing("m1");
     expect(m).toEqual({ value: 14, threshold: 0, say: "all 14 heartbeats in the last 15 min failed (file_errors): the shipper runs, but no pass succeeds" });
