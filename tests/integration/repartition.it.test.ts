@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { applySchema } from "../../src/lib/schema";
-import { repartitionSessionEvents } from "../../src/lib/session-repartition";
+import * as repartition from "../../src/lib/session-repartition";
+const { repartitionSessionEvents } = repartition;
 import { clickhouseBinary, startLocalClickHouse, type LocalClickHouse } from "../../src/lib/local-clickhouse";
 
 /** The live table before R12: schema/004 with monthly partitions and row-rewriting TTL merges. */
@@ -16,6 +17,21 @@ const row = (path: string, harness: string, ts: string, ingested = "now64(3, 'UT
   `('m4', '${harness}', '${path}', 'g1', 0, '${path}', ${ts}, ${ingested}, '{"line":"${path}"}')`;
 const insert = (ch: LocalClickHouse, table: string, values: string[]) => ch.client.exec(
   `INSERT INTO tokenlayer.${table} (machine, harness, path, generation, byte_offset, content_hash, ts, ingested_at, raw) VALUES ${values.join(",")}`);
+
+/** `n` recent claude rows in one insert, so one part: big enough for a copy to be watched while it runs. */
+const bulk = (ch: LocalClickHouse, n: number) => ch.client.exec(
+  `INSERT INTO tokenlayer.session_events (machine, harness, path, generation, byte_offset, content_hash, ts, ingested_at, raw)
+   SELECT 'm4', 'claude', concat('bulk-', toString(intDiv(number, 500))), 'g1', number, toString(number),
+     now64(3, 'UTC') - INTERVAL 3 DAY + toIntervalSecond(number % 600), now64(3, 'UTC') - INTERVAL 1 HOUR, repeat('x', 200)
+   FROM numbers(${n})`);
+/** Slows the copy's read to a few thousand rows a second, so a test can act while the INSERT runs on the server. */
+const SLOW_COPY = { max_threads: 1, max_block_size: 100, max_execution_speed: 4000, timeout_before_checking_execution_speed: 0 };
+const runningCopies = async (ch: LocalClickHouse) =>
+  Number((await ch.client.exec("SELECT count() FROM system.processes WHERE startsWith(query_id, 'r12-')")).trim());
+async function untilCopyRuns(ch: LocalClickHouse, ms = 20_000) {
+  for (const end = Date.now() + ms; Date.now() < end; await Bun.sleep(50)) if (await runningCopies(ch)) return true;
+  return false;
+}
 
 describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real local ClickHouse", () => {
   let ch: LocalClickHouse;
@@ -98,4 +114,162 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
     expect(plan.remaining.map(p => p.partition).sort()).toEqual(expect.arrayContaining(["197001"]));
     expect(await tables()).toEqual([{ name: "session_events", partition_key: "toYYYYMM(ts)" }]);
   }, 40_000);
+  test("M1: copies one day of a part per INSERT, each with its own query_id", async () => {
+    await ch.stop();
+    ch = await startLocalClickHouse({ queryLog: true });
+    await ch.client.exec("CREATE DATABASE tokenlayer");
+    await ch.client.exec(legacyMonthlyDDL());
+    await applySchema(ch.client);
+    await ch.client.exec("SYSTEM STOP MERGES tokenlayer.session_events");
+    // One part whose kept rows fall on three days.
+    await insert(ch, "session_events", [
+      row("d1", "claude", "now64(3, 'UTC') - INTERVAL 3 DAY"),
+      row("d2", "codex", "now64(3, 'UTC') - INTERVAL 4 DAY"),
+      row("d3", "t3", "now64(3, 'UTC') - INTERVAL 5 DAY"),
+    ]);
+    expect((await repartitionSessionEvents(ch.client, { floorBytes: 0 })).state).toBe("done");
+    await ch.client.exec("SYSTEM FLUSH LOGS");
+    const copies = await ch.client.queryJSON<{ query_id: string; query: string }>(
+      "SELECT query_id, query FROM system.query_log WHERE type = 'QueryFinish' AND query_kind = 'Insert' AND startsWith(query_id, 'r12-')");
+    expect(copies).toHaveLength(3);
+    for (const c of copies) expect(c.query).toMatch(/toYYYYMMDD\(ts\) = \d{8}/);
+    expect(new Set(copies.map(c => c.query_id)).size).toBe(3);
+  }, 60_000);
+
+  test("M1: a watchdog kills the server-side copy when free disk falls under the floor; the archive part stays", async () => {
+    await bulk(ch, 20_000);
+    const lowWhileCopying = async () => (await runningCopies(ch)) ? 0 : 2 ** 50;
+    const report = await repartitionSessionEvents(ch.client, {
+      floorBytes: 2 ** 40, freeBytes: lowWhileCopying, extraCopySettings: SLOW_COPY, watchMs: 100,
+    });
+    expect(report.state).toBe("partial");
+    expect(report.stopped).toMatch(/floor/);
+    expect(await runningCopies(ch)).toBe(0);
+    const bulkPart = await ch.client.exec(
+      "SELECT count() FROM tokenlayer.session_events_monthly WHERE startsWith(path, 'bulk-')");
+    expect(bulkPart.trim()).toBe("20000");
+  }, 60_000);
+
+  test("S1: the pre-exchange refusal tests the largest part with the disk multiplier", async () => {
+    await bulk(ch, 20_000);
+    const [largest] = await ch.client.queryJSON<{ name: string; b: string }>(
+      "SELECT name, toString(bytes_on_disk) b FROM system.parts WHERE database = 'tokenlayer' AND table = 'session_events' AND active ORDER BY bytes_on_disk DESC LIMIT 1");
+    const floorBytes = 2 ** 40;
+    // Room for the largest part once, not for what its copy really takes.
+    const free = async () => floorBytes + Number(largest.b);
+    await expect(repartitionSessionEvents(ch.client, { floorBytes, freeBytes: free })).rejects.toThrow(new RegExp(`${largest.name}.*nothing changed`));
+    expect(await tables()).toEqual([{ name: "session_events", partition_key: "toYYYYMM(ts)" }]);
+  }, 60_000);
+
+  test("S2: refuses to start while a copy from an earlier run still runs on the server", async () => {
+    const { url } = ch.client.config;
+    const orphan = fetch(`${url}/?query_id=r12-orphan-test`, { method: "POST", body: "SELECT count() FROM numbers(1000000000000) SETTINGS max_threads = 1" })
+      .then(r => r.text()).catch(() => "");
+    try {
+      expect(await untilCopyRuns(ch)).toBe(true);
+      await expect(repartitionSessionEvents(ch.client, { floorBytes: 0 })).rejects.toThrow(/still running.*r12-orphan-test/);
+      expect(await tables()).toEqual([{ name: "session_events", partition_key: "toYYYYMM(ts)" }]);
+    } finally {
+      await ch.client.exec("KILL QUERY WHERE query_id = 'r12-orphan-test' SYNC");
+      await orphan;
+    }
+  }, 60_000);
+
+  test("S2: an abort (Ctrl-C) kills the server-side copy before returning; the archive part stays", async () => {
+    await bulk(ch, 20_000);
+    const abort = new AbortController();
+    const run = repartitionSessionEvents(ch.client, { floorBytes: 0, extraCopySettings: SLOW_COPY, signal: abort.signal });
+    // On old code nothing is ever seen running; abort anyway so the test fails on the result, not a timeout.
+    await untilCopyRuns(ch, 10_000);
+    abort.abort();
+    await expect(run).rejects.toThrow(/abort/);
+    expect(await runningCopies(ch)).toBe(0);
+    expect((await ch.client.exec(
+      "SELECT count() FROM tokenlayer.session_events_monthly WHERE startsWith(path, 'bulk-')")).trim()).toBe("20000");
+  }, 60_000);
+
+  test("S2: a rerun does not copy again a day whose rows already arrived", async () => {
+    expect((await repartitionSessionEvents(ch.client, { floorBytes: 0, maxParts: 0 })).state).toBe("partial");
+    // As if an earlier run's copy landed in full and then died before DROP PART.
+    const cols = "machine, harness, path, generation, byte_offset, content_hash, ts, ingested_at, raw";
+    await ch.client.exec(`INSERT INTO tokenlayer.session_events (${cols}) SELECT ${cols} FROM tokenlayer.session_events_monthly
+      WHERE harness = 'antigravity' OR toYYYYMM(ts) = 197001 OR toDateTime(ts) + INTERVAL 30 DAY > now() SETTINGS max_partitions_per_insert_block = 0`);
+    await ch.client.exec("SYSTEM STOP MERGES tokenlayer.session_events");
+    // 5, not 6: an insert block collapses recent-a's two versions (optimize_on_insert), as the copy's own blocks do.
+    const before = (await ch.client.exec("SELECT count() FROM tokenlayer.session_events")).trim();
+    expect(before).toBe("5");
+    expect((await repartitionSessionEvents(ch.client, { floorBytes: 0 })).state).toBe("done");
+    expect((await ch.client.exec("SELECT count() FROM tokenlayer.session_events")).trim()).toBe(before);
+    expect(await finalRows()).toEqual(expected);
+  }, 60_000);
+
+  test("S3: --dry-run sends only SELECTs in every resumable state", async () => {
+    await ch.stop();
+    ch = await startLocalClickHouse({ queryLog: true });
+    await ch.client.exec("CREATE DATABASE tokenlayer");
+    await ch.client.exec(legacyMonthlyDDL());
+    await applySchema(ch.client);
+    await insert(ch, "session_events", [row("recent-b", "codex", "now64(3, 'UTC') - INTERVAL 25 DAY")]);
+    const writesDuring = async (fn: () => Promise<unknown>) => {
+      const since = (await ch.client.exec("SELECT toString(now64(6))")).trim();
+      await fn();
+      await ch.client.exec("SYSTEM FLUSH LOGS");
+      return (await ch.client.queryJSON<{ query: string }>(
+        `SELECT query FROM system.query_log WHERE type = 'QueryStart' AND event_time_microseconds >= toDateTime64('${since}', 6)
+         AND query_kind != 'Select' AND NOT startsWith(query, 'SYSTEM FLUSH LOGS') AND NOT startsWith(query, 'SELECT toString(now64')`)).map(r => r.query);
+    };
+    const dry = () => repartitionSessionEvents(ch.client, { floorBytes: 0, dryRun: true });
+    // Fresh monthly table.
+    expect(await writesDuring(dry)).toEqual([]);
+    // Crashed after EXCHANGE, before RENAME: the monthly table is session_events_daily_next.
+    const ddl = readFileSync(new URL("../../schema/004_session_events.sql", import.meta.url), "utf8")
+      .replace("CREATE TABLE IF NOT EXISTS tokenlayer.session_events", "CREATE TABLE tokenlayer.session_events_daily_next");
+    await ch.client.exec(ddl);
+    await ch.client.exec("EXCHANGE TABLES tokenlayer.session_events AND tokenlayer.session_events_daily_next");
+    const exchanged = await tables();
+    expect(await writesDuring(dry)).toEqual([]);
+    expect(await tables()).toEqual(exchanged);
+    // Resumed with the archive in place.
+    await ch.client.exec("RENAME TABLE tokenlayer.session_events_daily_next TO tokenlayer.session_events_monthly");
+    expect(await writesDuring(dry)).toEqual([]);
+  }, 60_000);
+
+  test("S4: the back-out statements put the monthly table back live with its merges running", async () => {
+    expect((await repartitionSessionEvents(ch.client, { floorBytes: 0, maxParts: 1 })).state).toBe("partial");
+    // The archive's merges are stopped during the window, so a plain EXCHANGE back would leave them stopped.
+    await expect(ch.client.exec("OPTIMIZE TABLE tokenlayer.session_events_monthly FINAL")).rejects.toThrow();
+    for (const sql of repartition.BACK_OUT_SQL) await ch.client.exec(sql);
+    expect((await tables()).find(t => t.name === "session_events")?.partition_key).toBe("toYYYYMM(ts)");
+    await insert(ch, "session_events", [row("after-back-out", "claude", "now64(3, 'UTC') - INTERVAL 2 DAY")]);
+    await ch.client.exec("OPTIMIZE TABLE tokenlayer.session_events FINAL");
+  }, 60_000);
+
+  test("N5: a stored archive column the daily table lacks stops the copy instead of being dropped", async () => {
+    expect((await repartitionSessionEvents(ch.client, { floorBytes: 0, maxParts: 0 })).state).toBe("partial");
+    await ch.client.exec("ALTER TABLE tokenlayer.session_events_monthly ADD COLUMN extra_col String DEFAULT 'x'");
+    await expect(repartitionSessionEvents(ch.client, { floorBytes: 0 })).rejects.toThrow(/extra_col/);
+  }, 60_000);
+  test("N1: an insert that started before the exchange keeps the archive until it ends", async () => {
+    const { url } = ch.client.config;
+    // Resolved the monthly table before the run; still writing (slowly) when the copy finishes.
+    const writer = fetch(`${url}/?query_id=old-ship-insert`, { method: "POST", body:
+      `INSERT INTO tokenlayer.session_events (machine, harness, path, generation, byte_offset, content_hash, ts, raw)
+       SELECT 'm4', 'claude', 'late', 'g1', number, toString(number), now64(3, 'UTC') - INTERVAL 1 DAY, 'x' FROM numbers(1000000000)
+       SETTINGS max_threads = 1, max_block_size = 100, max_execution_speed = 1000, timeout_before_checking_execution_speed = 0` })
+      .then(r => r.text()).catch(() => "");
+    try {
+      for (const end = Date.now() + 10_000; Date.now() < end; await Bun.sleep(50)) {
+        if ((await ch.client.exec("SELECT count() FROM system.processes WHERE query_id = 'old-ship-insert'")).trim() === "1") break;
+      }
+      await Bun.sleep(1100);
+      const report = await repartitionSessionEvents(ch.client, { floorBytes: 0 });
+      expect(report.state).toBe("partial");
+      expect(report.stopped).toMatch(/old-ship-insert/);
+      expect((await tables()).map(t => t.name)).toEqual(["session_events", "session_events_monthly"]);
+    } finally {
+      await ch.client.exec("KILL QUERY WHERE query_id = 'old-ship-insert' SYNC");
+      await writer;
+    }
+    expect((await repartitionSessionEvents(ch.client, { floorBytes: 0 })).state).toBe("done");
+  }, 60_000);
 });
