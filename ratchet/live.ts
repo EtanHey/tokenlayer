@@ -6,12 +6,18 @@ import { loadEnvFiles } from '../src/lib/env';
 import { unreconciledSQL } from '../src/jev/unreconciled';
 import { LIVE_QUERY_SQL, liveRatioSQL, shipperLagSQL } from './live-sql';
 import { readUsageAge } from './usage-age';
+import { burnSQL, burnVerdict, parsePoints, readTarget } from './burn';
 const env = loadEnvFiles(['~/.config/tokenlayer/hub.env', '~/.config/tokenlayer/clickhouse.env']);
 const ch = ClickHouse.fromEnv(env);
 const id = process.argv[2];
 const scalar = async (sql: string) => Number((await ch.exec(sql)).trim());
 let value: number;
-if (id === 'm1_disk_free_gb') {
+if (id === 'claude_burn_2h') {
+  // Judged against orc's target, not the row's ceiling: one JSON line that live-schedule reads.
+  const target = readTarget(), nowS = Math.floor(Date.now() / 1000);
+  console.log(JSON.stringify(burnVerdict(parsePoints(await ch.exec(burnSQL(nowS))), target, nowS)));
+  process.exit(0);
+} else if (id === 'm1_disk_free_gb') {
   const disk = statfsSync(homedir()); value = disk.bavail * disk.bsize / 1e9;
 } else if (id === 'usage_json_age_s') {
   const age = readUsageAge();
