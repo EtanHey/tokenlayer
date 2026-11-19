@@ -113,3 +113,22 @@ test("CI2 a failing suite's report is never reused for the integration row", () 
   expect(runs).toHaveLength(2);
   expect(runs[1]).toBe("test tests/integration/a.it.test.ts tests/archaeology/b.it.test.ts");
 });
+
+test("CI2 a row past 75% of its timeout prints a GitHub warning, and its value is unchanged", () => {
+  mkdirSync(".local", { recursive: true });
+  const dir = realpathSync(mkdtempSync(".local/run-rows-slow-")), bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "bun"), "#!/bin/sh\nsleep 2.4\nprintf '1 pass\\n' >&2\n");
+  chmodSync(join(bin, "bun"), 0o755);
+  const rows = [
+    { id: "unit-tests-pass", runner: "ci", direction: "pass", command: "bun test", timeout_s: 3 },
+    { id: "typecheck-pass", runner: "ci", direction: "pass", command: "true", timeout_s: 3 },
+  ];
+  const script = `import { runRows } from ${JSON.stringify(resolve("ratchet/run-rows.mjs"))};
+const values = runRows(${JSON.stringify(rows)}, ${JSON.stringify(dir)}); console.log(JSON.stringify(values));`;
+  const run = Bun.spawnSync(["node", "--input-type=module", "-e", script], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+  const out = run.stdout.toString().trim().split("\n");
+  expect(JSON.parse(out.pop()!)).toEqual({ "unit-tests-pass": true, "typecheck-pass": true });
+  expect(out.filter((l) => l.startsWith("::warning"))).toHaveLength(1);
+  expect(out.find((l) => l.startsWith("::warning"))).toMatch(/^::warning title=Ratchet timeout headroom::unit-tests-pass took \d+\.\ds of its 3s timeout_s/);
+});
