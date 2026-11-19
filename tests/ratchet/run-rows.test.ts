@@ -26,6 +26,7 @@ console.log(JSON.stringify(runRows(${JSON.stringify(rows)}, ${JSON.stringify(tre
 }
 
 test("CI1 pass and count rows share one Bun suite run per source tree", () => {
+  mkdirSync(".local", { recursive: true });
   const before = new Set(readdirSync(".local").filter((n) => n.startsWith("unit-")));
   const { run, runs, values, local } = fixture(0);
   expect(run.exitCode, run.stderr.toString()).toBe(0);
