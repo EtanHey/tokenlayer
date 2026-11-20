@@ -33,7 +33,7 @@ export type LocalClickHouseOptions = {
  * overlaps earlier work. Spares are kept for the 3 most recently used option sets; older ones are stopped.
  * Off unless enabled, so production callers (src/archaeology/validation.ts) never leave a spare running.
  */
-type Spare = { proc: ReturnType<typeof Bun.spawn>; dir: string; key: string };
+type Spare = { proc: ReturnType<typeof Bun.spawn>; dir: string; key: string; cancelled?: boolean };
 const KEPT_OPTION_SETS = 3;
 const prewarm = {
   depth: 0,
@@ -58,6 +58,20 @@ export function prewarmLocalClickHouse(depth: number): number {
   if (prewarm.depth && !exitHooked) {
     exitHooked = true;
     process.on("exit", () => { stopPrewarmedLocalClickHouse(); });
+    let terminating = false;
+    for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]] as const) {
+      process.on(signal, () => {
+        if (terminating) return;
+        terminating = true;
+        prewarm.depth = 0;
+        // Exit remains bounded even if a child never acknowledges SIGKILL.
+        const deadline = setTimeout(() => process.exit(code), 2000);
+        void drainPrewarmedLocalClickHouse().catch(() => {}).finally(() => {
+          clearTimeout(deadline);
+          process.exit(code);
+        });
+      });
+    }
   }
   return previous;
 }
@@ -72,8 +86,27 @@ export function stopPrewarmedLocalClickHouse(key?: string): number {
   for (const spare of spares) {
     prewarm.starting.delete(spare);
     try { spare.proc.kill("SIGKILL"); } catch {}
-    rmSync(spare.dir, { recursive: true, force: true });
+    try { rmSync(spare.dir, { recursive: true, force: true }); } catch {}
   }
+  return spares.length;
+}
+
+/** Confirm owned children have exited before removing their directories (normal shutdown/eviction).
+ * The synchronous stop above is only the best-effort process-exit fallback. SIGKILL of the
+ * runner cannot be caught and requires a supervisor; no cleanup guarantee is made for it.
+ */
+export async function drainPrewarmedLocalClickHouse(key?: string): Promise<number> {
+  const spares = [...prewarm.starting].filter(spare => key === undefined || spare.key === key);
+  if (key === undefined) { prewarm.ready.clear(); prewarm.asked.clear(); } else prewarm.ready.delete(key);
+  const results = await Promise.allSettled(spares.map(async spare => {
+    spare.cancelled = true; // prevent a cancelled startup from spawning a replacement
+    spare.proc.kill("SIGKILL");
+    await spare.proc.exited;
+    prewarm.starting.delete(spare);
+    rmSync(spare.dir, { recursive: true, force: true });
+  }));
+  const failures = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+  if (failures.length) throw new AggregateError(failures.map(r => r.reason), "pre-warm shutdown failed");
   return spares.length;
 }
 
@@ -90,7 +123,7 @@ export async function startLocalClickHouse(options: LocalClickHouseOptions = {},
   if (asked >= 2) {
     prewarm.ready.delete(key);
     prewarm.ready.set(key, queue); // most recently used
-    for (const old of [...prewarm.ready.keys()].slice(0, -KEPT_OPTION_SETS)) stopPrewarmedLocalClickHouse(old);
+    for (const old of [...prewarm.ready.keys()].slice(0, -KEPT_OPTION_SETS)) await drainPrewarmedLocalClickHouse(old);
     while (queue.length < prewarm.depth) {
       const next = spawnPrepared(options, freePorts, key);
       next.catch(() => {}); // a spare that fails to start is replaced by a cold start when taken
@@ -170,7 +203,7 @@ async function spawnLocalClickHouse(options: LocalClickHouseOptions, allocatePor
         const exitedEarly = proc.exitCode !== null;
         proc.kill("SIGKILL");
         await proc.exited;
-        if (spare && !prewarm.starting.delete(spare)) throw new Error("pre-warmed local clickhouse was stopped before use");
+        if (spare && (spare.cancelled || !prewarm.starting.delete(spare))) throw new Error("pre-warmed local clickhouse was stopped before use");
         if (exitedEarly && attempt < 3) break;
         let tail = "server.err.log unavailable";
         try {
