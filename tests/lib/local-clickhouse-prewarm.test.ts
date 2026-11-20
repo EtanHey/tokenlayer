@@ -105,3 +105,52 @@ test('a process that exits with spares still starting leaves no server or direct
     .filter(dir => dir.startsWith(root + '/') && !before.has(dir.slice(root.length + 1)));
   expect(left).toEqual([]);
 }, 60_000);
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) for (const state of ['ready', 'preparing'] as const) {
+  test(`real pool ${state} spares disappear after runner ${signal}`, async () => {
+    stopPrewarmedLocalClickHouse();
+    const before = serverDirs();
+    const module = join(import.meta.dir, '../../src/lib/local-clickhouse.ts');
+    const child = Bun.spawn([process.execPath, '-e', `
+      const spawn = Bun.spawn;
+      let spawned = 0, prepared = 0;
+      const spareURLs = new Set();
+      Bun.spawn = (...args) => {
+        const proc = spawn(...args);
+        if (++spawned === 2 || spawned === 3) {
+          spareURLs.add('http://127.0.0.1:' + args[0].find(a => a.startsWith('--http_port=')).slice(12));
+          console.log('spare:' + proc.pid);
+        }
+        return proc;
+      };
+      const { prewarmLocalClickHouse, startLocalClickHouse } = await import(${JSON.stringify(module)});
+      prewarmLocalClickHouse(2);
+      const prepare = async client => {
+        ++prepared;
+        if (${JSON.stringify(state)} === 'preparing' && spareURLs.has(client.config.url)) await new Promise(() => {});
+      };
+      await (await startLocalClickHouse({ prepare })).stop();
+      await (await startLocalClickHouse({ prepare })).stop();
+      while (prepared < 4) await Bun.sleep(10);
+      console.log('armed');
+      setInterval(() => {}, 1000);
+    `], { env: process.env, stdout: 'pipe', stderr: 'pipe' });
+    let output = '';
+    const reader = child.stdout.getReader();
+    try {
+      while (!output.includes('armed')) {
+        const r = await reader.read();
+        if (r.done) throw Error(output + await new Response(child.stderr).text());
+        output += new TextDecoder().decode(r.value);
+      }
+      const pids = [...output.matchAll(/spare:(\d+)/g)].map(m => Number(m[1]));
+      expect(pids).toHaveLength(2);
+      child.kill(signal);
+      expect(await child.exited).toBe(signal === 'SIGINT' ? 130 : 143);
+      for (const pid of pids) {
+        expect(() => process.kill(pid, 0)).toThrow();
+      }
+      expect(serverDirs()).toEqual(before);
+    } finally { child.kill('SIGKILL'); await child.exited; }
+  }, 60000);
+}
