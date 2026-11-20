@@ -28,10 +28,9 @@ export function cursorIdentity(root: string, path: string, workspaces = new Map<
   const match = /^([^/]+)\/agent-transcripts\/([^/]+)\/([^/]+)\.jsonl$/.exec(relative(root, path));
   if (!match || match[2] !== match[3]) return null;
   const encoded = match[1];
-  // Only recover a conventional repository root; nested paths need the registry.
-  const conventional = /^Users-([^-]+)-Gits-(.+)$/.exec(encoded);
-  const [, USER, REPO] = conventional ?? [];
-  const cwd = workspaces.has(encoded) ? workspaces.get(encoded)! : conventional ? `/Users/${USER}/Gits/${REPO}` : "";
+  // The encoding collapses slash, dot and underscore to hyphens: even an
+  // apparently conventional repository root cannot be decoded unambiguously.
+  const cwd = workspaces.get(encoded) ?? "";
   return { sessionId: match[2], cwd };
 }
 

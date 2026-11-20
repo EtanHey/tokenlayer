@@ -169,7 +169,16 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
         if (opts.files && !opts.files.includes(physical)) continue;
         const agy = isAntigravity(root.kind);
         const cursor = root.kind === "cursor";
-        const cursorMeta = cursor ? cursorIdentity(root.dir, physical, cursorPaths ??= cursorWorkspaces(opts.cursorT3StatePath)) : null;
+        if (cursor && !cursorPaths) {
+          try { cursorPaths = cursorWorkspaces(opts.cursorT3StatePath); }
+          catch {
+            // Registry metadata is optional. Keep shipping all sources with
+            // unknown Cursor attribution, and retry the registry next pass.
+            cursorPaths = new Map();
+            opts.log?.("warning: Cursor workspace registry unavailable; cwd/project unknown for this pass");
+          }
+        }
+        const cursorMeta = cursor ? cursorIdentity(root.dir, physical, cursorPaths) : null;
         if (cursor && !cursorMeta) continue;
         const kiro = root.kind === "kiro";
         const session = kiro ? kiroSession(root.dir, physical) : agy ? antigravitySession(root.dir, physical, root.kind) : "";

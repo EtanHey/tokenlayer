@@ -8,10 +8,11 @@ Workspace resolution first matches the encoded directory against T3 project
 `workspace_root` and thread `worktreePath` metadata from
 `~/.t3/userdata/statev2.sqlite` (override `TOKENLAYER_CURSOR_T3_STATE`). The DB is
 opened read-only and no message text is selected. Duplicate encodings remain
-unknown. Without a registry match, conventional `Users-<user>-Gits-<repo>` roots
-resolve to `/Users/${USER}/Gits/${REPO}`; this fallback cannot disambiguate nested
-folders from hyphens. Other layouts retain empty cwd/project rather than invent
-paths. The registry is refreshed each ship pass.
+unknown. Without an exact registry match, cwd/project remain empty: the lossy
+encoding cannot distinguish nested folders, hyphens, dots or underscores. Registry
+read/query failures emit a warning and leave Cursor attribution unknown for that
+pass; Cursor and the other sources continue shipping. The registry is refreshed
+each ship pass.
 
 The parser inspects only top-level role and optional timestamp. Native records
 observed on 20 November contain only role and message: model and all five token

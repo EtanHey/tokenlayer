@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { expect } from "bun:test";
 import { test } from "../support/clickhouse-gate";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -26,7 +27,11 @@ test("Cursor native rows retain SQL NULL after legacy type upgrade and repeat sc
     mkdirSync(folder, { recursive: true });
     const raw = readFileSync(join(import.meta.dir, "../fixtures/cursor/native.jsonl"), "utf8");
     writeFileSync(join(folder, "agent-fixture.jsonl"), raw);
-    const opts = { machine: "fixture", roots: [{ kind: "cursor" as const, dir: root }], clickhouse: ch.client,
+    const registry = join(dir, "t3.sqlite"), db = new Database(registry);
+    db.run("CREATE TABLE projection_projects (workspace_root TEXT)");
+    db.run("INSERT INTO projection_projects VALUES (?)", [`/Users/${USER}/Gits/dialogkit`]);
+    db.close();
+    const opts = { cursorT3StatePath: registry, machine: "fixture", roots: [{ kind: "cursor" as const, dir: root }], clickhouse: ch.client,
       statePath: join(dir, "state.json"), rateBytesPerSec: 0 };
     expect((await shipOnce(opts)).lines).toBe(2);
     await applySchema(ch.client);
