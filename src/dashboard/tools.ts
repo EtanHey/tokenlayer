@@ -131,6 +131,8 @@ export function toolRows(i: {
     observed_at: null, use: null, mark: "UNKNOWN", why: "hub readback unavailable" }] : i.claude.map((c) => {
     const pct = num(signal(c.quota, "anthropic-ratelimit-unified-7d-utilization"));
     const observed_at = c.quota?.observed_at ?? null, old = now - ts(observed_at);
+    const resets_at = resetIso(signal(c.quota, "anthropic-ratelimit-unified-7d-reset"));
+    const expired = resets_at !== null && ts(resets_at) <= now;
     const fable = num(signal(c.model_quotas?.["claude-fable-5-2"], "anthropic-ratelimit-unified-7d_oi-utilization"));
     const u = i.claudeUse && (i.claudeUse.find((r) => r.credential === labelHash(c.auth_index)) ??
       { r1: 0, r7: 0, t1: 0, t7: 0 });
@@ -140,11 +142,12 @@ export function toolRows(i: {
       tool: "claude",
       pct: pct === null ? null : pct * 100,
       window: pct === null ? null : "7d",
-      resets_at: resetIso(signal(c.quota, "anthropic-ratelimit-unified-7d-reset")),
+      resets_at,
       observed_at,
       use: u ? { "24h": line(u.r1, u.t1), "7d": line(u.r7, u.t7) } : null,
-      mark: pct === null ? "UNKNOWN" : !(old <= CLAUDE_STALE_MS) ? "STALE" : "OK",
+      mark: pct === null ? "UNKNOWN" : expired || !(old <= CLAUDE_STALE_MS) ? "STALE" : "OK",
       why: pct === null ? "no quota reading from the hub"
+        : expired ? "weekly reset has passed"
         : !(old <= CLAUDE_STALE_MS) ? (Number.isFinite(old) ? `hub reading ${age(old)} old` : "hub reading time unknown") : null,
       note: fable === null ? undefined : `Fable ${Math.round(fable * 100)}% of its allowance`,
     };
@@ -169,15 +172,17 @@ export function toolRows(i: {
     }
     const pct = num(v.pct), observed_at = typeof v.observed_at === "string" ? v.observed_at : null;
     const old = now - ts(observed_at);
+    const resets_at = resetIso(v.resets_at);
     // An old file already explains an old reading; say it once.
     const own = pct === null ? (v.last_error ? String(v.last_error) : "no reading")
       : fileWhy ? null
+      : resets_at !== null && ts(resets_at) <= now ? "reset has passed"
       : v.stale === true || !(old <= VENDOR_STALE_MS)
         ? (Number.isFinite(old) ? `reading ${age(old)} old` : "reading time unknown") : null;
     const why = [own, fileWhy].filter(Boolean).join("; ") || null;
     rows.push({
       name, tool: key, pct, window: pct === null ? null : (v.window ?? null),
-      resets_at: pct === null ? null : resetIso(v.resets_at), observed_at,
+      resets_at: pct === null ? null : resets_at, observed_at,
       use: v.use && (v.use["24h"] || v.use["7d"]) ? { "24h": useLine(v.use["24h"]), "7d": useLine(v.use["7d"]) } : null,
       mark: pct === null ? "UNKNOWN" : why ? "STALE" : "OK",
       why,
