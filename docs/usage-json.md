@@ -107,18 +107,22 @@ time rather than poll time and is an estimate, not a promised exhaustion time.
 Consumers must check `stale` and observation ages. An outage preserves validated
 published fields and marks the snapshot stale; it does not invent observations.
 
-## Usage bundle budget (PR #183 Round 2)
+## Usage bundle budget (successor to #183)
 
-With Bun 1.4.3 and the ratchet's unminified `target: bun` build, exact parent
-#174 (`e3e4a7c`) is 27,849 B and reviewed #183 (`87972dd`) is 31,905 B.
-The original 3,200 B allowance gives a 31,049 B limit: 856 B over.
-The native dotenv parser, native JSON response decoding and shared vendor-root
-regex reduce the corrected candidate to 31,280 B (625 B smaller; +3,431 B over
-parent). It still exceeds the original limit by 231 B. Further removal would
-compromise the retained logical-crediting/history bounds or require a wider
-rewrite of the existing writer, so this PR explicitly sets growth=0.125 and
-allowance=3456. The exact-parent limit becomes 31,305 B, leaving 25 B.
-This is a disclosed feature allowance, not a passing claim against a stale main
-baseline. Stacked CI still measures against `origin/main`; parents must land first.
-#203 retains its separate tighten-back to growth=0.01 / allowance=2048; preserve
-that value when the stack is merged. No query read/memory/time cap is raised.
+Bun 1.4.3, unminified `target: bun`, against main `38747f4`:
+main is 27,849 B; this successor is 31,251 B, a 3,402 B increase.
+Main's growth=0.1 / allowance=2560 policy would permit 30,409 B,
+so the remaining gap is 842 B. This PR discloses growth=0.125 /
+allowance=3456, retaining #183's final allowance and giving a 31,305 B
+limit with 54 B headroom against today's main.
+
+Trimming the reviewed 31,905 B reader with native dotenv parsing,
+native JSON decoding, shared vendor-root matching and a shared unavailable
+projection saves 654 B. A generated aggregation/window projection was tried
+and was larger. The remaining query handles exact replay, Kiro revisions,
+canonical Codex totals and first observations before both window cuts;
+removing those parts would break the refresh fixture. Getting below the
+remaining allowance would require a broader writer rewrite, rather than
+removing a redundant dependency from this reader. No query cap is raised.
+The separate #203 tighten-back remains lead-owned; remeasure it after this
+successor rather than treating these feature measurements as its proof.

@@ -11,13 +11,25 @@ const VENDORS = ['antigravity', 'kiro', 'codex'], source = 'clickhouse:session_e
 // Canonical cumulative usage, so JSON key order cannot re-credit a refresh.
 const totalSql = `toString(mapSort(JSONExtract(raw,'payload','info','total_token_usage','Map(String,UInt64)')))`;
 // Recent replay/revision dedup plus capped history for active Codex paths (both window cuts).
-export const useSql = (now: number) => `SELECT v,uniqExactIf(p,t>=d) s1,uniqExact(p) s7,countIf(r AND t>=d) r1,countIf(r) r7,
-sumIf(x.2,t>=d) i1,sum(x.2) i7,sumIf(x.3,t>=d) o1,sum(x.3) o7,sumIf(x.4,t>=d) c1,sum(x.4) c7
-FROM (SELECT multiIf(path LIKE '%/.kiro/%','kiro',path LIKE '%antigravity%','antigravity',path LIKE '%/.codex%','codex','') v,(machine,path) p,
-argMax((ts,input_tokens,output_tokens,credits,type IN ('PLANNER_RESPONSE','kiro:assistant') OR role='token_count'),ingested_at) x,
-x.1 t,x.5 r,fromUnixTimestamp64Milli(${Math.trunc(now)})-INTERVAL 1 DAY d FROM tokenlayer.session_events
+export const useSql = (now: number) => `WITH fromUnixTimestamp64Milli(${Math.trunc(now)})-INTERVAL 1 DAY AS d,
+recent AS (SELECT if(match(path,'/[.](gemini/antigravity-cli/brain|t3/userdata/providers/antigravity)/'),
+'antigravity',extract(path,'/[.](kiro|codex)/sessions/')) v,(machine,path) p,
+if(message_id='',content_hash,message_id) h,
+argMax((ts,input_tokens,output_tokens,credits,type IN ('PLANNER_RESPONSE','kiro:assistant') OR
+(type='event_msg' AND role='token_count' AND JSONType(raw,'payload','info','last_token_usage')='Object'),${totalSql}),ingested_at) x,
+x.1 t,x.6 total FROM tokenlayer.session_events
 WHERE harness IN ('t3','codex','antigravity','kiro') AND ts>=d-INTERVAL 6 DAY AND ts<=d+INTERVAL 1 DAY AND v!=''
-GROUP BY v,p,if(message_id='',content_hash,message_id)) GROUP BY v SETTINGS max_memory_usage=2e9,max_execution_time=20`;
+GROUP BY v,p,h),
+firsts AS (SELECT (machine,path) p,${totalSql} total,min((ts,content_hash)) first
+FROM tokenlayer.session_events WHERE (machine,path) IN (SELECT p FROM recent WHERE v='codex')
+AND harness IN ('t3','codex') AND type='event_msg' AND role='token_count' AND ts<=d+INTERVAL 1 DAY
+AND total!='{}' GROUP BY p,total)
+SELECT v,uniqExactIf(p,t>=d) s1,uniqExact(p) s7,countIf(r AND t>=d) r1,countIf(r) r7,
+sumIf(i,t>=d) i1,sum(i) i7,sumIf(o,t>=d) o1,sum(o) o7,sumIf(x.4,t>=d) c1,sum(x.4) c7
+FROM (SELECT *,x.5 AND (v!='codex' OR (total!='{}' AND (t,h)=first)) r,
+if(v='codex' AND NOT r,0,x.2) i,if(v='codex' AND NOT r,0,x.3) o
+FROM recent LEFT JOIN firsts USING (p,total)) GROUP BY v
+SETTINGS max_rows_to_read=20000000,max_bytes_to_read=8e9,read_overflow_mode='throw',max_memory_usage=2e9,max_execution_time=20`;
 
 // Kiro rows carry credits, never tokens; the others carry tokens, never credits.
 export function useBlocks(rows: Record<string, any>[], observed_at: string | null): Record<string, Use> {
