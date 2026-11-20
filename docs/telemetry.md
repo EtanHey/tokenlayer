@@ -199,8 +199,11 @@ LIMIT 50
   (ClickHouse refuses with code 452).
 - GROUP BY and ORDER BY spill to disk past 4 GiB, with at most 8 GiB of temporary disk per query. Like the memory cap, a caller may lower the temp-disk limit but not lift it or set 0 (unlimited).
 
-Ship and drain write as `tokenlayer_writer` (`CLICKHOUSE_USER` in their launchd plists, with the same password), which
-stays uncapped. Before the cap, one unbounded read of the context view reached the server's 28.8 GiB limit on the M1.
+Ship and drain write as `tokenlayer_writer`, which stays uncapped. It has its own password in
+`~/.config/tokenlayer/clickhouse-writer.env` (mode 600, loaded last by their plists), so the reader's password cannot
+lift the cap. Its hash is rendered into `clickhouse.xml`; `scripts/deploy/setup.sh config` applies a template or
+password change on the M1 by `SYSTEM RELOAD CONFIG`, without restarting ClickHouse, and keeps the old file in
+`~/.config/tokenlayer/backups/`. Before the cap, one unbounded read of the context view reached the server's 28.8 GiB limit on the M1.
 The same read now fails in about 2 s with `MEMORY_LIMIT_EXCEEDED`. The reader profile also sets
 `optimize_read_in_window_order=1`, so the context view's per-file windows read in table order instead of sorting
 the whole table.
