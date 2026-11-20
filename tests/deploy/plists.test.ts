@@ -23,8 +23,15 @@ for (const machine of ['m1', 'm4']) test(`${machine}: every rendered plist avoid
     if (plist.Label === 'com.tokenlayer.ship') expect(plist.EnvironmentVariables.TOKENLAYER_MACHINE).toBe(machine);
     const agent = plist.Label.replace('com.tokenlayer.', '') as keyof typeof names;
     if (agent in names) expect(basename(plist.ProgramArguments[0])).toBe(names[agent]);
-    if (['com.tokenlayer.usage', 'com.tokenlayer.steer'].includes(plist.Label)) expect(plist.ProgramArguments[0]).toBe('/opt/homebrew/bin/bun');
+    if (['com.tokenlayer.usage', 'com.tokenlayer.steer', 'com.tokenlayer.jev'].includes(plist.Label)) expect(plist.ProgramArguments[0]).toBe('/opt/homebrew/bin/bun');
   }
+});
+test('jev: bundled one-shot every minute reads credentials from env files only', () => {
+  const plist = parse(render(readFileSync('launchd/com.tokenlayer.jev.plist.template', 'utf8'), values));
+  expect(plist.ProgramArguments).toEqual(['/opt/homebrew/bin/bun', `${home}/.config/tokenlayer/bin/jev.js`]);
+  expect([plist.StartInterval, plist.KeepAlive, plist.RunAtLoad]).toEqual([60, undefined, true]);
+  expect(plist.EnvironmentVariables).toEqual({ TOKENLAYER_ENV_FILES: `${home}/.config/tokenlayer/ship.env:${home}/.config/tokenlayer/clickhouse.env:${home}/.config/tokenlayer/jev.env` });
+  expect(plist.StandardOutPath).toBe(`${home}/Library/Logs/tokenlayer/jev.log`);
 });
 const names = { ship: 'tokenlayer session uploader', drain: 'tokenlayer usage recorder', clickhouse: 'tokenlayer database' };
 for (const agent of ['ship', 'drain', 'clickhouse'] as const) test(`${agent}: named executable preserves launch arguments and settings`, () => {
