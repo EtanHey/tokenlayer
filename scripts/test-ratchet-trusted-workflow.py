@@ -6,6 +6,9 @@ from tempfile import TemporaryDirectory
 import textwrap
 
 workflow = Path('.github/workflows/ci.yml').read_text()
+# Candidate correctness is still required by the base-owned pass row. Avoid a
+# third full-suite execution before the two ratchet measurements.
+assert '      - run: bun test\n' not in workflow
 step = textwrap.dedent(workflow.split('      - name: Ratchet (trusted base versus this PR)\n', 1)[1]
                        .split('        run: |\n', 1)[1].split('  raise-floor:', 1)[0])
 

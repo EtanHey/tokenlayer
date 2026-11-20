@@ -41,7 +41,8 @@ jobs:
           echo "$HOME/.cache/tokenlayer-ci" >> "$GITHUB_PATH"
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bun test
+      # The trusted ratchet runs and checks the full suite on both main and this PR.
+      # A separate candidate run repeats the same coverage (~200-240 s on Linux).
       - name: Full shipper property suite (300 trials)
         timeout-minutes: 10
         run: bun run test:property

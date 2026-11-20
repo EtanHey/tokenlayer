@@ -3,19 +3,20 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { join, resolve } from "node:path";
 
 // A fake `bun` on PATH counts suite runs and prints a fixed Bun summary.
-function fixture(status: number) {
+function fixture(status: number, timeout = false) {
   mkdirSync(".local", { recursive: true });
   const dir = realpathSync(mkdtempSync(".local/run-rows-")), bin = join(dir, "bin"), tree = join(dir, "tree");
   mkdirSync(bin);
   mkdirSync(tree);
   writeFileSync(join(bin, "bun"), `#!/bin/sh
 echo "$*" >> '${join(dir, "runs")}'
+${timeout ? "sleep 2" : ""}
 printf '7 pass\\n0 fail\\n' >&2
 exit ${status}
 `);
   chmodSync(join(bin, "bun"), 0o755);
   const rows = [
-    { id: "unit-tests-pass", runner: "ci", direction: "pass", command: "bun test", timeout_s: 30 },
+    { id: "unit-tests-pass", runner: "ci", direction: "pass", command: "bun test", timeout_s: timeout ? 1 : 30 },
     { id: "unit-tests-count", runner: "ci", direction: "min", command: "node ratchet/measure.mjs unit", timeout_s: 30 },
   ];
   const script = `import { runRows } from ${JSON.stringify(resolve("ratchet/run-rows.mjs"))};
@@ -36,11 +37,19 @@ test("CI1 pass and count rows share one Bun suite run per source tree", () => {
   expect(readdirSync(local).filter((n) => n.startsWith("unit-") && !before.has(n))).toEqual([]);
 });
 
-test("CI1 a failing suite still fails both rows and is never reused", () => {
+test("CI4 a failing suite fails both rows without rerunning it", () => {
   const { run, runs, values } = fixture(1);
   expect(run.exitCode, run.stderr.toString()).toBe(0);
   expect(values).toEqual({ "unit-tests-pass": null, "unit-tests-count": null });
-  expect(runs.map((r) => r.split(" ")[0])).toEqual(["test", "test"]);
+  expect(runs.map((r) => r.split(" ")[0])).toEqual(["test"]);
+});
+
+test("CI4 a timed-out suite leaves counts missing without a second suite", () => {
+  const { run, runs, values } = fixture(0, true);
+  expect(run.exitCode, run.stderr.toString()).toBe(0);
+  expect(values).toEqual({ "unit-tests-pass": null, "unit-tests-count": null });
+  expect(runs).toHaveLength(1);
+  expect(run.stderr.toString()).toContain("suite failed; no retry");
 });
 
 // A fake `bun` that writes a JUnit report when asked, so the integration row can be counted from the pass row's run.
@@ -106,12 +115,11 @@ test("CI2 a report missing an integration file falls back to running the integra
   expect(values).toEqual({ "unit-tests-pass": true, "integration-tests-ran": 9 });
 });
 
-test("CI2 a failing suite's report is never reused for the integration row", () => {
+test("CI4 a failing suite fails the integration row without rerunning the subset", () => {
   const xml = report(suite("tests/integration/a.it.test.ts", pass("tests/integration/a.it.test.ts")), suite("tests/archaeology/b.it.test.ts", pass("tests/archaeology/b.it.test.ts")));
   const { runs, values } = junitFixture({ status: 1, report: xml });
   expect(values).toEqual({ "unit-tests-pass": null, "integration-tests-ran": null });
-  expect(runs).toHaveLength(2);
-  expect(runs[1]).toBe("test tests/integration/a.it.test.ts tests/archaeology/b.it.test.ts");
+  expect(runs).toHaveLength(1);
 });
 
 test("CI2 a row past 75% of its timeout prints a GitHub warning, and its value is unchanged", () => {
