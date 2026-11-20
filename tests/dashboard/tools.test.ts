@@ -195,7 +195,7 @@ test('display-time expiry marks vendor and Claude readings stale at the reset bo
   fresh.vendors.codex.resets_at = iso(NOW);
   const c = observed('a', 0.85, 0.5);
   c.quota!.observed_at = iso(NOW);
-  c.quota!.signals['anthropic-ratelimit-unified-7d-reset'] = String(NOW / 1000);
+  c.quota!.signals!['anthropic-ratelimit-unified-7d-reset'] = String(NOW / 1000);
   const t = byTool(toolRows({ m4: await reader({ exitCode: 0, stdout: JSON.stringify(fresh), stderr: '' }).read(),
     claude: [c], claudeUse, now: NOW }));
   for (const name of ['Codex', 'Claude · a']) {
