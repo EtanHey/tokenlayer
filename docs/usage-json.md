@@ -6,7 +6,7 @@ never enters the M4 environment or filesystem. Remote stderr and exception text
 are discarded. The remote shell builtin printf pipes the Authorization header to
 curl with `-H @-`; the key never appears in curl argv and no header file is created. The only published error is `hub unavailable`.
 
-`~/.config/tokenlayer/usage.json` contains Claude OAuth accounts only. Labels are
+`~/.config/tokenlayer/usage.json` contains Claude OAuth accounts plus a `vendors` block (below). Labels are
 `labelHash(auth_index || id)` from `src/lib/hash.ts`: 16 hex characters using the
 shared `tokenlayer:v1:` domain prefix. The hub credential auth_index is preferred over
 the filename (which may contain an email). Labels equal steer credentials_snap and
@@ -30,6 +30,20 @@ On failure, previous accounts and timestamp survive with stale=true and a fixed 
 Before any successful retrieval the timestamp is null and accounts empty. Consumers
 must check stale. Writes use an exclusive temporary file, chmod 644 and atomic rename.
 SSH connects within 10 seconds and has an overall subprocess deadline of 25 seconds.
+
+## Vendors (not on the hub)
+
+`vendors.{codex,cursor,antigravity,kiro}` come from the provider caches T3 Code refreshes
+about once a minute (`~/.t3/caches/<instance>.json` → `usageLimits`), read on every run,
+hub or no hub. Each has `pct` (the fullest window; on a tie, the one that resets last),
+`window`, `resets_at`, `observed_at`, `source` (`t3-cache:<instance>`), `stale` and
+`windows[]`. Only numbers, timestamps and short window ids are copied. `stale` is true
+when the observation is over 10 minutes old, more than one minute in the future,
+or the binding reset has passed. These stale readings retain their numbers without
+`last_error`; consumers must gate those numbers on `stale`. Unavailable readings
+have null numbers, `stale: true` and a fixed `last_error`. Kiro's cache carries no
+usage at all (status, auth, version and models only), so `vendors.kiro` stays null with a
+`note` listing the cache's top-level key names.
 
 ## M4 installation
 
