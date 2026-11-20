@@ -51,3 +51,11 @@ Proof that the table matches the ledgers: rows `FINAL` = distinct reservation id
 `endpoint`, `mode`, `source`, `status_code`, `fail_code`, `latency_ms`, `question_ids`, `answer`, `confidence`,
 `session_id`, `parent_session_id`, `thread_id` and `state_sha256` stay NULL (or empty) until jev.py writes them
 (golems lane 3). Never store the raw state, only its SHA-256.
+
+## Alert: unreconciled calls
+
+jev.py writes no reconciliation when a call fails (transport error, invalid response) or crashes, so its
+reservation stays alone. Ratchet row `jev_unreconciled_24h` (M1, `bun ratchet/live.ts jev_unreconciled_24h`)
+counts reservations still unreconciled 15 minutes after they were made, over the last 24 hours. Its ceiling is 0.
+The window keeps old research failures (three from September) from holding it red forever.
+Query: `src/jev/unreconciled.ts`.
