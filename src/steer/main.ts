@@ -4,7 +4,7 @@ installErrorHandlers();
 // tokenlayer-steer: every 60s, put the Claude Max credential whose quota resets soonest alone at priority 100.
 // Usage: bun src/steer/main.ts [--once] [--dry-run] [--snapshots]
 //   --dry-run    GET only; log the PATCHes it would make.
-//   --snapshots  print one credentials_snap JSON row per credential per tick to stdout (logs go to stderr).
+//   --snapshots  print one snapshot JSON row per credential per tick to stdout (logs go to stderr).
 // Env (or the file at TOKENLAYER_ENV, default ~/.config/tokenlayer/hub.env; the process env wins):
 //   CLIPROXY_MGMT_KEY, TOKENLAYER_HUB_URL (default http://127.0.0.1:8317), TOKENLAYER_HUB (default m1),
 //   TOKENLAYER_STEER_INTERVAL_MS (default 60000)

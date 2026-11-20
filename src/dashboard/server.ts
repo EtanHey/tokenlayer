@@ -40,7 +40,7 @@ export function quota(q: Observation["quota"], window: string) {
   };
 }
 // Quota readings land in proxy_usage.ratelimit (the drain stores every response's headers).
-// credentials_snap has no writer, so it cannot feed the burn panel.
+// No per-credential snapshot table exists; this is the only quota history.
 export const burnSQL = `SELECT credential, window, toStartOfFifteenMinutes(at) AS ts, max(u) AS utilization
  FROM (SELECT credential, ts AS at, w.1 AS window, toFloat64OrNull(ratelimit[w.2]) AS u
  FROM tokenlayer.proxy_usage

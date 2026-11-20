@@ -48,8 +48,9 @@ day's percentage of a monthly allowance. [Kiro billing](https://kiro.dev/docs/bi
 confirms Free=50 and renewal at the next billing cycle (checked 2026-11-03).
 Account reset boundary and full-account coverage remain unknown.
 
-Claude peaks come from `credentials_snap.utilization_5h/utilization_7d`, the
-history behind local `usage.json`. Codex peaks come from native token_count
+Claude peaks come from the hub's per-response headers in `proxy_usage.ratelimit`
+(`anthropic-ratelimit-unified-5h-utilization` and `-7d-utilization`), stored by the
+drain. The hub rarely sends the 5h header, so the 5h peak is often NULL. Codex peaks come from native token_count
 `payload.rate_limits.{primary,secondary}.{used_percent,window_minutes}` for
 300-minute and 10080-minute windows only. Peaks span accounts/limits and are
 rolling gauges, not daily consumption. Missing gauges are NULL. Antigravity is

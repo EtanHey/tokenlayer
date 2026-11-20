@@ -9,7 +9,7 @@ import { createHandler } from "../../src/dashboard/server";
 import { fakeHub, state } from "../fable/fixtures";
 
 // The burn panel must read where the hub's quota readings actually land. The drain stores every
-// response's rate-limit headers in proxy_usage.ratelimit; credentials_snap has no writer.
+// response's rate-limit headers in proxy_usage.ratelimit; there is no snapshot table.
 describe.skipIf(!clickhouseBinary())("dashboard burn → real local ClickHouse", () => {
   let ch: LocalClickHouse;
   let dir: string;

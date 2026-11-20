@@ -64,10 +64,14 @@ WITH streams AS (
         PREWHERE type = 'event_msg' AND role = 'token_count'
     ) AS limits USING (machine, path, generation, byte_offset, content_hash)
 ), quota_peaks AS (
+    -- Claude gauges are the hub's per-response rate-limit headers, stored by the drain.
     SELECT toDate(ts) AS day, 'claude' AS provider,
-           maxOrNull(if(utilization_5h BETWEEN 0 AND 1, utilization_5h * 100, NULL)) AS peak_5h_used_pct,
-           maxOrNull(if(utilization_7d BETWEEN 0 AND 1, utilization_7d * 100, NULL)) AS peak_weekly_used_pct
-    FROM tokenlayer.credentials_snap WHERE provider = 'claude' GROUP BY day
+           maxOrNull(if(u5h BETWEEN 0 AND 1, u5h * 100, NULL)) AS peak_5h_used_pct,
+           maxOrNull(if(u7d BETWEEN 0 AND 1, u7d * 100, NULL)) AS peak_weekly_used_pct
+    FROM (SELECT ts, toFloat64OrNull(ratelimit['anthropic-ratelimit-unified-5h-utilization']) AS u5h,
+                 toFloat64OrNull(ratelimit['anthropic-ratelimit-unified-7d-utilization']) AS u7d
+          FROM tokenlayer.proxy_usage WHERE provider = 'claude')
+    GROUP BY day
     UNION ALL
     SELECT day, 'codex' AS provider,
            maxOrNull(greatest(if(primary_minutes = 300 AND primary_pct BETWEEN 0 AND 100, primary_pct, NULL),
