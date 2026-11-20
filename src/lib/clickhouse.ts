@@ -9,7 +9,7 @@ export type ClickHouseConfig = {
 
 /** Admit fixed-schema work and return the same client; explicit generic tables bypass this guard. */
 export function fixed<T extends { config: Pick<ClickHouseConfig, "database"> }>(ch: T, table = "proxy_usage"): T {
-  if (["session_events", "proxy_usage", "archaeology_sample"].includes(table) && ch.config.database !== "tokenlayer") throw new Error("CLICKHOUSE_DATABASE_UNSUPPORTED");
+  if (["session_events", "proxy_usage", "archaeology_sample", "ship_heartbeat"].includes(table) && ch.config.database !== "tokenlayer") throw new Error("CLICKHOUSE_DATABASE_UNSUPPORTED");
   return ch;
 }
 
