@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { burnSQL, burnRise, burnVerdict, DEFAULT_RESERVE_PCT, readReserve, type Point, type Reserve } from "../../ratchet/burn";
+import { burnSQL, burnRise, burnVerdict, parsePoints, DEFAULT_RESERVE_PCT, readReserve, type Point, type Reserve } from "../../ratchet/burn";
 import { liveRows, plan } from "../../ratchet/live-schedule";
 
 const rows = JSON.parse(readFileSync("ratchet/rows.json", "utf8")).rows;
@@ -136,4 +136,45 @@ test("SQL keeps in-window quota cycles separate but retains only the last baseli
   expect(sql).toContain("if(base = 1, 0, wreset) AS cycle");
   expect(sql).toContain("GROUP BY account, base, bucket, cycle");
   expect(sql).toContain("ORDER BY account, base DESC, bucket, reset");
+});
+
+for (const [label, patch] of [
+  ['absent reset', { reset: undefined }], ['malformed reset', { reset: 'invalid' }],
+  ['zero reset', { reset: 0 }], ['negative reset', { reset: -1 }],
+  ['null reset', { reset: null }], ['nonfinite reset', { reset: Infinity }],
+  ['negative utilization', { u: -0.1 }], ['utilization above one', { u: 1.1 }],
+  ['absent utilization', { u: undefined }], ['null utilization', { u: null }],
+] as const) {
+  test(`invalid target: ${label} fails without synthesizing a week`, () => {
+    const point = { ...at(105, 0.55), ...patch } as unknown as Point;
+    const v = burnVerdict([point], reserve, NOW);
+    expect(v).toMatchObject({ threshold: null, fail: true });
+    expect(v.say).toContain('no target');
+    expect(v.say).not.toContain('new week');
+    expect(judge(v).state.claude_burn_2h).toBe('fail');
+  });
+}
+
+test('target freshness excludes eight-day-old readings even inside the longer baseline query', () => {
+  for (const extra of [0, 3600]) {
+    const v = burnVerdict([{ ...base(0.55), at: NOW - 8 * 86400 - extra }], reserve, NOW);
+    expect(v).toMatchObject({ threshold: null, fail: true });
+    expect(v.say).toContain('no target');
+  }
+  expect(burnVerdict([{ ...base(0.55), at: NOW - 8 * 86400 + 1 }], reserve, NOW).threshold).not.toBeNull();
+});
+
+test('SQL admits utilization and a positive parseable reset together', () => {
+  const sql = burnSQL(NOW);
+  expect(sql).toContain(`toUInt64OrNull(ratelimit['anthropic-ratelimit-unified-7d-reset'])`);
+  expect(sql).toContain('util >= 0 AND util <= 1');
+  expect(sql).toContain('wreset > 0');
+});
+
+
+test('decoded absent, malformed and zero reset rows produce no target', () => {
+  for (const reset of [undefined, 'invalid', 0, null]) {
+    const points = parsePoints(JSON.stringify({ ...at(105, 0.55), reset }));
+    expect(burnVerdict(points, reserve, NOW)).toMatchObject({ threshold: null, fail: true });
+  }
 });

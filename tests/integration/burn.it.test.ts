@@ -63,4 +63,23 @@ describe.skipIf(!clickhouseBinary())("claude_burn_2h SQL → real local ClickHou
     await insert([["a", 9 * 1440, 0.55]]);
     expect(await verdict()).toMatchObject({ value: 0, threshold: null, fail: true });
   });
+
+  test("invalid reset/utilization pairs cannot create a target", async () => {
+    for (const [reset, u] of [[undefined, '0.55'], ['bad', '0.55'], ['0', '0.55'], ['-1', '0.55'],
+      [String(RESET), '-0.1'], [String(RESET), '1.1']]) {
+      await ch.client.exec("TRUNCATE TABLE tokenlayer.proxy_usage");
+      const resetPair = reset === undefined ? '' : `, 'anthropic-ratelimit-unified-7d-reset', '${reset}'`;
+      await ch.client.exec(`INSERT INTO tokenlayer.proxy_usage (ts, execution_id, credential, account_hash, provider, ratelimit)
+        VALUES (toDateTime64(${NOW - 60}, 3, 'UTC'), 'invalid', 'cred-a', 'a', 'claude',
+          map('anthropic-ratelimit-unified-7d-utilization', '${u}'${resetPair}))`);
+      expect(await verdict()).toMatchObject({ threshold: null, fail: true });
+    }
+  });
+
+  test("a baseline eight days plus one hour old cannot supply a target", async () => {
+    await ch.client.exec("TRUNCATE TABLE tokenlayer.proxy_usage");
+    await insert([["a", 8 * 1440 + 60, 0.55]]);
+    expect(await verdict()).toMatchObject({ threshold: null, fail: true });
+  });
+
 });
