@@ -12,6 +12,10 @@ From any checkout that has the commit (fetch first; the checkout's branch is nev
 scripts/deploy/setup.sh pin <sha> [--restart com.tokenlayer.ship ...]
 ```
 
+The commit must be on `origin/main` (`git merge-base --is-ancestor`), so fetch first. An unmerged branch or PR head is
+refused before anything is written: a pinned job runs with the hub management key and the writer login. For a
+rehearsal only, `setup.sh pin <sha> --allow-unmerged` installs it anyway and prints a warning.
+
 The install takes four steps:
 
 1. `git archive <sha>` into `app/.staging-<sha>-<pid>`.
@@ -70,5 +74,7 @@ scripts/deploy/setup.sh drift [m1|m4]   # read-only; the Mac defaults to TOKENLA
 `drift` parses each `~/Library/LaunchAgents/com.tokenlayer.*.plist` with `plutil` and compares it with what this
 tree renders: key order, whitespace and comments are ignored, and every value must match. It prints `ok`, or
 `DRIFT` with each differing path, and exits 1 on any drift. It also fails for a missing job and for a
-`com.tokenlayer.*` label with no template. Values under secret-shaped keys (passwords, keys, tokens, logins) are
-never printed. A label that is deliberately not from this repo goes in `~/.config/tokenlayer/drift-ignore`, one per line.
+`com.tokenlayer.*` label with no template. Each path reads `differs`, `only-live` or `only-template`, and its
+output is safe to log: nothing under `EnvironmentVariables` is ever printed, only key names; elsewhere a value is
+shown only when it is a number, a boolean, a path or a bare `--flag` (so `--password=…` and other words in
+`ProgramArguments` read as `differs` with no value); a dict or array on one side only is listed key by key. A label that is deliberately not from this repo goes in `~/.config/tokenlayer/drift-ignore`, one per line.

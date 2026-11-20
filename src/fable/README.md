@@ -27,8 +27,9 @@ usable, estimated at zero use. If its reset is still ahead, the reading is a
 lower bound: rejected or at `weeklyExhaustedAt` means exhausted; below that the
 level is unknown and the plan stays UNKNOWN. A present hub reading always wins,
 and an unconfirmed reset press drops history too. `plan` marks these credentials
-in `weeklyEstimated` and the reason. An estimated credential keeps its partition
-role, because only a request it serves turns the estimate into a reading.
+in `weeklyEstimated` and the reason. Usable fresh capacity ranks above estimates
+when reserve and strict partition policy permit; exhausted estimates exclude
+non-Fable models in the routing catalog.
 At 0.45 the reserve excludes non-Fable from A even if B cannot serve it. That
 conflict is DEGRADED. `set --allow-non-fable-on-fable-account` persists an override;
 `set --protect-fable-reserve` restores protection. These commands use the saved
@@ -136,3 +137,7 @@ evidence rules prevent automatic recovery after a known human reset, use
 that press and attempt local recovery; reuse its operation id on retry. This
 manual command updates reset bookkeeping, unless `--skip-count` is supplied for
 recovery of an already-accounted press. No command presses Anthropic's reset.
+
+Expiry requires the Fable observation to precede its reset, and a fresh weekly observation strictly after that boundary with a still-future reset. Post-reset rejections and contradictory timing keep their cap policy.
+
+History fallback requires a valid observation strictly before its reset and no future observation timestamp. Contradictory or invalid history stays UNKNOWN. A legitimate passed reset remains an explicitly estimated new window. Estimated exhausted accounts exclude non-Fable models from their hub catalog; reserve conflicts still exclude them on A as well. When reserve and strict partition policy permit, usable fresh A ranks above estimated B (A100/B50); there is no implicit cold-account exploration policy. History query timeouts abort the HTTP request and clear their timer on settlement.

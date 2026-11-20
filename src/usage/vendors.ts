@@ -31,7 +31,7 @@ export function vendorReading(cache: unknown, now: number): VendorReading {
   // Kiro's cache carries no usage at all; name what it does carry (key names only, never values).
   if (!bind) return { ...empty(source, 'usage unavailable', observed_at),
     note: c.usageLimits ? undefined : `no usageLimits, only ${Object.keys(c).sort()}` };
-  const stale = now - at(observed_at) > VENDOR_STALE_MS || (at(bind.resets_at) || Infinity) <= now;
+  const stale = !observed_at || at(observed_at) - now > 60_000 || now - at(observed_at) > VENDOR_STALE_MS || (at(bind.resets_at) || Infinity) <= now;
   return { pct: bind.pct, window: bind.window, resets_at: bind.resets_at, observed_at, source, stale, windows };
 }
 

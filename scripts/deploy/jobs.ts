@@ -75,18 +75,37 @@ const siteValue = (home: string, job: string, parse: Parse) => (key: string) => 
   return existsSync(path) ? parse(readFileSync(path, 'utf8'))?.EnvironmentVariables?.[key] : undefined;
 };
 
-const SECRET = /PASSWORD|SECRET|_KEY$|TOKEN$|LOGINS/i;
-const show = (v: unknown) => (v === undefined ? '<absent>' : JSON.stringify(v));
-/** Each path where live and repo differ; values under a secret-shaped key are never printed. */
-export function diffPlist(live: any, repo: any, path = '', hidden = false): string[] {
-  if (live && repo && typeof live === 'object' && typeof repo === 'object' && Array.isArray(live) === Array.isArray(repo)) {
-    const keys = Array.isArray(live) ? [...Array(Math.max(live.length, repo.length)).keys()].map(String) : [...new Set([...Object.keys(live), ...Object.keys(repo)])].sort();
-    return keys.flatMap(k => diffPlist(live[k], repo[k], Array.isArray(live) ? `${path}[${k}]` : path ? `${path}.${k}` : k, hidden || SECRET.test(k)));
+// drift output reaches logs (the after-merge installer keeps it), so it names paths and never prints a secret:
+// - nothing under EnvironmentVariables is ever printed, only its key names;
+// - elsewhere only numbers, booleans, paths and bare flags are printed; any other string (a --flag=value, a word in
+//   ProgramArguments, a label) reads as "differs" with no value;
+// - a dict or array is never printed whole: a block on one side only is listed key by key.
+const PATH_OR_FLAG = /^(?:\/[\w.@+\/ -]*|--?[A-Za-z][\w-]*)$/;
+const printable = (v: unknown) => typeof v === 'number' || typeof v === 'boolean' || (typeof v === 'string' && PATH_OR_FLAG.test(v));
+const kind = (v: unknown) => (Array.isArray(v) ? 'array' : v === null ? 'null' : typeof v === 'object' ? 'dict' : typeof v);
+const isBlock = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
+
+/** Each path where live and repo (the template) differ, with a value only where it is a path, flag, number or boolean. */
+export function diffPlist(live: unknown, repo: unknown, path = '', env = false): string[] {
+  if (isBlock(live) && isBlock(repo) && Array.isArray(live) === Array.isArray(repo)) {
+    const array = Array.isArray(live);
+    const keys = [...new Set([...Object.keys(live), ...Object.keys(repo)])].sort(array ? (a, b) => +a - +b : undefined);
+    return keys.flatMap(k => diffPlist(live[k], repo[k], array ? `${path}[${k}]` : path ? `${path}.${k}` : k, env || k === 'EnvironmentVariables'));
+  }
+  if (isBlock(live) || isBlock(repo)) {
+    // Missing on one side, or another kind there: name the kinds, then list each block against an empty one.
+    const empty = (v: object) => (Array.isArray(v) ? [] : {});
+    return [
+      ...(live !== undefined && repo !== undefined ? [`${path}: differs (live <${kind(live)}>, template <${kind(repo)}>)`] : []),
+      ...(isBlock(live) ? diffPlist(live, empty(live), path, env) : []),
+      ...(isBlock(repo) ? diffPlist(empty(repo), repo, path, env) : []),
+    ];
   }
   if (JSON.stringify(live) === JSON.stringify(repo)) return [];
-  if (hidden && live !== undefined && repo !== undefined) return [`${path}: values differ (hidden)`];
-  const value = (v: unknown) => (hidden && v !== undefined ? '<set>' : show(v));
-  return [`${path}: live ${value(live)}, repo ${value(repo)}`];
+  const show = (v: unknown) => (!env && printable(v) ? JSON.stringify(v) : undefined);
+  if (repo === undefined) return [`${path}: only-live${show(live) ? ` (${show(live)})` : ''}`];
+  if (live === undefined) return [`${path}: only-template${show(repo) ? ` (${show(repo)})` : ''}`];
+  return [`${path}: differs${show(live) && show(repo) ? ` (live ${show(live)}, template ${show(repo)})` : ''}`];
 }
 
 type DriftOptions = { home?: string; machine: Machine; parse?: Parse; site?: (key: string) => string | undefined; clickhouse?: string };
