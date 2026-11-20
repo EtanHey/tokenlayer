@@ -1,0 +1,42 @@
+import { expect } from "bun:test";
+import { test } from "../support/clickhouse-gate";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { applySchema } from "../../src/lib/schema";
+import { migrateSessionSchema, verifySessionSchema } from "../../src/lib/session-schema";
+import { startLocalClickHouse } from "../../src/lib/local-clickhouse";
+import { shipOnce } from "../../src/ship/ship";
+
+const USER = "example";
+
+test("Cursor native rows retain SQL NULL after legacy type upgrade and repeat schema apply", async () => {
+  const ch = await startLocalClickHouse();
+  const dir = mkdtempSync(join(tmpdir(), "cursor-it-"));
+  try {
+    await applySchema(ch.client);
+    // Exercise the six pre-Cursor column types as well as a fresh table.
+    for (const name of ["model", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens"]) {
+      await ch.client.exec(`ALTER TABLE tokenlayer.session_events MODIFY COLUMN ${name} ${name === "model" ? "LowCardinality(String)" : "UInt64"}`);
+    }
+    await expect(verifySessionSchema(ch.client)).rejects.toThrow("schema mismatch");
+    await migrateSessionSchema(ch.client);
+    const root = join(dir, "projects");
+    const folder = join(root, "Users-example-Gits-dialogkit/agent-transcripts/agent-fixture");
+    mkdirSync(folder, { recursive: true });
+    const raw = readFileSync(join(import.meta.dir, "../fixtures/cursor/native.jsonl"), "utf8");
+    writeFileSync(join(folder, "agent-fixture.jsonl"), raw);
+    const opts = { machine: "fixture", roots: [{ kind: "cursor" as const, dir: root }], clickhouse: ch.client,
+      statePath: join(dir, "state.json"), rateBytesPerSec: 0 };
+    expect((await shipOnce(opts)).lines).toBe(2);
+    await applySchema(ch.client);
+    const rows = await ch.client.queryJSON("SELECT harness, session_id, project, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens, raw FROM tokenlayer.session_events FINAL ORDER BY byte_offset");
+    expect(rows).toHaveLength(2);
+    expect(rows.map(r => r.raw).join("")).toBe(raw);
+    for (const row of rows) {
+      expect(row.harness).toBe("cursor"); expect(row.session_id).toBe("agent-fixture"); expect(row.project).toBe("dialogkit");
+      for (const name of ["model", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens"]) expect(row[name]).toBeNull();
+    }
+    expect((await shipOnce(opts)).lines).toBe(0);
+  } finally { await ch.stop(); rmSync(dir, { recursive: true, force: true }); }
+}, 40000);
