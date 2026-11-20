@@ -70,6 +70,11 @@ test('render-only CLI writes the correct agent set without touching home config 
     const run = spawnSync(process.execPath, ['scripts/deploy/render.ts', machine, output], { env: { ...process.env, HOME: root, PATH: '' }, encoding: 'utf8' });
     expect(run.status).toBe(0);
     expect(readdirSync(output).sort()).toEqual((machine === 'm1' ? ['clickhouse', 'drain', 'ship'] : ['ship']).map(a => `com.tokenlayer.${a}.plist`));
+    for (const file of readdirSync(output)) { // daemons run the pinned copy, never a git checkout a pull can change
+      const plist = parse(readFileSync(`${output}/${file}`, 'utf8'));
+      expect(plist.ProgramArguments[0].startsWith(`${root}/.config/tokenlayer/app/current/`)).toBe(true);
+      if (!file.includes('clickhouse')) expect(plist.WorkingDirectory).toBe(`${root}/.config/tokenlayer/app/current`);
+    }
     expect(existsSync(`${root}/.config`)).toBe(false);
     expect(existsSync(`${root}/Library/LaunchAgents`)).toBe(false);
     expect(existsSync(`${root}/Library/Logs/tokenlayer`)).toBe(false);

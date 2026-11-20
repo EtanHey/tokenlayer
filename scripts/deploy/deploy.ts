@@ -7,6 +7,7 @@ import { loadEnvFiles, parseEnv } from '../../src/lib/env';
 import { ClickHouse } from '../../src/lib/clickhouse';
 import { replaceService, withPausedSidecars } from './launchd';
 import { installErrorHandlers } from '../../src/lib/egress';
+import { appCurrent } from './pin';
 
 const repo = resolve(import.meta.dir, '../..');
 const home = homedir();
@@ -73,7 +74,10 @@ async function install(label: string, machine: string, binary = '') {
   const agents = join(home, 'Library/LaunchAgents');
   mkdirSync(agents, { recursive: true });
   const target = join(agents, `${label}.plist`);
-  writeFileSync(target, render(readFileSync(join(repo, `launchd/${label}.plist.template`), 'utf8'), { HOME: home, REPO: repo, MACHINE: machine, CLICKHOUSE: binary }));
+  // Jobs run the pinned copy (setup.sh pin <sha>), never this checkout: a checkout or pull must not change a live job.
+  const app = appCurrent(home);
+  if (!existsSync(join(app, '.tokenlayer-commit'))) throw Error('no pinned release; run scripts/deploy/setup.sh pin <sha> first');
+  writeFileSync(target, render(readFileSync(join(repo, `launchd/${label}.plist.template`), 'utf8'), { HOME: home, REPO: app, MACHINE: machine, CLICKHOUSE: binary }));
   run(['plutil', '-lint', target]);
   await replaceService(label, target);
 }
@@ -158,5 +162,5 @@ if (import.meta.main) {
     const state = join(config, 'backfill-state.json');
     const proc = Bun.spawn([process.execPath, 'scripts/deploy/backfill.ts', ...flags], { cwd: repo, env: { ...process.env, TOKENLAYER_SHIP_STATE: state }, stdout: Bun.file(join(logs, 'backfill.log')), stderr: Bun.file(join(logs, 'backfill.err.log')) });
     process.exit(await proc.exited);
-  } else throw Error('usage: setup.sh hub | config | ship m1 | ship m4 https://hub.ts.net:8123');
+  } else throw Error('usage: setup.sh pin <sha> [--allow-unmerged] [--restart label...] | use <sha> | hub | config | ship m1 | ship m4 https://hub.ts.net:8123');
 }
