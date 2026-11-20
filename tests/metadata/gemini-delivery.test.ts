@@ -17,7 +17,7 @@ for(const mode of ["stdout","both","invalid"] as const) test(`real closed ${mode
     fs.writeFileSync(path,raw,{mode:0o600});
     const source={path,provider:"gemini-cli",sourceFormat:"gemini-chat-json",coordinateKind:"json-utf8-span-v1",admission:"synthetic",custodyMachine:"synthetic-custody",originMachine:"UNKNOWN",originProof:"UNKNOWN",originalPath:"UNKNOWN",sourceRoot:dir,rootKind:"native-gemini-cli-tmp",documentBytes:raw.length,documentHash:mode==="invalid"?"a".repeat(64):hash(raw),stat:geminiStatPin(fs.lstatSync(path,{bigint:true}))};
     fs.writeFileSync(input,JSON.stringify({version:1,kind:"tokenlayer-gemini-json-export-input",scope:"synthetic-only",maxOutputRows:1,expectedMessages:1,expectedSessionId:"synthetic",source}),{mode:0o600});
-    const child=Bun.spawnSync(["python3","-c",driver,process.execPath,resolve("src/metadata/gemini-main.ts"),input,out,mode]);
+    const child=Bun.spawnSync(["python3","-c",driver,process.execPath,resolve("src/metadata/gemini-main.ts"),input,out,mode],{env:process.env});
     expect(child.exitCode).toBe(0);const result=JSON.parse(child.stdout.toString());
     expect(result.stderr).not.toMatch(/Unhandled|broken pipe|\n\s+at |synthetic-custody|chat.json/);
     if(mode==="invalid") {expect(result.exit).toBe(1);expect(fs.existsSync(join(out,"manifest.json"))).toBe(false);}

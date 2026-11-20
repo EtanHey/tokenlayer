@@ -1,4 +1,5 @@
-import { expect, spyOn, test } from 'bun:test';
+import { expect, spyOn } from 'bun:test';
+import { test } from '../support/clickhouse-gate';
 import { existsSync, mkdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runImport } from '../../scripts/history/run';
