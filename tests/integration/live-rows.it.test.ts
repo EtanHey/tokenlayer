@@ -33,6 +33,7 @@ describe.skipIf(!clickhouseBinary())("live rows shipper_live_lag_s and ch_live_q
   });
   const reset = async (events: Event[]) => {
     await ch.client.exec("TRUNCATE TABLE tokenlayer.session_events");
+    await ch.client.exec("TRUNCATE TABLE tokenlayer.session_first_ingest");
     base = Date.now();
     if (events.length) await ch.client.exec(`INSERT INTO tokenlayer.session_events (machine, harness, path, session_id, generation, byte_offset, content_hash, ts, ingested_at) VALUES ${events.map(value).join(", ")}`);
   };
@@ -59,6 +60,18 @@ describe.skipIf(!clickhouseBinary())("live rows shipper_live_lag_s and ch_live_q
     const lag = measure("shipper_live_lag_s");
     expect(lag).toBeGreaterThanOrEqual(5);
     expect(lag).toBeLessThanOrEqual(8.5);
+    expect(evaluate(row("shipper_live_lag_s"), lag)).toBe(true);
+  });
+
+  test("same-key replay stays green after replacement and first-ingest aggregate merges", async () => {
+    const events = live("m1", 40, 5);
+    await reset(events);
+    await ch.client.exec(`INSERT INTO tokenlayer.session_events (machine, harness, path, session_id, generation, byte_offset, content_hash, ts, ingested_at) VALUES ${events.map(e => value({ ...e, ingestAgo: 1 })).join(", ")}`);
+    await ch.client.exec("OPTIMIZE TABLE tokenlayer.session_events FINAL");
+    await ch.client.exec("OPTIMIZE TABLE tokenlayer.session_first_ingest FINAL");
+    expect(Number((await ch.client.exec("SELECT count() FROM tokenlayer.session_events FINAL")).trim())).toBe(40);
+    const lag = measure("shipper_live_lag_s");
+    expect(lag).toBe(5);
     expect(evaluate(row("shipper_live_lag_s"), lag)).toBe(true);
   });
 
