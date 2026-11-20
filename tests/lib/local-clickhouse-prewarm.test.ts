@@ -1,5 +1,5 @@
 import { afterEach, expect } from 'bun:test';
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from '../support/clickhouse-gate';
 import type { ClickHouse } from '../../src/lib/clickhouse';
@@ -8,7 +8,7 @@ import { prewarmLocalClickHouse, startLocalClickHouse, stopPrewarmedLocalClickHo
 // CI3: the suite pre-warms local ClickHouse servers (tests/preload.ts). Not an .it file on purpose:
 // these test the harness, and the ratchet's integration count stays the count of product tests.
 const root = join(import.meta.dir, '..', '..', '.local');
-const serverDirs = () => new Set(readdirSync(root).filter(name => name.startsWith('ch-it-')));
+const serverDirs = () => new Set(existsSync(root) ? readdirSync(root).filter(name => name.startsWith('ch-it-')) : []);
 const restore = prewarmLocalClickHouse(0);
 prewarmLocalClickHouse(restore);
 afterEach(() => { stopPrewarmedLocalClickHouse(); prewarmLocalClickHouse(restore); });
@@ -91,14 +91,40 @@ test('a process that exits with spares still starting leaves no server or direct
   stopPrewarmedLocalClickHouse();
   const before = serverDirs();
   const module = join(import.meta.dir, '..', '..', 'src', 'lib', 'local-clickhouse.ts');
-  const child = Bun.spawn(['bun', '-e', `
+  const child = Bun.spawn([process.execPath, '-e', `
+    const spawn = Bun.spawn;
+    let spawned = 0;
+    const spareURLs = new Set();
+    let resolveArmed;
+    const armed = new Promise(resolve => { resolveArmed = resolve; });
+    Bun.spawn = (...args) => {
+      const proc = spawn(...args);
+      if (++spawned === 2 || spawned === 3) {
+        spareURLs.add('http://127.0.0.1:' + args[0].find(a => a.startsWith('--http_port=')).slice(12));
+        console.log('spare:' + proc.pid);
+      }
+      return proc;
+    };
     const { prewarmLocalClickHouse, startLocalClickHouse } = await import(${JSON.stringify(module)});
     prewarmLocalClickHouse(2);
-    for (let i = 0; i < 2; i++) await (await startLocalClickHouse()).stop();
-    console.log("taken and stopped");
+    let preparing = 0;
+    const prepare = async client => {
+      if (spareURLs.has(client.config.url)) {
+        if (++preparing === 2) resolveArmed();
+        await new Promise(() => {}); // a latch, not a delay: neither spare can be handed over
+      }
+    };
+    for (let i = 0; i < 2; i++) await (await startLocalClickHouse({ prepare })).stop();
+    await armed;
+    console.log('armed:2');
     process.exit(0);`], { env: process.env, stdout: 'pipe', stderr: 'pipe' });
-  expect(await child.exited).toBe(0);
-  expect(await new Response(child.stdout).text()).toBe('taken and stopped\n');
+  try {
+    const output = await new Response(child.stdout).text();
+    expect(await child.exited).toBe(0);
+    expect(await new Response(child.stderr).text()).toBe('');
+    expect(output.match(/spare:/g)).toHaveLength(2);
+    expect(output).toContain('armed:2\n');
+  } finally { child.kill('SIGKILL'); await child.exited; }
   expect(serverDirs()).toEqual(before);
   const ps = Bun.spawnSync(['ps', '-axo', 'command']).stdout.toString();
   const left = [...ps.matchAll(/--path=(\S+)\/data\//g)].map(m => m[1]!)

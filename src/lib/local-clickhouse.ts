@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ClickHouse } from "./clickhouse";
+import { dlopen, ptr } from "bun:ffi";
 
 /** Path to a local clickhouse binary, or null (integration tests then skip). Never the M1. */
 export function clickhouseBinary(): string | null {
@@ -76,6 +77,35 @@ export function prewarmLocalClickHouse(depth: number): number {
   return previous;
 }
 
+// An exit hook cannot yield to Bun's reaper: exitCode/signalCode may still be null
+// after SIGKILL, and kill(pid, 0) succeeds for zombies. POSIX waitid with WNOWAIT
+// observes an owned child's exit without stealing the wait status from proc.exited.
+let exitObserver: ReturnType<typeof createExitObserver> | undefined;
+function createExitObserver() {
+  const darwin = process.platform === "darwin";
+  if (!darwin && process.platform !== "linux") throw Error("unsupported pre-warm exit observer platform");
+  const library = dlopen(darwin ? "libSystem.B.dylib" : "libc.so.6", {
+    waitid: { args: ["i32", "i32", "ptr", "i32"], returns: "i32" },
+  });
+  // siginfo_t is 104 bytes on Darwin and 128 on Linux; si_signo is its first int.
+  const info = new Int32Array(32);
+  const flags = 4 | 1 | (darwin ? 0x20 : 0x1000000); // WEXITED | WNOHANG | WNOWAIT
+  return (pid: number) => {
+    info.fill(0);
+    return library.symbols.waitid(1, pid, ptr(info), flags) === 0 && info[0] !== 0; // P_PID
+  };
+}
+
+function childExited(proc: ReturnType<typeof Bun.spawn>): boolean {
+  if (proc.exitCode !== null || proc.signalCode != null) return true;
+  try { process.kill(proc.pid, 0); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+    throw error; // permission or probe failures are not exit evidence
+  }
+  return (exitObserver ??= createExitObserver())(proc.pid);
+}
+
 /**
  * Stop pre-warmed servers nobody took: one option set's, or all of them (which also forgets what was asked).
  * Synchronous, so it also runs on `exit`.
@@ -84,9 +114,18 @@ export function stopPrewarmedLocalClickHouse(key?: string): number {
   const spares = [...prewarm.starting].filter(spare => key === undefined || spare.key === key);
   if (key === undefined) { prewarm.ready.clear(); prewarm.asked.clear(); } else prewarm.ready.delete(key);
   for (const spare of spares) {
+    spare.cancelled = true;
+    try { spare.proc.kill("SIGKILL"); } catch {} // still signal every spare, then require exit evidence
+  }
+  for (const spare of spares) {
+    // Wait for an inert child before unlinking: a starting server could recreate files.
+    const deadline = Date.now() + 2000;
+    while (!childExited(spare.proc)) {
+      if (Date.now() >= deadline) throw Error("pre-warm child exit could not be confirmed");
+      Bun.sleepSync(1);
+    }
+    rmSync(spare.dir, { recursive: true, force: true });
     prewarm.starting.delete(spare);
-    try { spare.proc.kill("SIGKILL"); } catch {}
-    try { rmSync(spare.dir, { recursive: true, force: true }); } catch {}
   }
   return spares.length;
 }
