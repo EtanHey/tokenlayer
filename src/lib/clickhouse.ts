@@ -9,7 +9,7 @@ export type ClickHouseConfig = {
 
 /** Admit fixed-schema work and return the same client; explicit generic tables bypass this guard. */
 export function fixed<T extends { config: Pick<ClickHouseConfig, "database"> }>(ch: T, table = "proxy_usage"): T {
-  if (["session_events", "proxy_usage", "credentials_snap", "archaeology_sample"].includes(table) && ch.config.database !== "tokenlayer") throw new Error("CLICKHOUSE_DATABASE_UNSUPPORTED");
+  if (["session_events", "proxy_usage", "archaeology_sample", "ship_heartbeat"].includes(table) && ch.config.database !== "tokenlayer") throw new Error("CLICKHOUSE_DATABASE_UNSUPPORTED");
   return ch;
 }
 
@@ -47,9 +47,9 @@ export class ClickHouse {
    * wait_end_of_query=1 (errors then get a real status) and still checks X-ClickHouse-Exception-Code.
    * Error text is redacted: ClickHouse echoes the rows it could not parse.
    */
-  private async post(what: string, params: URLSearchParams, body: string | Buffer, bodyIsResult: boolean): Promise<string> {
+  protected async post(what: string, params: URLSearchParams, body: string | Buffer, bodyIsResult: boolean, signal?: AbortSignal): Promise<string> {
     params.set("wait_end_of_query", "1");
-    const res = await fetch(`${this.config.url}/?${params}`, { method: "POST", headers: { "X-ClickHouse-User": this.config.user, "X-ClickHouse-Key": this.config.password }, body: typeof body === "string" ? body : new Uint8Array(body) });
+    const res = await fetch(`${this.config.url}/?${params}`, { method: "POST", signal, headers: { "X-ClickHouse-User": this.config.user, "X-ClickHouse-Key": this.config.password }, body: typeof body === "string" ? body : new Uint8Array(body) });
     const text = await res.text();
     const code = res.headers.get("x-clickhouse-exception-code");
     // An insert answers with an empty body, so any exception text in it means the insert failed.
@@ -69,17 +69,20 @@ export class ClickHouse {
     if (rows.length === 0) return;
     const params = new URLSearchParams({ query: `INSERT INTO ${this.config.database}.${table} FORMAT JSONEachRow`, async_insert: "0" });
     if (dedupToken) params.set("insert_deduplication_token", dedupToken);
+    // session_events has a partition per day, and Antigravity rows are kept for ever: a replay can span over 100 days.
+    if (table === "session_events") params.set("max_partitions_per_insert_block", "0");
     const body = Buffer.concat(rows.flatMap((r) => [encodeRow(r), Buffer.from("\n")]));
     await this.post(`insert into ${table}`, params, body, false);
   }
 
-  /** Run a statement; returns the response body as text. */
-  async exec(sql: string): Promise<string> {
-    return this.post("query", new URLSearchParams(), sql, true);
+  /** Run a statement; returns the response body as text. `queryId` names it on the server, so it can be killed. */
+  async exec(sql: string, opts: { queryId?: string; signal?: AbortSignal } | AbortSignal = {}): Promise<string> {
+    const { queryId, signal } = opts instanceof AbortSignal ? { signal: opts } : opts;
+    return this.post("query", new URLSearchParams(queryId ? { query_id: queryId } : {}), sql, true, signal);
   }
 
-  async queryJSON<T = Record<string, unknown>>(sql: string): Promise<T[]> {
-    const text = await this.exec(`${sql}\nFORMAT JSONEachRow`);
+  async queryJSON<T = Record<string, unknown>>(sql: string, opts: { signal?: AbortSignal } | AbortSignal = {}): Promise<T[]> {
+    const text = await this.exec(`${sql}\nFORMAT JSONEachRow`, opts);
     return text
       .split("\n")
       .filter(Boolean)

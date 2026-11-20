@@ -1,4 +1,4 @@
-import { arrangement, outsideDelta, sessionsSQL } from "./advice";
+import { arrangement, cappedUntil, outsideDelta, sessionsSQL, weeklyCapped } from "./advice";
 import { spillEnabled } from "../fable/core";
 import { status } from "../fable/status";
 import { migrate } from "../fable/baseline";
@@ -39,6 +39,17 @@ export function quota(q: Observation["quota"], window: string) {
     stale: !q?.observed_at || Date.now() - Date.parse(q.observed_at) > STALE_MS,
   };
 }
+// Quota readings land in proxy_usage.ratelimit (the drain stores every response's headers).
+// No per-credential snapshot table exists; this is the only quota history.
+export const burnSQL = `SELECT credential, window, toStartOfFifteenMinutes(at) AS ts, max(u) AS utilization
+ FROM (SELECT credential, ts AS at, w.1 AS window, toFloat64OrNull(ratelimit[w.2]) AS u
+ FROM tokenlayer.proxy_usage
+ ARRAY JOIN [('weekly', 'anthropic-ratelimit-unified-7d-utilization'),
+ ('fable', 'anthropic-ratelimit-unified-7d_oi-utilization')] AS w
+ WHERE ts >= now() - INTERVAL 6 HOUR AND provider = 'claude')
+ WHERE u IS NOT NULL
+ GROUP BY credential, window, ts ORDER BY credential, window, ts
+ SETTINGS max_execution_time=10`;
 export function metricsSQL(hours: number) {
   return `SELECT credential, model, toStartOfHour(ts) AS hour, count() AS requests,
  sum(total_tokens) AS tokens, countIf(status_code=429) AS errors429
@@ -370,14 +381,7 @@ export function createHandler(o: {
       window: string;
       ts: string;
       utilization: number | null;
-    }>(`SELECT credential, 'weekly' AS window, ts, utilization_7d AS utilization 
- FROM tokenlayer.credentials_snap
- WHERE ts >= now() - INTERVAL 6 HOUR
- UNION ALL SELECT credential, 'fable' AS window, ts,
- toFloat64OrNull(signals['anthropic-ratelimit-unified-7d_oi-utilization']) AS utilization 
- FROM tokenlayer.credentials_snap
- WHERE ts >= now() - INTERVAL 6 HOUR
- ORDER BY credential, window, ts`);
+    }>(burnSQL);
     const rows = await joinAccounts(rawRows);
     const current = await accounts();
     const groups = new Map<string, typeof rows>();
@@ -452,10 +456,11 @@ export function recommend(c: any, thresholds: any = {}, now = Date.now()) {
   const refill =
     String(c.fable.status).toLowerCase() === "rejected" ||
     c.fable.utilization >= (thresholds.fableCapAt ?? 0.95);
-  const rescue =
-    String(c.weekly.status).toLowerCase() === "rejected" ||
-    c.weekly.utilization >= (thresholds.weeklyExhaustedAt ?? 0.95);
   const hours = (parseTime(c.weekly.reset) - now) / 3600000;
+  const capped = cappedUntil(c.weekly, thresholds.weeklyExhaustedAt, now);
+  // A capped account serves no traffic, so its reading goes stale; the cap still holds until its reset.
+  const ended = !capped && weeklyCapped(c.weekly, thresholds.weeklyExhaustedAt) && hours <= 0;
+  const rescue = capped !== null || (!ended && weeklyCapped(c.weekly, thresholds.weeklyExhaustedAt));
   const timing = Number.isFinite(hours)
     ? `${Math.max(0, Math.round(hours))} h to natural reset. ` +
       (hours < 36
@@ -463,31 +468,37 @@ export function recommend(c: any, thresholds: any = {}, now = Date.now()) {
         : "36 h heuristic: confirm urgency and alternate capacity.")
     : "Natural reset time could not be parsed; 36 h heuristic unavailable.";
   const rule = refill ? "(a) Fable-cap refill" : rescue ? "(b) Weekly-cap rescue" : null;
+  const nothing = f === 0;
   const refund =
     f === null
       ? "refund unknown, check Settings > Usage"
+      : nothing ? "a reset refunds nothing now (Fable unused)"
       : `maximum refund ${Math.round(f * 100)}% of week`;
-  const stale = refill ? c.fable.stale : rescue ? c.weekly.stale : c.weekly.stale || c.fable.stale;
+  const stale = ended || (refill ? c.fable.stale : rescue ? c.weekly.stale && capped === null
+    : c.weekly.stale || c.fable.stale);
   return {
     account: c.email,
-    verdict: stale ? "UNKNOWN" : rule ? "consider" : "wait",
-    reason:
-      (rescue ? "weekly cap reached (resets " +
-        new Date(parseTime(c.weekly.reset)).toLocaleString("en-GB", {
-          timeZone: "Asia/Jerusalem", weekday: "short", hour: "2-digit", minute: "2-digit"
-        }) + "). " : "") +
+    verdict: stale ? "UNKNOWN" : rule && !nothing ? "consider" : "wait",
+    reason: (
+      (rescue ? "weekly cap reached (resets " + clock(c.weekly.reset) + "). " : "") +
+      (ended ? "The weekly cap was reached, but its reset has passed; recheck Usage. " : "") +
       (rule
         ? rule +
           ": " +
           refund +
-          (rescue && f !== null && f <= 0.1 ? "; small refund: only for urgent work." : ".")
-        : "No cap trigger observed; urgent work may justify an override.") +
-      " " +
-      timing +
-      (stale ? " Observations stale; verify Usage." : ""),
+          (rescue && f !== null && !nothing && f <= 0.1 ? "; small refund: only for urgent work." : ".")
+        : ended ? "" : "No cap trigger observed; urgent work may justify an override.") +
+      (ended ? "" : " " + timing) +
+      (stale && !ended ? " Observations stale; verify Usage." : "")).trim(),
     worthPctOfWeek: f === null ? null : Math.round(f * 100),
     hoursToReset: Number.isFinite(hours) ? hours : null,
   };
+}
+function clock(reset: unknown) {
+  const at = parseTime(reset);
+  return !Number.isFinite(at) ? "time unknown" : new Date(at).toLocaleString("en-GB", {
+    timeZone: "Asia/Jerusalem", weekday: "short", hour: "2-digit", minute: "2-digit"
+  });
 }
 
 export function resolveSession(id: string) {

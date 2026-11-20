@@ -18,8 +18,10 @@ async function forms() {
   forms['#notice'] = {};
   let fail = false;
   let serial = 0;
+  const asked: string[] = [];
   const context: any = { document: { querySelector: function select(s: string) { return forms[s]; } },
-    confirm: function confirm() { return true; }, crypto: { randomUUID: function uuid() { return 'op-' + ++serial; } },
+    confirm: function confirm(message: string) { asked.push(message); return true; },
+    crypto: { randomUUID: function uuid() { return 'op-' + ++serial; } },
     setInterval: function timer() {}, fetch: async function fakeFetch(path: string, options: any) {
       calls.push({ path, body: JSON.parse(options.body) });
       return { ok: !fail, json: async function json() { return { error: 'fixture unavailable' }; } };
@@ -39,6 +41,9 @@ async function forms() {
   runInContext('latestState = { state: { requested: { mode: "manual" } } };', context);
   await submit('switch');
   expect(calls.at(-1).body.on).toBe(false);
+  // r5: the confirm names the action and the account, not a generic "change".
+  const account = forms['#switch'].account.value;
+  expect(asked.slice(0, 2)).toEqual(['Turn Fable split ON for ' + account + '?', 'Turn Fable split OFF?']);
   await submit('counts');
   expect(calls.at(-1).body).toEqual({ account: 'etanface@gmail.com', left: 2, confirmed: true });
   await submit('pressed');

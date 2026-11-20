@@ -4,8 +4,13 @@ import { fixed, type ClickHouse } from "./clickhouse";
 
 const key = "machine, path, generation, byte_offset, content_hash";
 const definition = () => readFileSync(join(import.meta.dir, "../../schema/004_session_events.sql"), "utf8");
-const expectedTypes = () => [...definition().matchAll(/^    (\w+)\s+(\w+(?:\([^\n]*?\))?)/gm)]
-  .filter((m) => m[1] !== "INDEX").map((m) => ({ name: m[1], type: m[2] }));
+const columnLines = () => [...definition().matchAll(/^    (\w+)\s+(\w+(?:\([^\n]*?\))?)(.*?),?$/gm)].filter((m) => m[1] !== "INDEX");
+/** Stored columns: what ship writes and what a rebuild copies. MATERIALIZED columns are derived from raw by the server. */
+const expectedTypes = () => columnLines().filter((m) => !/\bMATERIALIZED\b/.test(m[3]))
+  .map((m) => ({ name: m[1], type: m[2] }));
+/** R7: facts the views read, extracted from raw at insert. Adding one is metadata only; old parts compute it on read. */
+export const materializedColumns = () => columnLines().filter((m) => /\bMATERIALIZED\b/.test(m[3]))
+  .map((m) => ({ name: m[1], definition: m[0].trim().replace(/,$/, "") }));
 const expectedColumns = () => expectedTypes().map((c) => c.name);
 
 export async function verifySessionSchema(ch: ClickHouse): Promise<void> {
@@ -28,9 +33,17 @@ export async function migrateSessionSchema(ch: ClickHouse): Promise<void> {
   // Additive F-1 upgrade: existing rows keep an empty alias without rebuilding the archive.
   await ch.exec("ALTER TABLE tokenlayer.session_events ADD COLUMN IF NOT EXISTS session_alias String CODEC(ZSTD(3))");
   await ch.exec("ALTER TABLE tokenlayer.session_events ADD COLUMN IF NOT EXISTS credits Nullable(Float64) DEFAULT NULL");
-  try { await verifySessionSchema(ch); return; } catch {}
+  let current = true;
+  try { await verifySessionSchema(ch); } catch { current = false; }
+  if (current) {
+    // Metadata only, so an ALTER failure here must surface, never fall through to the rebuild below.
+    for (const { definition } of materializedColumns()) {
+      await ch.exec(`ALTER TABLE tokenlayer.session_events ADD COLUMN IF NOT EXISTS ${definition}`);
+    }
+    return;
+  }
   const columns = await ch.queryJSON<{ name: string }>(
-    "SELECT name FROM system.columns WHERE database='tokenlayer' AND table='session_events'",
+    "SELECT name FROM system.columns WHERE database='tokenlayer' AND table='session_events' AND default_kind != 'MATERIALIZED'",
   );
   const names = new Set(columns.map((c) => c.name));
   const archive = await ch.queryJSON<{ name: string }>("SELECT name FROM system.tables WHERE database='tokenlayer' AND name IN ('session_events_pre_content_hash','session_events_hash_next')");

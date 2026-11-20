@@ -31,7 +31,7 @@ export interface Cooldown {
   remaining_seconds?: number;
 }
 
-/** A row of P4's `tokenlayer.credentials_snap` (schema/003_credentials_snap.sql), JSONEachRow-ready. */
+/** One steer snapshot row per credential, JSONEachRow-ready. Printed only; no table stores it. */
 export interface SnapshotRow {
   ts: string;
   hub: string;

@@ -1,4 +1,5 @@
-import { expect, test } from 'bun:test';
+import { expect } from 'bun:test';
+import { test } from '../support/clickhouse-gate';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';

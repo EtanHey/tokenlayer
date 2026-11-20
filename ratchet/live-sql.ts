@@ -1,7 +1,8 @@
 // SQL for the live ratchet rows (ratchet/live.ts), shared with their fixtures.
 
-// session_events is a ReplacingMergeTree partitioned by toYYYYMM(ts), and every version of a key is the same
-// line with the same ts, so versions never span partitions (0 of 8.84M keys did on 2026-11-19). Per-partition
+// session_events is a ReplacingMergeTree partitioned by toYYYYMMDD(ts) since R12 (toYYYYMM before), and every version
+// of a key is the same line with the same ts, so versions never span partitions (0 of 8.84M keys did monthly on
+// 2026-11-19; R12's runbook re-checks it per day, since an Antigravity replay mid-file can carry a different ts). Per-partition
 // FINAL is then exact, and it lets ClickHouse prune parts by ts. Plain FINAL cannot push the ts filter below
 // the merge and reads every part: 4906/4906 granules (~600 ms) against 219 (~45 ms) on 2026-11-19.
 export const FINAL_PER_PARTITION = 'do_not_merge_across_partitions_select_final=1';
@@ -28,12 +29,13 @@ export const SHIPPER_SKEW_MINUTES = 5;
  * How far behind the live shippers are: per machine, the p95 of first-ingest minus event time over events
  * written in the last hour; the worst machine wins, so a quiet machine's backlog is not averaged away.
  * A generation replay re-ships the same line (same ts and content) later; the first ingest is the shipper's
- * lag, so replays never count. No live events means nothing is waiting: 0.
+ * lag, so replays never count. The insert-time materialized view retains that minimum independently of
+ * session_events replacement merges. No live events means nothing is waiting: 0.
  */
 export const shipperLagSQL = (windowMinutes = SHIPPER_WINDOW_MINUTES, skewMinutes = SHIPPER_SKEW_MINUTES) => `SELECT max(p95) FROM (
   SELECT machine, quantileExact(0.95)(lag_s) AS p95 FROM (
-    SELECT machine, dateDiff('millisecond', ts, min(ingested_at)) / 1000 AS lag_s
-    FROM tokenlayer.session_events
+    SELECT machine, dateDiff('millisecond', ts, min(first_ingested_at)) / 1000 AS lag_s
+    FROM tokenlayer.session_first_ingest
     WHERE ts > now64(3) - INTERVAL ${windowMinutes} MINUTE AND ts <= now64(3) + INTERVAL ${skewMinutes} MINUTE
     GROUP BY machine, ts, content_hash)
   GROUP BY machine)`;
