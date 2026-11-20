@@ -189,3 +189,18 @@ test("hub down: one Claude UNKNOWN row, and the vendor rows still show", async (
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('display-time expiry marks vendor and Claude readings stale at the reset boundary', async () => {
+  const fresh = JSON.parse(usage());
+  fresh.vendors.codex.resets_at = iso(NOW);
+  const c = observed('a', 0.85, 0.5);
+  c.quota!.observed_at = iso(NOW);
+  c.quota!.signals['anthropic-ratelimit-unified-7d-reset'] = String(NOW / 1000);
+  const t = byTool(toolRows({ m4: await reader({ exitCode: 0, stdout: JSON.stringify(fresh), stderr: '' }).read(),
+    claude: [c], claudeUse, now: NOW }));
+  for (const name of ['Codex', 'Claude · a']) {
+    expect(t[name].mark).toBe('STALE');
+    expect(t[name].why).toContain('reset has passed');
+  }
+  expect(t.Cursor.mark).toBe('OK');
+});
