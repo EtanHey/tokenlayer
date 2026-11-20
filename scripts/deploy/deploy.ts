@@ -5,7 +5,8 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { loadEnvFiles, parseEnv } from '../../src/lib/env';
 import { ClickHouse } from '../../src/lib/clickhouse';
-import { replaceService, withPausedSidecars } from './launchd';
+import { withPausedSidecars } from './launchd';
+import { installJob } from './jobs';
 import { installErrorHandlers } from '../../src/lib/egress';
 
 const repo = resolve(import.meta.dir, '../..');
@@ -69,14 +70,9 @@ export function configureClient(machine: 'm1' | 'm4', url: string, root = home) 
   chmodSync(join(dir, 'ship.env'), 0o600);
 }
 const clientEnv = () => loadEnvFiles([join(config, 'ship.env'), join(config, 'clickhouse.env')], {});
-async function install(label: string, machine: string, binary = '') {
-  const agents = join(home, 'Library/LaunchAgents');
-  mkdirSync(agents, { recursive: true });
-  const target = join(agents, `${label}.plist`);
-  writeFileSync(target, render(readFileSync(join(repo, `launchd/${label}.plist.template`), 'utf8'), { HOME: home, REPO: repo, MACHINE: machine, CLICKHOUSE: binary }));
-  run(['plutil', '-lint', target]);
-  await replaceService(label, target);
-}
+// Jobs run the pinned copy (setup.sh pin <sha>), never this checkout: a checkout or pull must not change a live job.
+// One renderer (jobs.ts) for setup.sh and `setup.sh drift`, so what is installed is what drift checks against.
+const install = (label: string, machine: 'm1' | 'm4', binary = '') => installJob(label.replace(/^com\.tokenlayer\./, ''), machine, binary, home);
 export function backfillArgs(days: number, rate: number, now = new Date()) {
   if (!Number.isInteger(days) || days < 1 || !Number.isFinite(rate) || rate <= 0 || rate > 5) throw Error('use --days positive integer and --rate-mb in (0,5]');
   return ['--backfill', '--since', new Date(now.getTime() - days * 86400000).toISOString().slice(0, 10), '--rate-mb', String(rate)];
@@ -158,5 +154,5 @@ if (import.meta.main) {
     const state = join(config, 'backfill-state.json');
     const proc = Bun.spawn([process.execPath, 'scripts/deploy/backfill.ts', ...flags], { cwd: repo, env: { ...process.env, TOKENLAYER_SHIP_STATE: state }, stdout: Bun.file(join(logs, 'backfill.log')), stderr: Bun.file(join(logs, 'backfill.err.log')) });
     process.exit(await proc.exited);
-  } else throw Error('usage: setup.sh hub | config | ship m1 | ship m4 https://hub.ts.net:8123');
+  } else throw Error('usage: setup.sh pin <sha> [--allow-unmerged] [--restart label...] | use <sha> | hub | config | ship m1 | ship m4 https://hub.ts.net:8123 | drift [m1|m4] | dashboard | fable | hubupdate | jev | ratchet-live | usage');
 }

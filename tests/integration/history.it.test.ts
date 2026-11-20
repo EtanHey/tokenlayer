@@ -31,9 +31,8 @@ const fixture = () => {
 };
 const opts = (f: ReturnType<typeof fixture>, ch: ClickHouse) => ({ machine: 'm4', roots: [{ kind: 'codex' as const, dir: f.roots }], directory: f.history, liveStates: [], batchBytes: 300 });
 test('real native importer: 32 pilot, autonomous continuation, replay, twin and original lineage', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), f = fixture();
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), f = fixture();
     try {
-        await applySchema(local.client);
         const receipt = await runImport(f.manifest, local.client, { ...opts(f, local.client), pilotOnly: true });
         expect(await local.client.exec('SELECT count() FROM tokenlayer.session_events FINAL')).toBe('32\n');
         const keys = await local.client.exec('SELECT machine,path,generation,byte_offset,content_hash FROM tokenlayer.session_events FINAL ORDER BY byte_offset');
@@ -69,9 +68,8 @@ test('real native importer: 32 pilot, autonomous continuation, replay, twin and 
     }
 }, 60000);
 test('real insert guards: low/unknown/reserved space, old floor, stop and ambiguous recovery', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), f = fixture();
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), f = fixture();
     try {
-        await applySchema(local.client);
         const options = { ledger: join(f.history, 'ledger'), manifest: 'fixture', run: 'test', sessionId: f.id };
         const client = new StreamingHistoryClient(local.client.config, options);
         const query = client.queryJSON.bind(client);
@@ -123,9 +121,8 @@ test('real insert guards: low/unknown/reserved space, old floor, stop and ambigu
     }
 }, 60000);
 test('real SIGKILL after insert before ack/checkpoint re-queries intent and replays different boundaries', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), f = fixture();
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), f = fixture();
     try {
-        await applySchema(local.client);
         const clientOptions = { ledger: join(f.history, 'kill-ledger'), manifest: 'kill-fixture', run: 'child', sessionId: f.id };
         const options = { machine: 'm4', roots: opts(f, local.client).roots, statePath: join(f.history, 'kill-state'), rateBytesPerSec: 0, maxLines: 32, batchBytes: f.raw.length };
         const child = Bun.spawn([process.execPath, join(import.meta.dir, '../support/history-crash-child.ts'), JSON.stringify({ config: local.client.config, options, clientOptions })], { stdout: 'pipe', stderr: 'pipe' });
@@ -146,9 +143,8 @@ test('real SIGKILL after insert before ack/checkpoint re-queries intent and repl
     }
 }, 60000);
 test('native queue stops on copy ambiguity, bad pins, mutation and a stop before dispatch', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), f = fixture();
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), f = fixture();
     try {
-        await applySchema(local.client);
         await runImport(f.manifest, local.client, { ...opts(f, local.client), pilotOnly: true });
         const copy = join(f.roots, `copy-${f.id}.jsonl`);
         writeFileSync(copy, f.raw);
@@ -171,9 +167,8 @@ test('native queue stops on copy ambiguity, bad pins, mutation and a stop before
     }
 }, 60000);
 test('autonomous epochs exceed the pilot and refresh after actual serialization budget exhaustion', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), f = fixture();
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), f = fixture();
     try {
-        await applySchema(local.client);
         const head = f.raw.toString().split('\n')[0] + '\n';
         const line = JSON.stringify({ type: 'event_msg', payload: { text: 'x'.repeat(512 * 1024) } }) + '\n';
         const raw = Buffer.from(head + line.repeat(79)), prefix = Buffer.from(head + line.repeat(31));
@@ -199,9 +194,8 @@ test('autonomous epochs exceed the pilot and refresh after actual serialization 
 }, 60000);
 
 test('fresh compressed native pilot uses decoded generation, original path and real raw months', async () => {
-    const local=await startLocalClickHouse({keepFreeSpaceBytes:RESERVE}),f=fixture();
+    const local=await startLocalClickHouse({ keepFreeSpaceBytes:RESERVE, prepare: applySchema }),f=fixture();
     try {
-        await applySchema(local.client);
         writeFileSync(f.path+'.zst',Bun.zstdCompressSync(f.raw));unlinkSync(f.path);
         const source={...f.source,path:f.path+'.zst',physicalSha256:sha256Hex(readFileSync(f.path+'.zst'))};
         writeFileSync(f.manifest,JSON.stringify({machine:'m4',sources:[source]}));
@@ -215,9 +209,8 @@ test('fresh compressed native pilot uses decoded generation, original path and r
 },60000);
 
 test('large native first record: real import preserves raw, identity, offsets and replay in plain and zstd', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE });
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema });
     try {
-        await applySchema(local.client);
         for (const [kind, compressed] of [['claude', false], ['codex', false], ['codex', true]] as const) {
             const f = fixture(), id = `00000000-0000-4000-8000-00000000000${kind === 'claude' ? 2 : compressed ? 4 : 3}`;
             const suffix = kind === 'claude' ? `","sessionId":"${id}"}\n` : `","payload":{"id":"${id}"}}\n`;

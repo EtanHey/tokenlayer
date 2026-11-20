@@ -16,9 +16,8 @@ const read = (bytes: Buffer) => async () => (async function* () { yield bytes; }
 test.skipIf(!clickhouseBinary())("SHOULD-2 old live file requires shipper backfill and a server export", async () => {
   const dir = scratch(), path = join(dir, "session.jsonl"), bytes = Buffer.from('{"sessionId":"session","type":"user"}\n');
   writeFileSync(path, bytes); utimesSync(path, new Date("2026-01-01"), new Date("2026-01-01"));
-  const local = await startLocalClickHouse();
+  const local = await startLocalClickHouse({ prepare: applySchema });
   try {
-    await applySchema(local.client);
     const opts = { machine: "m4", roots: [{ kind: "claude" as const, dir }], statePath: join(dir, "state"), clickhouse: local.client, rateBytesPerSec: 0 };
     expect((await shipOnce({ ...opts, sinceMs: Date.now() - 24 * 60 * 60 * 1000 })).lines).toBe(0);
     const copies = [row(path, bytes), row(join(dir, "copy.jsonl"), bytes, { source_kind: "archive_dir" })];
@@ -37,9 +36,8 @@ for (const scenario of ["LF blanks", "BOM"] as const) test.skipIf(!clickhouseBin
   const dir = scratch(), path = join(dir, "session.jsonl");
   const bytes = Buffer.from((scenario==="BOM"?"\ufeff":"")+'{"sessionId":"session","type":"user"}\n'+(scenario==="LF blanks"?"\n":"")+'{"sessionId":"session","type":"assistant"}\r\n\r\n \n');
   writeFileSync(path, bytes);
-  const local = await startLocalClickHouse();
+  const local = await startLocalClickHouse({ prepare: applySchema });
   try {
-    await applySchema(local.client);
     await shipOnce({ machine: "m4", roots: [{ kind: "claude", dir }], statePath: join(dir, "state"), clickhouse: local.client, rateBytesPerSec: 0 });
     await expectHeld(manifest([row(path, bytes, { source_kind: "archive_dir" })], []));
     const lines=readCompleteLines(path,0,bytes.length).lines;

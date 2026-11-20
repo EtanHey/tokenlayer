@@ -7,7 +7,7 @@ import { clickhouseBinary, startLocalClickHouse, type LocalClickHouse } from "..
 // part). Daily partitions with ttl_only_drop_parts drop a day once every row in it has expired, and rewrite nothing.
 describe.skipIf(!clickhouseBinary())("TTL drops whole days, never rewrites a partly expired part → real local ClickHouse", () => {
   let local: LocalClickHouse;
-  beforeAll(async () => { local = await startLocalClickHouse(); await applySchema(local.client); }, 40_000);
+  beforeAll(async () => { local = await startLocalClickHouse({ prepare: applySchema }); }, 40_000);
   afterAll(async () => { await local?.stop(); });
 
   const rows = (where: string) => local.client.queryJSON<{ path: string }>(

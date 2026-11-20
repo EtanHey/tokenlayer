@@ -1,0 +1,36 @@
+{
+  "generated_at": "__NOW__",
+  "source": "cliproxy-hub",
+  "stale": false,
+  "accounts": [{ "label": "fixture-account@example.test", "weekly_pct": 85 }],
+  "vendors": {
+    "codex": {
+      "pct": 100, "window": "7d", "resets_at": "__IN_3H__", "observed_at": "__NOW__",
+      "source": "t3-cache:codex", "stale": false,
+      "windows": [{ "id": "primary", "window": "7d", "pct": 100, "resets_at": "__IN_3H__" }],
+      "use": { "observed_at": "__NOW__", "source": "clickhouse:session_events",
+        "24h": { "sessions": 2, "requests": 1, "input_tokens": 0, "output_tokens": 0, "credits": null },
+        "7d": { "sessions": 948, "requests": 38940, "input_tokens": 124343011, "output_tokens": 19340905, "credits": null } }
+    },
+    "cursor": {
+      "pct": 54.04117009750813, "window": "7d", "resets_at": "__IN_6D__", "observed_at": "__NOW__",
+      "source": "t3-cache:cursor", "stale": false,
+      "windows": [{ "id": "autoPercentUsed", "window": "7d", "pct": 54.04117009750813, "resets_at": "__IN_6D__" }]
+    },
+    "antigravity": {
+      "pct": 100, "window": "7d", "resets_at": "__IN_6D__", "observed_at": "__NOW__",
+      "source": "t3-cache:antigravity", "stale": false,
+      "windows": [{ "id": "3p-weekly", "window": "7d", "pct": 100, "resets_at": "__IN_6D__" }],
+      "use": { "observed_at": "__NOW__", "source": "clickhouse:session_events",
+        "24h": { "sessions": 3, "requests": 106, "input_tokens": 740808, "output_tokens": 69926, "credits": null },
+        "7d": { "sessions": 413, "requests": 1769, "input_tokens": 8471944, "output_tokens": 2871854, "credits": null } }
+    },
+    "kiro": {
+      "pct": null, "window": null, "resets_at": null, "observed_at": null,
+      "source": "t3-cache:kiro", "stale": true, "windows": [], "last_error": "usage unavailable",
+      "use": { "observed_at": "__NOW__", "source": "clickhouse:session_events",
+        "24h": { "sessions": 0, "requests": 0, "input_tokens": null, "output_tokens": null, "credits": null },
+        "7d": { "sessions": 1, "requests": 89, "input_tokens": null, "output_tokens": null, "credits": 9.185065499834161 } }
+    }
+  }
+}

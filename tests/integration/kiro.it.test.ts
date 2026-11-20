@@ -17,10 +17,9 @@ const summary = (usage: number, turnId = "turn-1") => line("usage_summary", {
 });
 
 test("Kiro native capture: metadata, fractional credits, late T3 attribution and replay", async () => {
-  const ch = await startLocalClickHouse();
+  const ch = await startLocalClickHouse({ prepare: applySchema });
   const dir = mkdtempSync(join(import.meta.dir, "../../.local/kiro-it-"));
   try {
-    await applySchema(ch.client);
     const session = join(dir, "sessions/workspace/sess-native");
     mkdirSync(session, { recursive: true });
     writeFileSync(join(session, "session.json"), JSON.stringify({ id: "sess-native", modelId: "auto",
@@ -74,10 +73,9 @@ test("Kiro native capture: metadata, fractional credits, late T3 attribution and
 
 
 test("Kiro later summary in one insert wins over the earlier line's larger hash", async () => {
-  const ch = await startLocalClickHouse();
+  const ch = await startLocalClickHouse({ prepare: applySchema });
   const dir = mkdtempSync(join(import.meta.dir, "../../.local/kiro-order-"));
   try {
-    await applySchema(ch.client);
     const session = join(dir, "sessions/workspace/native");
     mkdirSync(session, { recursive: true });
     // These real line hashes sort in reverse source order (609c... then 59f3...).
@@ -90,10 +88,9 @@ test("Kiro later summary in one insert wins over the earlier line's larger hash"
 }, 40000);
 
 for (const mode of ["torn", "deleted"]) test(`Kiro ${mode} session metadata keeps the last known cwd/model while shipping`, async () => {
-  const ch = await startLocalClickHouse();
+  const ch = await startLocalClickHouse({ prepare: applySchema });
   const dir = mkdtempSync(join(import.meta.dir, "../../.local/kiro-meta-"));
   try {
-    await applySchema(ch.client);
     const session = join(dir, "sessions/workspace/native");
     mkdirSync(session, { recursive: true });
     const meta = join(session, "session.json"), path = join(session, "messages.jsonl");

@@ -7,9 +7,8 @@ import { readUse, useSql } from "../../src/usage/use";
 
 // Fixture rows shaped like the live store on 2026-11-19 (paths, types, roles); values invented.
 test("counted use dedupes replays and revisions, keeps the 24 h and 7 d windows apart, and ignores Claude", async () => {
-  const ch = await startLocalClickHouse();
+  const ch = await startLocalClickHouse({ prepare: applySchema });
   try {
-    await applySchema(ch.client);
     const row = (path: string, harness: string, ts: string, extra: Record<string, unknown> = {}) => ({
       machine: "m4", harness, path, generation: "g1", byte_offset: 0, content_hash: `${path}@${ts}`, line_bytes: 1, ts,
       session_id: "", session_alias: "", project: "", cwd: "", type: "", role: "", model: "", message_id: "",
@@ -56,9 +55,8 @@ test("counted use dedupes replays and revisions, keeps the 24 h and 7 d windows 
 
 // parseLine deliberately retains line-local tokens on refreshes; crediting belongs to the reader.
 test("Codex refreshes do not count as responses, including repeats across both window boundaries", async () => {
-  const ch = await startLocalClickHouse();
+  const ch = await startLocalClickHouse({ prepare: applySchema });
   try {
-    await applySchema(ch.client);
     const clock = 1_800_000_000_000, day = 86_400_000;
     const path = "/home/fixture/.codex/sessions/rollout-refresh.jsonl";
     const total = (n: number) => ({ input_tokens: n, output_tokens: n / 10, total_tokens: n + n / 10 });

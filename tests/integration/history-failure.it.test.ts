@@ -55,7 +55,7 @@ const contains = (root: unknown, needle: unknown, seen = new Set<unknown>()): bo
 
 for (const mode of ['late stop receipt', 'late cleanup', 'cascading'] as const) {
     test(`real importer retains all exact rendering failures during ${mode}`, async () => {
-        const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), f = fixture();
+        const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), f = fixture();
         let fired = false, reads = 0;
         const raised: Error[] = [];
         const primary = Object.defineProperty(Error('original'), 'stack', { get() {
@@ -65,7 +65,6 @@ for (const mode of ['late stop receipt', 'late cleanup', 'cascading'] as const) 
             return 'Error: original';
         } });
         try {
-            await applySchema(local.client);
             const error = await caught(runImport(f.manifest, local.client, { ...f.options,
                 localSpace: () => fired && mode !== 'late cleanup' ? { bsize: 1n, bavail: 0n } : enoughSpace(),
                 shouldStop: () => { fired = true;
@@ -92,9 +91,8 @@ for (const mode of ['late stop receipt', 'late cleanup', 'cascading'] as const) 
 }
 
 test('real importer bounds saturated rendering and redacts assembled multiline wrapper and durable copies', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE });
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema });
     try {
-        await applySchema(local.client);
         const first = 'synthetic multiline first', last = 'synthetic multiline last', secret = `${first}\n${last}`;
         registerSecrets({ INTEGRATION_SECRET: secret });
         const primary = Object.defineProperty(new AggregateError([
@@ -137,14 +135,13 @@ test('real importer bounds saturated rendering and redacts assembled multiline w
 
 for (const kind of ['stack getter', 'toString'] as const) {
     test(`Review A MUST1: retains exact primary through throwing ${kind}`, async () => {
-        const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), f = fixture();
+        const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), f = fixture();
         const renderingFailure = Error('synthetic formatter failure');
         const primary = kind === 'stack getter' ? Object.defineProperty(Error('synthetic original'), 'stack', {
             get() { throw renderingFailure; }
         }) : { toString() { throw renderingFailure; } };
         let fired = false;
         try {
-            await applySchema(local.client);
             const error = await caught(runImport(f.manifest, local.client, { ...f.options,
                 localSpace: () => fired && kind === 'stack getter' ? { bsize: 1n, bavail: 0n } : enoughSpace(),
                 shouldStop: () => { fired = true; throw primary; } }));
@@ -243,11 +240,10 @@ for (const diagnostic of ['source check', 'checkpoint read', 'matrix', 'epoch re
 }
 
 test('normal insert failure keeps its primary error and sanitized durable stop reason', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), f = fixture();
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), f = fixture();
     const secret = 'SyntheticConfiguredCredentialValue';
     registerSecrets({ SYNTHETIC_API_KEY: secret });
     try {
-        await applySchema(local.client);
         await local.client.exec(`ALTER TABLE tokenlayer.session_events ADD CONSTRAINT ${primaryText} CHECK throwIf(1, '${secret}') = 0`);
         const error = await caught(runImport(f.manifest, local.client, { ...f.options, localSpace: enoughSpace }));
         expect(error).toBeInstanceOf(AggregateError);
@@ -281,10 +277,9 @@ test('cleanup failure after successful import remains fatal', async () => {
 }, 60000);
 
 test('lock removal failure retains primary and secondary; an unowned lock is untouched', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), f = fixture();
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), f = fixture();
     const primary = Error('synthetic primary before diagnostics');
     try {
-        await applySchema(local.client);
         const error = await caught(runImport(f.manifest, local.client, { ...f.options, localSpace: enoughSpace, shouldStop: () => {
             unlinkSync(f.lock); mkdirSync(f.lock); throw primary;
         } }));

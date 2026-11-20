@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- tokenlayer-ratchet-live (M1): run the live ratchet rows every 15 min; one outbox line per row state change.
+     __HOME__/.config/tokenlayer/ratchet-live is a git-archive snapshot of the merged tree (docs/ratchet.md). No credentials here. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.tokenlayer.ratchet-live</string>
+<key>ProgramArguments</key><array><string>/opt/homebrew/bin/bun</string><string>__HOME__/.config/tokenlayer/ratchet-live/ratchet/live-schedule.ts</string></array>
+<key>WorkingDirectory</key><string>__HOME__/.config/tokenlayer/ratchet-live</string>
+<key>EnvironmentVariables</key><dict>
+<key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin</string>
+<key>TOKENLAYER_RATCHET_OUTBOX</key><string>__HOME__/outbox.md</string>
+</dict>
+<key>StartInterval</key><integer>900</integer>
+<key>RunAtLoad</key><true/>
+<key>LowPriorityIO</key><true/>
+<key>ProcessType</key><string>Background</string>
+<key>StandardOutPath</key><string>__HOME__/Library/Logs/tokenlayer/ratchet-live.log</string>
+<key>StandardErrorPath</key><string>__HOME__/Library/Logs/tokenlayer/ratchet-live.log</string>
+</dict></plist>

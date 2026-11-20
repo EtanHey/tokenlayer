@@ -20,7 +20,7 @@ Numeric CI rows may set `reportOnly: true`: they still run, display main/PR valu
 
 Queries have two warmups plus 20 timed requests (nearest-rank p95). After OPTIMIZE and stopping background merges, the harness also runs each golden query with the query cache disabled, one thread and fixed block size. It flushes logs and identifies exactly one QueryFinish by a unique log comment, yielding `<query>-read_rows`, `-read_bytes`, `-result_rows`, `-result_bytes` and `-memory_usage`. Query row policy should use `growth: 0.02` (memory: `0.05`); memory allocation can vary slightly. The harness emits `session-active-parts`, `ship-insert-batches`, and `ship-insert-batch-<n>-rows` for deterministic ingest budgets. Storage remains active bytes_on_disk after OPTIMIZE scaled to 10k rows. CI has a six-minute hard timeout.
 
-M1 rows are report-only until deployment; `bun ratchet/live.ts <row-id>` reads local credentials without printing them. Cache ratio is read tokens divided by total creation tokens (W5m + W1h); w1h share uses the raw one-hour creation breakdown. Both read `FINAL` per partition, like `ch_live_query_p95_ms` below. Unknown/zero-denominator telemetry fails the probe. Live ship lag is, per machine, the p95 of first ingest minus event time over events written in the last hour, and the worst machine is reported; 1970-dated imports, history replays and generation replays do not count, and no live events reads 0 (a shipper that stops trips the row once its backlog lands). A shipper that stops and never restarts lands nothing, so `ship_heartbeat_age_s_m1` and `_m4` read the age of each Mac's newest `tokenlayer.ship_heartbeat` row by the server's clock (`ingested_at`); the ship daemon writes one row a minute, and at once when a pass's error class changes (`src/ship/heartbeat.ts`). Ceiling 900 s; no heartbeat at all is MISSING. The M4 row first asks the M4 over the same ssh probe as `usage_json_age_s`: asleep or off the tailnet prints `skip`, and so does a wake under 300 s ago with no heartbeat since, so a dead shipper on an awake M4 posts one FAIL and sleep never clears or re-posts it. A `--backfill` run never beats. A shipper that runs but fails every pass still beats, so `ship_heartbeat_failing_m1` and `_m4` read the last 15 min of each Mac's heartbeats (the live job's own interval; a healthy daemon writes an ok beat a minute, and an error→ok change at once): when none is `ok`, the value is the number of failing beats and the row fails (ceiling 0), posting the error classes; one ok pass reads 0. No beat in the window prints `skip` (silence is the age row's job, and an asleep M4 never clears a FAIL); the M4 row also skips when ssh cannot reach the M4, the probe is broken, or the M4 woke under 15 min ago. `usage_json_age_s` reads the M4's `usage.json` over `ssh macbook-pro`; an asleep or offline M4, or one that woke under 180 s ago with no post-wake snapshot, prints `skip` and the scheduler holds the row's state. `ch_live_query_p95_ms` times a 1-day `FINAL` query with `do_not_merge_across_partitions_select_final=1`: without it `FINAL` cannot prune by `ts` and reads the whole table (see `ratchet/live-sql.ts`). `v_session_events_context` and the archaeology `existing.sql` export read `session_events FINAL` the same way. `jev_unreconciled_24h` counts Jev reservations with no reconciliation 15 min after reservation, over the last day (ceiling 0; see docs/jev.md). No M1 values are claimed by CI.
+M1 rows are report-only until deployment; `bun ratchet/live.ts <row-id>` reads local credentials without printing them. Cache ratio is read tokens divided by total creation tokens (W5m + W1h); w1h share uses the raw one-hour creation breakdown. Both read `FINAL` per partition, like `ch_live_query_p95_ms` below. Unknown/zero-denominator telemetry fails the probe. Live ship lag is, per machine, the p95 of first ingest minus event time over events written in the last hour, and the worst machine is reported; 1970-dated imports, history replays and generation replays do not count, and no live events reads 0 (a shipper that stops trips the row once its backlog lands). A shipper that stops and never restarts lands nothing, so `ship_heartbeat_age_s_m1` and `_m4` read the age of each Mac's newest `tokenlayer.ship_heartbeat` row by the server's clock (`ingested_at`); the ship daemon writes one row a minute, and at once when a pass's error class changes (`src/ship/heartbeat.ts`). Ceiling 900 s; no heartbeat at all is MISSING. The M4 row first asks the M4 over the same ssh probe as `usage_json_age_s`: asleep or off the tailnet prints `skip`, and so does a wake under 300 s ago with no heartbeat since, so a dead shipper on an awake M4 posts one FAIL and sleep never clears or re-posts it. A `--backfill` run never beats. `usage_json_age_s` reads the M4's `usage.json` over `ssh macbook-pro`; an asleep or offline M4, or one that woke under 180 s ago with no post-wake snapshot, prints `skip` and the scheduler holds the row's state. `ch_live_query_p95_ms` times a 1-day `FINAL` query with `do_not_merge_across_partitions_select_final=1`: without it `FINAL` cannot prune by `ts` and reads the whole table (see `ratchet/live-sql.ts`). `v_session_events_context` and the archaeology `existing.sql` export read `session_events FINAL` the same way. `jev_unreconciled_24h` counts Jev reservations with no reconciliation 15 min after reservation, over the last day (ceiling 0; see docs/jev.md). No M1 values are claimed by CI.
 
 ### Live rows on a schedule (M1)
 
@@ -29,33 +29,38 @@ A row that turns red appends one line to the orc outbox, `### tokenlayer-ratchet
 and one `cleared` line when it turns green again; nothing while it stays the same or while a probe prints `skip`. State: `~/.config/tokenlayer/ratchet-live-state.json`.
 `TOKENLAYER_RATCHET_OUTBOX` is required; `TOKENLAYER_RATCHET_OVERRIDE='{"row": value}'` forces values for a proof run (lines say `(override)`).
 
-`claude_burn_2h` catches an idle Claude week (whatever is left at the weekly reset is lost). It reads the hub's own
-`anthropic-ratelimit-unified-7d-utilization` in `proxy_usage.ratelimit` (fractions; `7d_oi`, a per-model quota, is not
-counted): per account, the last reading before the window, then the max per quota cycle and 15-minute bucket. A reset inside a bucket keeps both cycles in reset order. The week used in the last
-2 h is each account's rises summed over accounts (a new weekly cycle that began in the window counts its use; one that
-began earlier counts only the rise after its first reading). No request at all reads 0%/h. The target is orc's:
+`claude_burn_2h` catches an idle Claude week (whatever is left at the weekly reset is lost) and a week burnt too fast.
+It reads the hub's own `anthropic-ratelimit-unified-7d-utilization` and `-7d-reset` in `proxy_usage.ratelimit`
+(fractions; `7d_oi`, the separate Fable quota, is not counted): per account, the last reading before the window, then
+the max per quota cycle and 15-minute bucket, counted back from now so the last hour starts on a bucket edge. A reset inside a bucket retains both cycles in reset order. The week used is each
+account's rises summed over accounts (a new weekly cycle that began in the window counts its use; one that began
+earlier counts only the rise after its first reading). No request at all reads 0%/h.
+
+The target is not a constant. Every run computes it from the in-use account (the latest reading):
+`target %/h = (week % left − reserve %) / hours until that account's weekly reset`, 0 at or under the reserve.
+A reset that has passed with no reading since is a new week: 100% left until the next weekly reset.
+The reserve is orc's, `reserve_pct` in `~/.config/tokenlayer/burn-target.json` (`TOKENLAYER_BURN_TARGET` overrides
+the path; other keys, like the old `pct_per_hour` and `until`, are not read):
 
 ```json
-{"pct_per_hour": 3, "set_by": "orc", "until": "2026-11-20T19:00:00Z"}
+{"reserve_pct": 8, "set_by": "orc"}
 ```
 
-in `~/.config/tokenlayer/burn-target.json` (`TOKENLAYER_BURN_TARGET` overrides the path). The row fails under half of
-`pct_per_hour`. No file, or a target past `until`: report only (the job log's `say` field carries the sentence, the row
-never fails). A malformed file is a broken probe (FAIL, value MISSING). No quiet hours. Its posts read in words:
-`FAIL claude_burn_2h: Claude ran 0.4%/h for the last 2 h against a 3%/h target (alarm under 1.5%/h); 45% of the week is
-left until Fri 21:00` (the in-use account, in Israel time). A probe judges against its own threshold by printing
-`{"value", "threshold", "say"}` as its last line; `threshold: null` means report only.
+No file or no `reserve_pct`: the default 8, and every line says the default is in use. A malformed file, or a
+`reserve_pct` outside 0 to under 100, is a broken probe (FAIL, value MISSING). No Claude reading in 8 days gives no
+target and fails. The row fails when the last 2 h ran under half the target, or the last hour over twice it.
+No quiet hours. Its posts read in words, times in Israel time with IST/IDT:
+`FAIL claude_burn_2h: under half the target: Claude ran 0%/h for the last 2 h and 0%/h for the last hour against a 1%/h
+target (alarm under 0.5%/h for 2 h or over 2%/h for 1 h); target = (45% of the week left − 8% reserve) / 37 h until the
+reset Sat 03:00 IST`. A probe judges against its own threshold by printing `{"value", "threshold", "say"}` as its last
+line; `threshold: null` means report only. A probe that judges two sides adds `"fail"`, which decides the row.
 
 Install from a merged tree (the job runs from a snapshot, so a worktree cleanup cannot break it). Set `OUTBOX` to the orc outbox file first; its path stays out of this public repo:
 
 ```sh
 dest=~/.config/tokenlayer/ratchet-live; rm -rf "$dest.new"; mkdir -p "$dest.new"
 git archive origin/main | tar -x -C "$dest.new" && rm -rf "$dest" && mv "$dest.new" "$dest"
-bun -e 'import {render} from "./scripts/deploy/deploy"; import {readFileSync as r, writeFileSync as w} from "fs"; const h=process.env.HOME;
-  w(h+"/Library/LaunchAgents/com.tokenlayer.ratchet-live.plist", render(r("launchd/com.tokenlayer.ratchet-live.plist.template","utf8"),
-  {HOME:h, REPO:h+"/.config/tokenlayer/ratchet-live", OUTBOX:process.env.OUTBOX}))'
-launchctl bootout gui/$(id -u)/com.tokenlayer.ratchet-live 2>/dev/null
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tokenlayer.ratchet-live.plist
+TOKENLAYER_RATCHET_OUTBOX=$OUTBOX scripts/deploy/setup.sh ratchet-live   # later runs keep the installed outbox
 ```
 
 Normal tests retain 40-trial shipper property smoke checks (`TOKENLAYER_PROPERTY_N` defaults to 40).

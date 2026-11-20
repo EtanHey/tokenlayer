@@ -14,10 +14,9 @@ const stamp = { timestamp: "2026-10-28T08:00:00Z" };
 const tokenCount = { ...stamp, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { output_tokens: 230 }, last_token_usage: { output_tokens: 230 } } } };
 
 for (const recovery of ['state loss', 'returning inode']) test.skipIf(!clickhouseBinary())(`FINAL review: late T3 ${recovery} retains two rows`, async () => {
-  const ch = await startLocalClickHouse();
+  const ch = await startLocalClickHouse({ prepare: applySchema });
   const dir = mkdtempSync(join(root, 'late-t3-'));
   try {
-    await applySchema(ch.client);
     const file = join(dir, 'session.jsonl');
     const opts = { machine: 'synthetic', roots: [{ kind: 'claude' as const, dir }], statePath: join(dir, 'state'), clickhouse: ch.client, rateBytesPerSec: 0 };
     const snapshot = () => ch.client.queryJSON('SELECT * EXCEPT ingested_at FROM tokenlayer.session_events FINAL WHERE machine=\'synthetic\' ORDER BY byte_offset');

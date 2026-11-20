@@ -4,7 +4,7 @@ import { clickhouseBinary, startLocalClickHouse, type LocalClickHouse } from "..
 
 describe.skipIf(!clickhouseBinary())("thirty-day retention → real local ClickHouse", () => {
   let local: LocalClickHouse;
-  beforeAll(async () => { local = await startLocalClickHouse(); await applySchema(local.client); }, 40_000);
+  beforeAll(async () => { local = await startLocalClickHouse({ prepare: applySchema }); }, 40_000);
   afterAll(async () => { await local?.stop(); });
   test("TTL removes only expired ordinary rows, preserves AGY and January 1970; reapplies safely", async () => {
     await local.client.exec(`INSERT INTO tokenlayer.session_events (machine, harness, path, ts)

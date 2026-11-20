@@ -7,7 +7,7 @@ import { applySchema } from "../../src/lib/schema";
 import { shipOnce } from "../../src/ship/ship";
 
 test("real FINAL: plain → zst → replay preserves events, sessions and every raw byte", async () => {
-  const ch = await startLocalClickHouse();
+  const ch = await startLocalClickHouse({ prepare: applySchema });
   const scratch = join(import.meta.dir, "../../.local"); mkdirSync(scratch, { recursive: true });
   const dir = mkdtempSync(join(scratch, "zst-it-")), path = join(dir,"rollout.jsonl");
   const bytes = Buffer.from([
@@ -16,7 +16,7 @@ test("real FINAL: plain → zst → replay preserves events, sessions and every 
   ].join("\r\n")+"\r\n");
   const opts = { machine:"m4", roots:[{kind:"codex" as const,dir}], statePath:join(dir,"state"),clickhouse:ch.client,rateBytesPerSec:0,batchBytes:64 };
   try {
-    await applySchema(ch.client);writeFileSync(path,bytes);expect((await shipOnce(opts)).lines).toBe(2);
+    writeFileSync(path,bytes);expect((await shipOnce(opts)).lines).toBe(2);
     const counts = () => ch.client.queryJSON("SELECT count() AS events, uniqExact(session_id) AS sessions FROM tokenlayer.session_events FINAL");
     const before = await counts();
     writeFileSync(path+".zst",Bun.zstdCompressSync(bytes));unlinkSync(path);unlinkSync(opts.statePath);
@@ -45,13 +45,13 @@ test("real FINAL: plain → zst → replay preserves events, sessions and every 
 
 
 test("real FINAL: 100 shipped + 50 new resumes without replay inserts or replay rate bytes", async () => {
- const ch=await startLocalClickHouse();
+ const ch=await startLocalClickHouse({ prepare: applySchema });
  const dir=mkdtempSync(join(import.meta.dir,"../../.local/zst-resume-it-")), path=join(dir,"rollout.jsonl");
  const prefix=Buffer.from(Array.from({length:100},(_,i)=>JSON.stringify({type:"fixture",i})).join("\n")+"\n");
  const suffix=Buffer.from(Array.from({length:50},(_,i)=>JSON.stringify({type:"fixture",i:i+100})).join("\n")+"\n");
  const opts={machine:"m4",roots:[{kind:"codex" as const,dir}],statePath:join(dir,"state"),clickhouse:ch.client,rateBytesPerSec:0};
  try {
-  await applySchema(ch.client); writeFileSync(path,prefix); expect((await shipOnce(opts)).lines).toBe(100);
+  writeFileSync(path,prefix); expect((await shipOnce(opts)).lines).toBe(100);
   const count=async(final:boolean)=>Number((await ch.client.exec("SELECT count() FROM tokenlayer.session_events"+(final?" FINAL":""))).trim());
   expect(await count(true)).toBe(100);
   writeFileSync(path+".zst",Bun.zstdCompressSync(Buffer.concat([prefix,suffix]))); unlinkSync(path);

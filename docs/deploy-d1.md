@@ -47,9 +47,11 @@ and the existing mode-600 `~/.config/tokenlayer/hub.env` with `CLIPROXY_MGMT_KEY
    Setup forces the owned config directory to 0700 and env files to 0600, including existing files;
    symlinks and foreign ownership are refused. Never paste or echo the password.
 
-4. On each Mac, from its durable checkout, install sidecars and backfill:
+4. On each Mac, from its durable checkout, install sidecars and backfill. Jobs run the pinned copy, so pin the
+   reviewed commit first (`docs/pinned-installs.md`):
 
    ```sh
+   scripts/deploy/setup.sh pin <reviewed-SHA>
    # M1 only (also installs drain, using existing hub.env):
    scripts/deploy/setup.sh ship m1
    scripts/deploy/backfill.sh --days 90 --rate-mb 2

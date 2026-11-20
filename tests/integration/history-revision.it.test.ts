@@ -25,9 +25,8 @@ function fixture() {
     return { dir, roots, history, source, manifest, options: { machine: 'm4', roots: [{ kind: 'codex' as const, dir: roots }], directory: history, liveStates: [] } };
 }
 test('R1 short-record default batches and 4000 distinct overlap hashes stay below native query cap', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), f = fixture();
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), f = fixture();
     try {
-        await applySchema(local.client);
         expect((await local.client.exec("SELECT value FROM system.settings WHERE name='max_query_size'")).trim()).toBe('262144');
         for (const [n, pad] of [[1200, 120], [2000, 60], [4000, 0], [8000, 0]] as const) {
             const s = f.source(n, n, pad);
@@ -48,9 +47,8 @@ test('R1 short-record default batches and 4000 distinct overlap hashes stay belo
     } finally { await local.stop(); }
 }, 120000);
 test('R1 cumulative multi-source audit exceeds injected cap while active state and receipts rotate', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), f = fixture();
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), f = fixture();
     try {
-        await applySchema(local.client);
         const sources = Array.from({ length: 8 }, (_, i) => f.source(100 + i, 300, 80));
         writeFileSync(f.manifest, JSON.stringify({ machine: 'm4', sources }));
         const cap = 96 * 1024;
@@ -71,9 +69,8 @@ test('R1 cumulative multi-source audit exceeds injected cap while active state a
     } finally { await local.stop(); }
 }, 120000);
 test('R1 empty-only trailing batches checkpoint complete without inserting events', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), f = fixture();
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), f = fixture();
     try {
-        await applySchema(local.client);
         const s = f.source(500, 40, 0, true);
         writeFileSync(f.manifest, JSON.stringify({ machine: 'm4', sources: [s] }));
         await runImport(f.manifest, local.client, { ...f.options, batchBytes: 1 });
@@ -84,9 +81,8 @@ test('R1 empty-only trailing batches checkpoint complete without inserting event
 test('R1 rotation SIGKILL on either side of rename retains pending real-insert reconciliation and immutable audit', async () => {
     const { StreamingHistoryClient } = await import('../../scripts/history/stream');
     const { shipOnce } = await import('../../src/ship/ship');
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), f = fixture();
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), f = fixture();
     try {
-        await applySchema(local.client);
         const s = f.source(600, 32), ledger = join(f.history, 'ledger.ndjson');
         const opts = { ledger, manifest: 'rotation', run: 'first', sessionId: s.sessionId };
         const client = new StreamingHistoryClient(local.client.config, opts);
@@ -125,10 +121,9 @@ test('R1 rotation SIGKILL on either side of rename retains pending real-insert r
 test('R1 restart resumes at acknowledged offset after reconcile; FINAL mismatch blocks queue completion', async () => {
     const { ClickHouse } = await import('../../src/lib/clickhouse');
     const { loadState } = await import('../../src/ship/state');
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), f = fixture();
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), f = fixture();
     const insert = ClickHouse.prototype.insert;
     try {
-        await applySchema(local.client);
         const s = f.source(700, 400, 200);
         writeFileSync(f.manifest, JSON.stringify({ machine: 'm4', sources: [s] }));
         let inserts = 0;

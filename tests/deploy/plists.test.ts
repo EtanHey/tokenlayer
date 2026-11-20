@@ -10,7 +10,7 @@ mkdirSync('.local', { recursive: true });
 const home = '/Users/synthetic';
 const repo = `${home}/Gits/tokenlayer`;
 const values = { HOME: home, REPO: repo, BUN: '/opt/homebrew/Cellar/bun/1.4.4_1/bin/bun', CLICKHOUSE: `${home}/.local/bin/clickhouse-d1-26.10.2.103` };
-Object.assign(values, { OUTBOX: `${home}/outbox.md` });
+Object.assign(values, { OUTBOX: `${home}/outbox.md`, LOGINS: 'synthetic@github', ORIGIN: 'https://synthetic.invalid:8448' });
 const parse = (xml: string) => {
   const result = spawnSync('python3', ['-c', 'import json,plistlib,sys;json.dump(plistlib.loads(sys.stdin.buffer.read()),sys.stdout)'], { input: xml, encoding: 'utf8' });
   expect(result.status).toBe(0);
@@ -24,7 +24,7 @@ for (const machine of ['m1', 'm4']) test(`${machine}: every rendered plist avoid
     if (plist.Label === 'com.tokenlayer.ship') expect(plist.EnvironmentVariables.TOKENLAYER_MACHINE).toBe(machine);
     const agent = plist.Label.replace('com.tokenlayer.', '') as keyof typeof names;
     if (agent in names) expect(basename(plist.ProgramArguments[0])).toBe(names[agent]);
-    if (['com.tokenlayer.usage', 'com.tokenlayer.steer', 'com.tokenlayer.jev'].includes(plist.Label)) expect(plist.ProgramArguments[0]).toBe('/opt/homebrew/bin/bun');
+    if (['com.tokenlayer.usage', 'com.tokenlayer.steer', 'com.tokenlayer.jev', 'com.tokenlayer.fable', 'com.tokenlayer.dashboard'].includes(plist.Label)) expect(plist.ProgramArguments[0]).toBe('/opt/homebrew/bin/bun');
   }
 });
 test('ratchet-live: snapshot runner every 15 min posts to the rendered outbox', () => {
@@ -70,6 +70,11 @@ test('render-only CLI writes the correct agent set without touching home config 
     const run = spawnSync(process.execPath, ['scripts/deploy/render.ts', machine, output], { env: { ...process.env, HOME: root, PATH: '' }, encoding: 'utf8' });
     expect(run.status).toBe(0);
     expect(readdirSync(output).sort()).toEqual((machine === 'm1' ? ['clickhouse', 'drain', 'ship'] : ['ship']).map(a => `com.tokenlayer.${a}.plist`));
+    for (const file of readdirSync(output)) { // daemons run the pinned copy, never a git checkout a pull can change
+      const plist = parse(readFileSync(`${output}/${file}`, 'utf8'));
+      expect(plist.ProgramArguments[0].startsWith(`${root}/.config/tokenlayer/app/current/`)).toBe(true);
+      if (!file.includes('clickhouse')) expect(plist.WorkingDirectory).toBe(`${root}/.config/tokenlayer/app/current`);
+    }
     expect(existsSync(`${root}/.config`)).toBe(false);
     expect(existsSync(`${root}/Library/LaunchAgents`)).toBe(false);
     expect(existsSync(`${root}/Library/Logs/tokenlayer`)).toBe(false);

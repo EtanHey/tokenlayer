@@ -10,11 +10,10 @@ import { parseLine } from '../../src/ship/parse';
 import { shipOnce } from '../../src/ship/ship';
 
 test('daily sessions: normalized repos, per-event models, native child ids and replay', async () => {
-  const ch = await startLocalClickHouse();
+  const ch = await startLocalClickHouse({ prepare: applySchema });
   mkdirSync('.local', { recursive: true });
   const dir = mkdtempSync(join(process.cwd(), '.local/daily-'));
   try {
-    await applySchema(ch.client);
     const claude = join(dir, 'claude'); const codex = join(dir, 'codex');
     mkdirSync(claude); mkdirSync(codex);
     const assistant = (sessionId: string, day: number, repo: string, model: string) => ({
@@ -56,9 +55,8 @@ test('daily sessions: normalized repos, per-event models, native child ids and r
 }, 40000);
 
 test('daily sessions: (none) only for sessions without a model that day', async () => {
-  const ch = await startLocalClickHouse();
+  const ch = await startLocalClickHouse({ prepare: applySchema });
   try {
-    await applySchema(ch.client);
     const cases: [string, string, number, string][] = [
       ['mixed', 'claude', 28, ''],
       ['mixed', 'claude', 28, 'model-a'],
@@ -93,9 +91,8 @@ test('daily sessions: (none) only for sessions without a model that day', async 
 }, 40000);
 
 test('existing archive and ship rows normalize from cwd; slug fallback never overrides recorded cwd', async () => {
-  const ch = await startLocalClickHouse();
+  const ch = await startLocalClickHouse({ prepare: applySchema });
   try {
-    await applySchema(ch.client);
     const cases = [
       ...repoCwds.map(([cwd, repo]) => ({ cwd, repo, path: '/synthetic/ship.jsonl', debug: cwd.replace(/\/+$/, '').split('/').at(-1) ?? '' })),
       ...KNOWN_REPOS.map(repo => ({ cwd: '', repo, path: `/Users/happycampr/.claude/projects/-Users-happycampr-Gits-${repo.toUpperCase().replace(/[^A-Z0-9-]/g, '-')}-src/id.jsonl`, debug: `-Users-happycampr-Gits-${repo.toUpperCase().replace(/[^A-Z0-9-]/g, '-')}-src` })),
@@ -132,9 +129,8 @@ test('existing archive and ship rows normalize from cwd; slug fallback never ove
 }, 40000);
 
 test('a later recorded cwd suppresses slug fallback for the whole source stream', async () => {
-  const ch = await startLocalClickHouse();
+  const ch = await startLocalClickHouse({ prepare: applySchema });
   try {
-    await applySchema(ch.client);
     const path = '/Users/etanheyman/.claude/projects/-Users-etanheyman-Gits-golems/id.jsonl';
     await ch.client.insert('session_events', ['', '/Users/etanheyman/Gits/tokenlayer/src', ''].map((cwd, i) => ({
       ...parseLine(JSON.stringify({ type: 'assistant', sessionId: 'later-cwd', cwd,
