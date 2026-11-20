@@ -12,16 +12,17 @@ let latestState = null,
 let ready = false,
   inflight = false,
   retryBody = null;
-async function api(path, body) {
+async function api(path, body, signal) {
   const r = await fetch(
     "/api/" + path,
     body
       ? {
+          signal,
           method: "POST",
           headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
           body: JSON.stringify(body),
         }
-      : {},
+      : { signal },
   );
   const data = await r.json();
   if (!r.ok) throw Error(data.error || "Request failed (" + r.status + ")");
@@ -471,12 +472,26 @@ function toolRow(t) {
   if (t.note) li.append(Object.assign(text("small", t.note), { className: "tool-note" }));
   return li;
 }
-let toolsInflight = false;
+let toolsInflight = false, toolsRows = [], toolsLastSuccess = null;
 async function refreshTools() {
   if (toolsInflight) return;
   toolsInflight = true;
+  const controller = new AbortController();
+  let deadline;
   try {
-    const data = await api("tools");
+    // Bound the complete request, including body decoding. The race also releases the
+    // refresh gate when a fetch implementation fails to settle after abort.
+    const data = await Promise.race([
+      api("tools", undefined, controller.signal),
+      new Promise((_, reject) => {
+        deadline = setTimeout(() => {
+          reject(Error("request timed out"));
+          controller.abort();
+        }, 15000);
+      }),
+    ]);
+    toolsRows = data.rows;
+    toolsLastSuccess = Date.now();
     $("#tools").replaceChildren(...data.rows.map(toolRow));
     const m4 = data.m4;
     $("#tools-source").textContent = "M4 usage.json: " +
@@ -484,8 +499,15 @@ async function refreshTools() {
         error: "could not be read" }[m4.state] || m4.state) +
       (m4.generated_at ? " · written " + time(m4.generated_at) : "") + " · as of " + time(Date.now());
   } catch (e) {
-    $("#tools-source").textContent = "All tools unavailable: " + e.message;
+    const age = toolsLastSuccess === null ? "no successful reading yet"
+      : "last success " + Math.max(0, Math.floor((Date.now() - toolsLastSuccess) / 1000)) + " s ago";
+    const why = "All tools unavailable: " + e.message + " · " + age;
+    $("#tools").replaceChildren(...toolsRows.map(t => toolRow({ ...t,
+      pct: null, window: null, resets_at: null, use: null, mark: "UNKNOWN", why,
+    })));
+    $("#tools-source").textContent = why;
   } finally {
+    clearTimeout(deadline);
     toolsInflight = false;
   }
 }
