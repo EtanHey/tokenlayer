@@ -31,6 +31,16 @@ CREATE TABLE IF NOT EXISTS tokenlayer.session_events
     credits               Nullable(Float64)      DEFAULT NULL,
     raw                   String                 CODEC(ZSTD(6)),
     ingested_at           DateTime64(3, 'UTC')   DEFAULT now64(3) CODEC(Delta, ZSTD(3)),
+    -- Facts the views take from raw, extracted once at insert (R7) so a view read never decompresses raw (51 GiB).
+    -- Pure functions of raw, type and role: every version of a key carries the same values. Parts written before the
+    -- column existed compute it from raw on read until MATERIALIZE COLUMN (docs/telemetry.md) rewrites them.
+    raw_has_created_at    UInt8                  MATERIALIZED JSONHas(raw, 'created_at'),
+    raw_has_message       UInt8                  MATERIALIZED JSONHas(raw, 'message'),
+    token_total           String                 MATERIALIZED if(type = 'event_msg' AND role = 'token_count', coalesce(nullIf(JSONExtractRaw(raw, 'payload', 'info', 'total_token_usage'), ''), 'null'), '') CODEC(ZSTD(3)),
+    codex_primary_pct     Nullable(Float64)      MATERIALIZED if(type = 'event_msg' AND role = 'token_count', JSONExtract(raw, 'payload', 'rate_limits', 'primary', 'used_percent', 'Nullable(Float64)'), NULL),
+    codex_primary_minutes Nullable(UInt64)       MATERIALIZED if(type = 'event_msg' AND role = 'token_count', JSONExtract(raw, 'payload', 'rate_limits', 'primary', 'window_minutes', 'Nullable(UInt64)'), NULL),
+    codex_secondary_pct   Nullable(Float64)      MATERIALIZED if(type = 'event_msg' AND role = 'token_count', JSONExtract(raw, 'payload', 'rate_limits', 'secondary', 'used_percent', 'Nullable(Float64)'), NULL),
+    codex_secondary_minutes Nullable(UInt64)     MATERIALIZED if(type = 'event_msg' AND role = 'token_count', JSONExtract(raw, 'payload', 'rate_limits', 'secondary', 'window_minutes', 'Nullable(UInt64)'), NULL),
 
     INDEX idx_session session_id TYPE bloom_filter(0.01) GRANULARITY 4,
     INDEX idx_project project    TYPE set(1024)           GRANULARITY 4
