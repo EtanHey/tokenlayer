@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, statSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { applySchema } from "../../src/lib/schema";
+import { materializedColumns } from "../../src/lib/session-schema";
 import { shipOnce } from "../../src/ship/ship";
 import { drainOnce } from "../../src/drain/drain";
 import { Spool } from "../../src/drain/spool";
@@ -153,6 +154,8 @@ for (const escaped of [false, true]) test.skipIf(!clickhouseBinary())(`review: r
   const dir = mkdtempSync(join(root, "raw-error-"));
   try {
     await applySchema(ch.client);
+    // The columns derived from raw (R7) would reject a UInt8 raw before the parse error this test needs.
+    await ch.client.exec(`ALTER TABLE tokenlayer.session_events ${materializedColumns().map(c => `DROP COLUMN ${c.name}`).join(", ")}`);
     await ch.client.exec("ALTER TABLE tokenlayer.session_events MODIFY COLUMN raw UInt8");
     const secret = "sk-ant-api03-SYNTHETICfake" + "A".repeat(40);
     writeFileSync(join(dir, "secret.jsonl"), JSON.stringify(escaped ? { type: 'user', message: { role: 'user', content: `see:\n${secret}` } } : { secret }) + "\n");

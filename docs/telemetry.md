@@ -6,12 +6,16 @@ Apply the schema with `bun run schema:apply` (reads `CLICKHOUSE_*` from the envi
 | Table | Feed | Sort key | Engine |
 |---|---|---|---|
 | `proxy_usage` | `tokenlayer-drain` ← `GET /v8/management/observability/usage/queue` | `(credential, toDate(ts), ts, execution_id)` | ReplacingMergeTree, monthly partitions |
-| `credentials_snap` | `tokenlayer-steer` (P3) | `(credential, ts)` | MergeTree, monthly partitions |
-| `session_events` | `tokenlayer-ship` on each Mac | `(machine, path, generation, byte_offset, content_hash)` | ReplacingMergeTree, monthly partitions |
+| `session_events` | `tokenlayer-ship` on each Mac | `(machine, path, generation, byte_offset, content_hash)` | ReplacingMergeTree, daily partitions (R12) |
 
 Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
 `account_hash` = `labelHash(source)` (email / project / upstream key), `client_key_hash` = `labelHash(api_key)`.
-`labelHash` is `sha256("tokenlayer:v1:" + value)[:16]` (`src/lib/hash.ts`), shared by steer so the tables join.
+`labelHash` is `sha256("tokenlayer:v1:" + value)[:16]` (`src/lib/hash.ts`), shared by steer and usage.json so their labels match `proxy_usage.credential`.
+
+Quota history (5h, 7d and Fable `7d_oi` utilization, resets, status) is the `ratelimit` map of `proxy_usage`:
+the hub's rate-limit headers from every served response. There is no per-credential snapshot table.
+`credentials_snap` (schema 003) was meant for steer snapshots, but steer was never deployed, so it never had a row;
+it was removed from the schema on 2026-11-19. A hub that already has the empty table keeps it until a lead drops it.
 
 ## Drain guarantees
 
@@ -95,6 +99,17 @@ Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
   checkpoint loss replays the current generation, and late harness
   classification preserves that generation. Losing both files loses revision lineage and can add replay rows;
   content hashes still protect different archived content. Restore the sidecar to retain lineage.
+- A journal ahead of a surviving checkpoint on the same generation (a failed insert, or a stop between the
+  journal write and the checkpoint) resumes from the acknowledged checkpoint once both prefixes verify; only the
+  unacknowledged suffix re-ships. Before R8 this replayed the whole file from offset 0, so every network blip on
+  a Mac re-inserted its active sessions: 2.5M of 11.4M `session_events` rows (22%) on 2026-11-19, kept apart by
+  the 1 GiB background-merge cap. Missing checkpoints, other generations and compressed files still replay.
+- A request that never left the Mac (DNS `ENOTFOUND`/`EAI_AGAIN`, or `ECONNREFUSED`) is retried after 1, 3 and
+  10 s, so a blip of up to about 14 s costs nothing. ClickHouse never saw the request, so the retry is safe for
+  any statement. A reset or timeout may come after the server read the request, so it is not retried. If the
+  store is still unreachable, the ship pass stops at that file: the other files' journals do not run ahead, and
+  the next pass resumes as above. The M4 resolves the hub only through Tailscale's MagicDNS resolver; its router
+  has no answer for `*.ts.net`, so a stopped or paused Tailscale shows up as `ENOTFOUND` (R9).
 - Version 3 checkpoints hash the entire acknowledged prefix using streaming 64 KiB buffers. Changed files
   verify that prefix before resuming; batch hashes extend incrementally, avoiding a full rehash per chunk.
   The verified prefix hash is reused to extend batches from their exact source buffers before insertion;
@@ -144,6 +159,13 @@ Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
   `input_tokens` means uncached input for both harnesses (Codex `input_tokens - cached_input_tokens`).
 - The daemon picks up un-checkpointed files only if modified in the last 24 h; `--backfill [--since DATE]` does history
   at `--rate-mb` (default 5 MB/s).
+- Heartbeat: after each pass the daemon writes one row to `tokenlayer.ship_heartbeat` (schema/012): machine, pass
+  time, `ok`/`error`, an error class (`store_unreachable`, `file_errors` or `other`), files, lines, bytes and duration.
+  No paths, messages or content. It writes at most once a minute while the class stays the same, and at once when it
+  changes; a write that fails is logged once by class and retried next pass, with no unsent retries, so a down store
+  never stalls the loop. Rows expire after 30 days. A `--backfill` never beats. The live rows
+  `ship_heartbeat_age_s_m1` / `_m4` read it for silence, and `ship_heartbeat_failing_m1` / `_m4` for 15 min with no ok
+  pass (docs/ratchet.md).
 - Not shipped yet: T3 Code's own thread store (SQLite, see the PR-b body) and the stray Codex rollout at `~/.t3/*.jsonl`.
 
 Agents default to `v_session_events_meta` (an explicit metadata allowlist) and `v_requests`
@@ -182,7 +204,7 @@ LIMIT 50
 `reader` profile in `config/clickhouse.xml.template`:
 - Each query is capped at 8 GiB (`max_memory_usage`). A caller may lower the cap, but may not raise it or set 0
   (ClickHouse refuses with code 452).
-- GROUP BY and ORDER BY spill to disk past 4 GiB, with at most 8 GiB of temporary disk per query.
+- GROUP BY and ORDER BY spill to disk past 4 GiB, with at most 8 GiB of temporary disk per query. Like the memory cap, a caller may lower the temp-disk limit but not lift it or set 0 (unlimited).
 
 Ship and drain write as `tokenlayer_writer`, which stays uncapped. It has its own password in
 `~/.config/tokenlayer/clickhouse-writer.env` (mode 600, loaded last by their plists), so the reader's password cannot
@@ -204,8 +226,33 @@ sorted all 51 GiB of `raw` and failed the cap. Live on the M1 (11.1M rows), as t
 | `v_provider_usage_compare`, 7 days or all days | 4.4 GiB | 55–62 s |
 | the 30-day `v_sessions_daily` query below | 4.8 GiB | 5 s |
 
-The compare still scans `raw` once per read, for the per-file `created_at`/`message` provider hints. That scan is
-most of its time. A full `SELECT *` from the context view still sorts every row by session for `ordinal`.
+A full `SELECT *` from the context view still sorts every row by session for `ordinal`.
+
+### Facts from `raw` are columns (R7)
+
+No view reads `raw`. The facts they need are `MATERIALIZED` columns of `session_events`, extracted once at insert
+(schema/004): `raw_has_created_at` and `raw_has_message` (the compare's per-file provider hints), `token_total`
+(the context view's token_count credit) and `codex_{primary,secondary}_{pct,minutes}` (Codex rate limits). Before
+R7 the compare decompressed all of `raw` once per read for the hints, which was most of its time. Live on the M1
+(2026-11-19, reader, 7 days): 4.9 GiB / 59 s before R7, 4.8 GiB / 49 s with the columns but old parts not yet
+backfilled, and 2.8–3.7 GiB / 7.5 s on a copy where every row carries the columns.
+
+`bun run schema:apply` adds the columns with `ADD COLUMN IF NOT EXISTS`, which is metadata only: no mutation, and
+existing parts are untouched. Parts written before that compute the columns from `raw` on read, so the views are
+correct at once and only the speed waits for the backfill. Merges and the 30-day TTL rewrite old parts over time.
+To backfill now, in an announced window (one mutation; it hard-links `raw` and writes only the new columns):
+
+```sql
+ALTER TABLE tokenlayer.session_events
+    MATERIALIZE COLUMN raw_has_created_at IN PARTITION 202611, MATERIALIZE COLUMN raw_has_message IN PARTITION 202611,
+    MATERIALIZE COLUMN token_total IN PARTITION 202611,
+    MATERIALIZE COLUMN codex_primary_pct IN PARTITION 202611, MATERIALIZE COLUMN codex_primary_minutes IN PARTITION 202611,
+    MATERIALIZE COLUMN codex_secondary_pct IN PARTITION 202611, MATERIALIZE COLUMN codex_secondary_minutes IN PARTITION 202611
+```
+
+Every command carries its own `IN PARTITION`; one left without it covers the whole table. Run one partition at a
+time (`SELECT DISTINCT partition FROM system.parts WHERE database = 'tokenlayer' AND table = 'session_events' AND
+active`) and wait for `system.mutations` to show `is_done` before the next.
 
 Activity per machine / harness / project: the context view reads the archive with `FINAL` and derives attribution/usage credit.
 Rewound/abandoned branches with different content remain distinct. Legacy migration or lineage loss can increase sums.
@@ -248,10 +295,67 @@ see the runbook's compressed-history gap before claiming all 90 days are present
 ## Session text retention
 
 `bun run schema:apply` expands `{{SESSION_RETENTION_DAYS}}` in migration 011 from
-`src/lib/session-retention.ts` (30 days). The TTL deletes expired session rows in background
-merges, with a one-hour minimum interval between TTL merges. It preserves `harness = 'antigravity'`
+`src/lib/session-retention.ts` (30 days). It preserves `harness = 'antigravity'`
 and all UTC January 1970 timestamps until undated rows are resolved. Both session and proxy tables
-cap background merge size at 1 GiB. Apply retention in two separate steps:
+cap background merge size at 1 GiB.
+
+**Daily partitions, whole-part drops (R12).** `session_events` has one partition per UTC day
+(`toYYYYMMDD(ts)`) and `ttl_only_drop_parts = 1`. A day's parts go once their last row is 30 days
+old, so a row lives 30 to 31 days, and the TTL never rewrites a part to trim an hour of rows.
+Because the TTL has a `WHERE`, that drop still reads the part and writes back its Antigravity and
+January 1970 rows; a day without them leaves nothing. The drop has no size cap, unlike a row-delete
+TTL merge, which never touches a part over the 1 GiB cap. Ship inserts set
+`max_partitions_per_insert_block = 0`, because an Antigravity replay can span more than 100 days.
+
+A table created before R12 is monthly. On monthly partitions, TTL merges rewrite a part up to
+hourly to remove one hour's rows. They never delete rows in a part over 1 GiB, and parts written
+before migration 011 carry no TTL information until they merge. Move it with
+`bun run schema:repartition` in an announced window (`--dry-run` first, which sends SELECTs only;
+`--floor-gib`, default 30; `--max-parts` to stop early; `--disk-multiplier`, default 3). A flag that is
+not a plain number refuses before connecting. It does the following:
+1. Refuses, changing nothing, unless both Macs' running shippers load a client that sets
+   `max_partitions_per_insert_block = 0` (it reads launchd on this Mac and, over ssh, on the M4
+   (`TOKENLAYER_M4_HOST`, default `macbook-pro`); an older shipper would retry a batch spanning
+   over 100 days for ever), and free disk (`df`, which is `free_space + keep_free_space`) covers
+   the floor plus a 2 GiB kill margin plus the most demanding part: 1.1 times the part (its copied
+   days stay until the part drops) plus 3 times its largest day. A day's size is its share of the
+   part by source-line bytes or by rows, whichever is larger. It then exchanges in an empty daily table built from
+   `schema/004` and migration 011, and keeps the old one as `session_events_monthly`, with merges
+   stopped. Shippers keep writing to the daily table. During the copy the daily table fsyncs inserted
+   and merged parts and keeps outdated parts 10 s (`old_parts_lifetime`); step 3 resets both.
+2. For each archive part, smallest first: it skips days whose kept keys the live table already
+   holds at the same or a newer version (a rerun after a kill), and waits until free disk covers
+   step 1's test for the days left (a resumed run is held to it too). Then one UTC day at a time:
+   it waits until free disk minus 3 times the day clears the floor plus the margin, then inserts
+   the day's kept rows under a `query_id` starting `r12-`, every version as it is. A watchdog
+   reads free disk every second and `KILL QUERY`s the copy once it falls under the floor plus
+   2 GiB (merges already running finish after a kill), or after 3 failed reads in a row; it
+   re-issues the KILL until the query is gone, and stops the run with an error if that is not
+   confirmed within 60 s. Disk, KILL and process requests each have a cancellable 5 s deadline;
+   a timed-out disk request counts as a failed read, and Ctrl-C interrupts a pending read.
+   Confirmation requests also fit within the remaining 60 s budget. The copy itself has no
+   control-request deadline. The run then stops `partial` and the archive part stays. Once every day is in and every kept key checks out, it drops that archive part.
+   Duplicate versions collapse as each day's parts merge.
+3. Holds the archive while any relevant session INSERT is active, including writers admitted
+   during preflight and on resumed runs. Once none remain, refreshes the part list and drops
+   the archive only if it is still empty; late committed parts are copied on resume.
+
+Ctrl-C (or SIGTERM) kills the running copy on the server before the command exits; a second Ctrl-C
+exits at once. A run refuses to start while any `r12-` query still runs (a killed client's copy):
+wait for it or `KILL QUERY WHERE startsWith(query_id, 'r12-') SYNC`. `SYSTEM STOP MERGES` on the
+archive does not survive a ClickHouse restart, so rerun promptly after one. The key check leaves out
+rows due to expire within the hour: they are copied but not verified. To back out mid-window,
+Ctrl-C the command and confirm `SELECT query_id FROM system.processes WHERE startsWith(query_id, 'r12-')`
+is empty, then run the statements in `BACK_OUT_SQL` (`src/lib/session-repartition.ts`): exchange
+the tables back, rename the daily table to `session_events_daily_backed_out`, `SYSTEM START MERGES`
+on the restored table, and reset the daily table's window settings. The backed-out table is the
+only copy of the days already copied and of the rows shipped during the window: copy it back day
+by day with `copyBackSQL(day)` (insert, a check that must read 0, then drop that day), each day
+only while `df` free is at least the floor + 2 GiB + 3 times the day's bytes (`COPY_BACK_DAYS_SQL`),
+then drop the empty table. Never drop it before that.
+
+Rerunning resumes from what the database shows. Until a part is copied, views show only the days
+of it already copied. Before R12, this retention was applied in two separate steps:
 
 1. Apply the schema with `bun run schema:apply`. Migration 011 is metadata only:
    `materialize_ttl_after_modify = 0` prevents a rewrite, and the runner skips statements

@@ -1,4 +1,5 @@
-import { expect, test } from 'bun:test';
+import { expect } from 'bun:test';
+import { test } from '../support/clickhouse-gate';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -52,6 +53,9 @@ test('reader cap and writer user apply by config reload, without a restart', asy
     // A caller can lower the cap but not lift it, and 0 (unlimited) is refused.
     expect(await reader.exec("SELECT getSetting('max_memory_usage') SETTINGS max_memory_usage=1000000").then(Number)).toBe(1e6);
     for (const v of [0, 16 * GiB]) await expect(reader.exec(`SELECT 1 SETTINGS max_memory_usage=${v}`)).rejects.toThrow('exception 452');
+    // The temp-disk limit holds the same way (security pre-review S1: 0 was accepted, i.e. unlimited spill).
+    expect(await reader.exec("SELECT getSetting('max_temporary_data_on_disk_size_for_query') SETTINGS max_temporary_data_on_disk_size_for_query=1000000").then(Number)).toBe(1e6);
+    for (const v of [0, 16 * GiB]) await expect(reader.exec(`SELECT 1 SETTINGS max_temporary_data_on_disk_size_for_query=${v}`)).rejects.toThrow('exception 452');
     // The cap binds: a query past it fails with MEMORY_LIMIT_EXCEEDED (lowered cap keeps the test light).
     await expect(reader.exec('SELECT groupArray(number) FROM numbers(50000000) SETTINGS max_memory_usage=50000000')).rejects.toThrow('exception 241');
     expect(await writer.exec('SELECT length(groupArray(number)) FROM numbers(50000000)').then(Number)).toBe(5e7);

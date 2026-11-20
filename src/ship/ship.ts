@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { closeSync, existsSync, openSync, readdirSync, readSync, statSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { RAW_BYTES, type ClickHouse } from "../lib/clickhouse";
+import { StoreUnreachableError } from "../lib/clickhouse-retry";
 import { sha256Hex } from "../lib/hash";
 import { detectHarness, newFileState, parseLine, type Harness, type SourceKind } from "./parse";
 import { loadState, saveState, type FileCheckpoint, type ShipState } from "./state";
@@ -234,10 +235,23 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             hash = createHash("sha256");
             result.resets++;
           } else if (cp && replay) {
-            const generation = cp.generation;
-            cp = fresh();
-            cp.generation = generation;
-            hash = createHash("sha256");
+            // The journal ran ahead of acknowledged progress on the same generation: an insert failed, or the
+            // process stopped between the write-ahead record and the checkpoint. The journal's longer prefix just
+            // verified, so resume from the acknowledged checkpoint. Replaying from 0 re-inserted whole files after
+            // every network blip (R8: 22% of session_events). Lost checkpoints and compressed files still replay.
+            const acked = state.files[path];
+            const resumable = acked && !compressed && !acked.compressed && acked.generation === cp.generation
+              && acked.offset > 0 && acked.offset < cp.offset && acked.parser.harness === cp.parser.harness;
+            const ackedHash = resumable ? prefixHash(path, acked.offset) : undefined;
+            if (resumable && ackedHash!.copy().digest("hex") === acked.fingerprint) {
+              cp = structuredClone(acked);
+              hash = ackedHash!;
+            } else {
+              const generation = cp.generation;
+              cp = fresh();
+              cp.generation = generation;
+              hash = createHash("sha256");
+            }
           }
           if (cp && !cp.harnessDecided) {
             const decided = detectHarness(root.kind, head());
@@ -352,7 +366,11 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
         } catch (err) {
           const reason = err instanceof Error ? err.message : String(err);
           const message = compressed ? `${sanitizeOutput(physical)}: ${sanitizeOutput(reason)}` : redactText(reason);
-          failures.push(new Error(message));
+          // Keep the class (never the cause's text) so the heartbeat can tell an outage from a bad file.
+          failures.push(Object.assign(new Error(message), err instanceof StoreUnreachableError ? { name: err.name } : {}));
+          // The store is unreachable (DNS or connect, after the client's retries): every later file would
+          // also write its journal ahead and fail. Stop the pass; acknowledged progress is saved below.
+          if (err instanceof StoreUnreachableError) throw new AggregateError(failures, "ship failed for some files");
         }
       }
     }
