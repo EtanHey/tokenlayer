@@ -48,7 +48,7 @@ for (const agent of ['ship', 'drain', 'clickhouse'] as const) test(`${agent}: na
   expect(plist.AssociatedBundleIdentifiers).toBeUndefined();
   expect(plist.StandardOutPath).toBe(`${home}/Library/Logs/tokenlayer/${agent === 'clickhouse' ? 'clickhouse-launchd' : agent}.log`);
   expect(plist.StandardErrorPath).toBe(plist.StandardOutPath);
-  expect(plist.EnvironmentVariables).toEqual(agent === 'ship' ? { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', TOKENLAYER_MACHINE: 'm1', TOKENLAYER_ENV_FILES: `${home}/.config/tokenlayer/ship.env:${home}/.config/tokenlayer/clickhouse.env` } : agent === 'drain' ? { TOKENLAYER_HUB: 'm1', TOKENLAYER_HUB_URL: 'http://127.0.0.1:8317', TOKENLAYER_ENV_FILES: `${home}/.config/tokenlayer/hub.env:${home}/.config/tokenlayer/clickhouse.env` } : undefined);
+  expect(plist.EnvironmentVariables).toEqual(agent === 'ship' ? { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', TOKENLAYER_MACHINE: 'm1', CLICKHOUSE_USER: 'tokenlayer_writer', TOKENLAYER_ENV_FILES: `${home}/.config/tokenlayer/ship.env:${home}/.config/tokenlayer/clickhouse.env` } : agent === 'drain' ? { TOKENLAYER_HUB: 'm1', TOKENLAYER_HUB_URL: 'http://127.0.0.1:8317', CLICKHOUSE_USER: 'tokenlayer_writer', TOKENLAYER_ENV_FILES: `${home}/.config/tokenlayer/hub.env:${home}/.config/tokenlayer/clickhouse.env` } : undefined);
   expect([plist.LowPriorityIO, plist.Nice]).toEqual(agent === 'ship' ? [true, 10] : [undefined, undefined]);
   expect([plist.RunAtLoad, plist.KeepAlive, plist.ThrottleInterval]).toEqual([true, true, 30]);
   expect(plist.WorkingDirectory).toBe(agent === 'clickhouse' ? `${home}/Library/Application Support/tokenlayer/clickhouse` : repo);

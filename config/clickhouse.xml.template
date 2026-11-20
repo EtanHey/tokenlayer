@@ -8,10 +8,33 @@
     <log>__HOME__/Library/Logs/tokenlayer/clickhouse.log</log>
     <errorlog>__HOME__/Library/Logs/tokenlayer/clickhouse.err.log</errorlog>
   </logger>
-  <profiles><default><log_queries>0</log_queries><log_query_threads>0</log_query_threads></default></profiles>
-  <users><tokenlayer>
-    <password_sha256_hex from_env="CLICKHOUSE_PASSWORD_SHA256" hide_in_preprocessed="true"/>
-    <networks><ip>127.0.0.1</ip></networks><profile>default</profile><quota>default</quota>
-  </tokenlayer></users>
+  <!-- reader: every query on the shared tokenlayer login (dashboard, ratchet, agents). One unbounded read of
+       v_session_events_context reached the 28.8 GiB server limit on 2026-11-19; the cap stops such a read at
+       8 GiB and its spill at 8 GiB of temp disk (callers may lower either, never lift it or set 0). Ship and
+       drain write as tokenlayer_writer, uncapped. -->
+  <profiles>
+    <default><log_queries>0</log_queries><log_query_threads>0</log_query_threads></default>
+    <reader>
+      <profile>default</profile>
+      <max_memory_usage>8589934592</max_memory_usage>
+      <max_bytes_before_external_group_by>4294967296</max_bytes_before_external_group_by>
+      <max_bytes_before_external_sort>4294967296</max_bytes_before_external_sort>
+      <max_temporary_data_on_disk_size_for_query>8589934592</max_temporary_data_on_disk_size_for_query>
+      <constraints>
+        <max_memory_usage><min>1</min><max>8589934592</max></max_memory_usage>
+        <max_temporary_data_on_disk_size_for_query><min>1</min><max>8589934592</max></max_temporary_data_on_disk_size_for_query>
+      </constraints>
+    </reader>
+  </profiles>
+  <users>
+    <tokenlayer>
+      <password_sha256_hex from_env="CLICKHOUSE_PASSWORD_SHA256" hide_in_preprocessed="true"/>
+      <networks><ip>127.0.0.1</ip></networks><profile>reader</profile><quota>default</quota>
+    </tokenlayer>
+    <tokenlayer_writer>
+      <password_sha256_hex from_env="CLICKHOUSE_PASSWORD_SHA256" hide_in_preprocessed="true"/>
+      <networks><ip>127.0.0.1</ip></networks><profile>default</profile><quota>default</quota>
+    </tokenlayer_writer>
+  </users>
   <quotas><default/></quotas>
 </clickhouse>
