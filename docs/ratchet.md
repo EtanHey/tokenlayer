@@ -22,6 +22,25 @@ Queries have two warmups plus 20 timed requests (nearest-rank p95). After OPTIMI
 
 M1 rows are report-only until deployment; `bun ratchet/live.ts <row-id>` reads local credentials without printing them. Cache ratio is read tokens divided by total creation tokens (W5m + W1h); w1h share uses the raw one-hour creation breakdown. Unknown/zero-denominator telemetry fails the probe. Live ship lag is event timestamp to ingest timestamp p95 over the last day and can include historical replays. `jev_unreconciled_24h` counts Jev reservations with no reconciliation 15 min after reservation, over the last day (ceiling 0; see docs/jev.md). No M1 values are claimed by CI.
 
+### Live rows on a schedule (M1)
+
+`com.tokenlayer.ratchet-live` runs every `bun ratchet/live.ts <id>` row every 15 min (`ratchet/live-schedule.ts`).
+A row that turns red appends one line to the orc outbox, `### tokenlayer-ratchet → @tokenlayer-lead @orc — <time> FAIL <row>: value <v>, threshold <limit>`,
+and one `cleared` line when it turns green again; nothing while it stays the same. State: `~/.config/tokenlayer/ratchet-live-state.json`.
+`TOKENLAYER_RATCHET_OUTBOX` is required; `TOKENLAYER_RATCHET_OVERRIDE='{"row": value}'` forces values for a proof run (lines say `(override)`).
+
+Install from a merged tree (the job runs from a snapshot, so a worktree cleanup cannot break it). Set `OUTBOX` to the orc outbox file first; its path stays out of this public repo:
+
+```sh
+dest=~/.config/tokenlayer/ratchet-live; rm -rf "$dest.new"; mkdir -p "$dest.new"
+git archive origin/main | tar -x -C "$dest.new" && rm -rf "$dest" && mv "$dest.new" "$dest"
+bun -e 'import {render} from "./scripts/deploy/deploy"; import {readFileSync as r, writeFileSync as w} from "fs"; const h=process.env.HOME;
+  w(h+"/Library/LaunchAgents/com.tokenlayer.ratchet-live.plist", render(r("launchd/com.tokenlayer.ratchet-live.plist.template","utf8"),
+  {HOME:h, REPO:h+"/.config/tokenlayer/ratchet-live", OUTBOX:process.env.OUTBOX}))'
+launchctl bootout gui/$(id -u)/com.tokenlayer.ratchet-live 2>/dev/null
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tokenlayer.ratchet-live.plist
+```
+
 Normal tests retain 40-trial shipper property smoke checks (`TOKENLAYER_PROPERTY_N` defaults to 40).
 Long `*.property.test.ts` entries are excluded from default discovery. `bun run test:property` explicitly
 runs them with `TOKENLAYER_PROPERTY_N=300`; the required `ci` job gives that step its own 10-minute budget.
