@@ -10,7 +10,7 @@ mkdirSync('.local', { recursive: true });
 const home = '/Users/synthetic';
 const repo = `${home}/Gits/tokenlayer`;
 const values = { HOME: home, REPO: repo, BUN: '/opt/homebrew/Cellar/bun/1.4.4_1/bin/bun', CLICKHOUSE: `${home}/.local/bin/clickhouse-d1-26.10.2.103` };
-Object.assign(values, { OUTBOX: `${home}/outbox.md` });
+Object.assign(values, { OUTBOX: `${home}/outbox.md`, LOGINS: 'synthetic@github', ORIGIN: 'https://synthetic.invalid:8448' });
 const parse = (xml: string) => {
   const result = spawnSync('python3', ['-c', 'import json,plistlib,sys;json.dump(plistlib.loads(sys.stdin.buffer.read()),sys.stdout)'], { input: xml, encoding: 'utf8' });
   expect(result.status).toBe(0);
@@ -24,7 +24,7 @@ for (const machine of ['m1', 'm4']) test(`${machine}: every rendered plist avoid
     if (plist.Label === 'com.tokenlayer.ship') expect(plist.EnvironmentVariables.TOKENLAYER_MACHINE).toBe(machine);
     const agent = plist.Label.replace('com.tokenlayer.', '') as keyof typeof names;
     if (agent in names) expect(basename(plist.ProgramArguments[0])).toBe(names[agent]);
-    if (['com.tokenlayer.usage', 'com.tokenlayer.steer', 'com.tokenlayer.jev'].includes(plist.Label)) expect(plist.ProgramArguments[0]).toBe('/opt/homebrew/bin/bun');
+    if (['com.tokenlayer.usage', 'com.tokenlayer.steer', 'com.tokenlayer.jev', 'com.tokenlayer.fable', 'com.tokenlayer.dashboard'].includes(plist.Label)) expect(plist.ProgramArguments[0]).toBe('/opt/homebrew/bin/bun');
   }
 });
 test('ratchet-live: snapshot runner every 15 min posts to the rendered outbox', () => {

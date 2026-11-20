@@ -1,15 +1,13 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { render } from './deploy';
-import { appCurrent } from './pin';
+import { join } from 'node:path';
+import { clickhouseBinary, renderJob } from './jobs';
 
 // Render only: no credentials, config changes, or launchctl calls.
-export function renderAgents(machine: string, output: string, binary = join(homedir(), '.local/bin/clickhouse-d1-26.10.2.103')) {
-  if (!['m1', 'm4'].includes(machine) || !output) throw Error('render.ts m1|m4 output-directory [clickhouse-binary]');
-  const repo = resolve(import.meta.dir, '../..');
+export function renderAgents(machine: string, output: string, binary = clickhouseBinary(homedir())) {
+  if (machine !== 'm1' && machine !== 'm4' || !output) throw Error('render.ts m1|m4 output-directory [clickhouse-binary]');
   const agents = machine === 'm1' ? ['clickhouse', 'drain', 'ship'] : ['ship'];
-  const rendered = agents.map(agent => [agent, render(readFileSync(join(repo, `launchd/com.tokenlayer.${agent}.plist.template`), 'utf8'), { HOME: homedir(), REPO: appCurrent(), MACHINE: machine, CLICKHOUSE: binary })]);
+  const rendered = agents.map(agent => [agent, renderJob(agent, { machine, clickhouse: binary })]);
   mkdirSync(output, { recursive: true });
   for (const [agent, xml] of rendered) writeFileSync(join(output, `com.tokenlayer.${agent}.plist`), xml);
 }

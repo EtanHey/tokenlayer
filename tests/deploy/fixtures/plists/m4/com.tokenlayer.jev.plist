@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- tokenlayer-jev (both Macs): Jev usage.jsonl ledgers into ClickHouse systemone_calls, once a minute.
+     Bundle: see docs/jev.md (bun build of src/jev/main.ts into ~/.config/tokenlayer/bin/jev.js).
+     Credentials are read at runtime from ~/.config/tokenlayer/{ship,clickhouse,jev}.env (mode 600), never placed here. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.tokenlayer.jev</string>
+<key>ProgramArguments</key><array><string>/opt/homebrew/bin/bun</string><string>__HOME__/.config/tokenlayer/bin/jev.js</string></array>
+<key>EnvironmentVariables</key><dict>
+  <key>TOKENLAYER_ENV_FILES</key><string>__HOME__/.config/tokenlayer/ship.env:__HOME__/.config/tokenlayer/clickhouse.env:__HOME__/.config/tokenlayer/jev.env</string>
+</dict>
+<key>RunAtLoad</key><true/>
+<key>StartInterval</key><integer>60</integer>
+<key>ProcessType</key><string>Background</string>
+<key>LowPriorityIO</key><true/>
+<key>Nice</key><integer>10</integer>
+<key>StandardOutPath</key><string>__HOME__/Library/Logs/tokenlayer/jev.log</string>
+<key>StandardErrorPath</key><string>__HOME__/Library/Logs/tokenlayer/jev.log</string>
+</dict></plist>

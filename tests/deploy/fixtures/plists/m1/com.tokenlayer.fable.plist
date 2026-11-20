@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/bin:/bin</string>
+		<key>TOKENLAYER_ENV_FILES</key>
+		<string>__HOME__/.config/tokenlayer/hub.env:__HOME__/.config/tokenlayer/clickhouse.env</string>
+		<key>TOKENLAYER_HUB</key>
+		<string>m1</string>
+		<key>TOKENLAYER_HUB_URL</key>
+		<string>http://127.0.0.1:8317</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>com.tokenlayer.fable</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/bun</string>
+		<string>__HOME__/.config/tokenlayer/app/current/src/fable/main.ts</string>
+		<string>run</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/tokenlayer/fable.log</string>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/tokenlayer/fable.log</string>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>WorkingDirectory</key>
+	<string>__HOME__/.config/tokenlayer/app/current</string>
+</dict>
+</plist>

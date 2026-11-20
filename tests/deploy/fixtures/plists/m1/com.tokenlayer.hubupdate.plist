@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.tokenlayer.hubupdate</string>
+  <key>ProgramArguments</key><array>
+    <string>__HOME__/.config/tokenlayer/app/current/bin/tokenlayer</string><string>hubupdate</string><string>run</string>
+  </array>
+  <key>WorkingDirectory</key><string>__HOME__/.config/tokenlayer/app/current</string>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>__HOME__/.bun/bin:__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+  <key>StartInterval</key><integer>1800</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/tokenlayer/hubupdate.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/tokenlayer/hubupdate.log</string>
+</dict></plist>

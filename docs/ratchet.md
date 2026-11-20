@@ -51,11 +51,7 @@ Install from a merged tree (the job runs from a snapshot, so a worktree cleanup 
 ```sh
 dest=~/.config/tokenlayer/ratchet-live; rm -rf "$dest.new"; mkdir -p "$dest.new"
 git archive origin/main | tar -x -C "$dest.new" && rm -rf "$dest" && mv "$dest.new" "$dest"
-bun -e 'import {render} from "./scripts/deploy/deploy"; import {readFileSync as r, writeFileSync as w} from "fs"; const h=process.env.HOME;
-  w(h+"/Library/LaunchAgents/com.tokenlayer.ratchet-live.plist", render(r("launchd/com.tokenlayer.ratchet-live.plist.template","utf8"),
-  {HOME:h, REPO:h+"/.config/tokenlayer/ratchet-live", OUTBOX:process.env.OUTBOX}))'
-launchctl bootout gui/$(id -u)/com.tokenlayer.ratchet-live 2>/dev/null
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tokenlayer.ratchet-live.plist
+TOKENLAYER_RATCHET_OUTBOX=$OUTBOX scripts/deploy/setup.sh ratchet-live   # later runs keep the installed outbox
 ```
 
 Normal tests retain 40-trial shipper property smoke checks (`TOKENLAYER_PROPERTY_N` defaults to 40).
