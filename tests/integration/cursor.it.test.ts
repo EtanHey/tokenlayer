@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { applySchema } from "../../src/lib/schema";
-import { migrateSessionSchema, verifySessionSchema } from "../../src/lib/session-schema";
+import { verifySessionSchema } from "../../src/lib/session-schema";
 import { startLocalClickHouse } from "../../src/lib/local-clickhouse";
 import { shipOnce } from "../../src/ship/ship";
 
@@ -15,13 +15,16 @@ test("Cursor native rows retain SQL NULL after legacy type upgrade and repeat sc
   const ch = await startLocalClickHouse();
   const dir = mkdtempSync(join(tmpdir(), "cursor-it-"));
   try {
-    await applySchema(ch.client);
-    // Exercise the six pre-Cursor column types as well as a fresh table.
-    for (const name of ["model", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens"]) {
-      await ch.client.exec(`ALTER TABLE tokenlayer.session_events MODIFY COLUMN ${name} ${name === "model" ? "LowCardinality(String)" : "UInt64"}`);
-    }
+    // Build the actual pre-Cursor schema. ClickHouse 26.12 refuses the reverse
+    // nullable -> nonnullable ALTER even on an empty fresh table without a DEFAULT.
+    const legacy = readFileSync(join(import.meta.dir, "../../schema/004_session_events.sql"), "utf8")
+      .replace("LowCardinality(Nullable(String))", "LowCardinality(String)")
+      .replace(/^(    \w+_tokens\s+)Nullable\(UInt64\)/gm, "$1UInt64");
+    await ch.client.exec("CREATE DATABASE IF NOT EXISTS tokenlayer");
+    await ch.client.exec(legacy.replace(/;\s*$/, ""));
     await expect(verifySessionSchema(ch.client)).rejects.toThrow("schema mismatch");
-    await migrateSessionSchema(ch.client);
+    await applySchema(ch.client);
+    await verifySessionSchema(ch.client);
     const root = join(dir, "projects");
     const folder = join(root, "Users-example-Gits-dialogkit/agent-transcripts/agent-fixture");
     mkdirSync(folder, { recursive: true });
