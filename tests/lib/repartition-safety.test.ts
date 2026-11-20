@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { ClickHouse } from "../../src/lib/clickhouse";
 import { copyWatched, repartitionSessionEvents } from "../../src/lib/session-repartition";
 
@@ -114,25 +114,53 @@ describe("R12-2: bounded watchdog controls", () => {
 
   for (const hang of ["kill", "process"] as const) for (const controlTimeoutMs of [5, 1000]) test(`never-resolving ${hang}, request bound ${controlTimeoutMs} ms, stops at the confirmation deadline`, async () => {
     const copy = deferred(), control = deferred();
-    let probeSignal: AbortSignal | undefined;
+    const immediate = globalThis.setImmediate;
+    jest.useFakeTimers();
+    jest.setSystemTime(0);
+    const confirmationDeadline = watchOptions.watchMs + watchOptions.killConfirmMs;
+    const cancellations: { started: number; ended: number }[] = [];
+    const pending = (signal?: AbortSignal) => {
+      const started = Date.now();
+      signal?.addEventListener("abort", () => cancellations.push({ started, ended: Date.now() }), { once: true });
+      return control.promise;
+    };
     const ch = {
       exec: async (sql: string, options?: { signal?: AbortSignal }) => {
         if (sql.startsWith("INSERT")) return copy.promise;
-        probeSignal = options?.signal;
-        if (hang === "kill") return control.promise;
+        if (hang === "kill") return pending(options?.signal);
         copy.resolve(); return "";
       },
       queryJSON: async (_sql: string, options?: { signal?: AbortSignal }) => {
-        probeSignal = options?.signal;
-        await control.promise;
+        await pending(options?.signal);
         return [];
       },
     } as unknown as ClickHouse;
     const result = copyWatched(ch, "INSERT fixture", "r12-unit", { ...watchOptions, controlTimeoutMs, free: async () => 0 });
     try {
-      expect(await boundedResult(result)).toEqual({ error: expect.stringMatching(/not confirmed.*may still be writing/) });
-      expect(probeSignal?.aborted).toBe(true);
-    } finally { copy.resolve(); control.resolve(); await result.catch(() => {}); }
+      let outcome: unknown, finishedAt: number | undefined;
+      const observed = boundedResult(result).then(value => { outcome = value; finishedAt = Date.now(); });
+      // Drain promise continuations between ticks, without waiting for wall-clock milliseconds.
+      // The outer 150 ms deadline also uses virtual time, so removing a bound fails promptly.
+      for (let elapsed = 0; elapsed <= 150 && finishedAt === undefined; elapsed++) {
+        if (elapsed) jest.advanceTimersByTime(1);
+        await new Promise<void>(resolve => immediate(resolve));
+      }
+      await observed;
+      expect(outcome).toEqual({ error: expect.stringMatching(/not confirmed.*may still be writing/) });
+      // The first watch tick is at 1; confirmation must stop exactly 25 ms later.
+      expect(finishedAt).toBe(confirmationDeadline);
+      expect(cancellations.length).toBeGreaterThan(0);
+      expect(cancellations[0].ended - cancellations[0].started)
+        .toBe(Math.min(controlTimeoutMs, confirmationDeadline - cancellations[0].started));
+      for (const { started, ended } of cancellations) {
+        expect(ended - started).toBeLessThanOrEqual(controlTimeoutMs);
+        expect(ended).toBeLessThanOrEqual(confirmationDeadline);
+      }
+    } finally {
+      copy.resolve(); control.resolve(); await result.catch(() => {});
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
   });
 });
 
