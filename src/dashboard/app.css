@@ -161,3 +161,40 @@ meter {
 #sessions td, #sessions th { padding: .5rem; text-align: left; overflow-wrap: anywhere; min-width: 5rem; }
 #sessions table { min-width: 68rem; table-layout: fixed; width: 100%; }
 #sessions td:first-child, #sessions th:first-child { width: 22rem; }
+
+/* All tools: one row per tool. Stacked on a phone; a five-column row from 760 px. */
+.tools { list-style: none; margin: 0; padding: 0; }
+.tool {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  padding: 12px 0;
+  border-top: 1px solid #73878a;
+  overflow-wrap: anywhere;
+}
+.tool:first-child { border-top: 0; }
+.tool-name { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.tool-pct meter { height: 14px; margin-top: 4px; }
+.tool-use { display: flex; flex-direction: column; gap: 2px; font-size: 14px; }
+.tool-reset, .tool-why, .tool-note { font-size: 14px; }
+.tool-why { margin: 0; grid-column: 1 / -1; }
+.tool-note { grid-column: 1 / -1; }
+.mark {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+.tool[data-mark="STALE"] .mark { color: light-dark(#8a5a00, #e6b65c); }
+.tool[data-mark="UNKNOWN"] .mark { color: light-dark(#8f2d2d, #f08a8a); }
+.tool[data-mark="STALE"] .tool-why { color: light-dark(#8a5a00, #e6b65c); }
+.tool[data-mark="UNKNOWN"] .tool-why { color: light-dark(#8f2d2d, #f08a8a); }
+@media (min-width: 760px) {
+  .tool {
+    grid-template-columns: minmax(10rem, 1.3fr) minmax(8rem, 1fr) minmax(10rem, 1.2fr) minmax(12rem, 1.5fr);
+    align-items: start;
+    column-gap: 16px;
+  }
+}
