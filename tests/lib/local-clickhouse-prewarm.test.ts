@@ -114,16 +114,20 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) for (const state of ['ready
     const child = Bun.spawn([process.execPath, '-e', `
       const spawn = Bun.spawn;
       let spawned = 0, prepared = 0;
+      const spareURLs = new Set();
       Bun.spawn = (...args) => {
         const proc = spawn(...args);
-        if (++spawned === 2 || spawned === 3) console.log('spare:' + proc.pid);
+        if (++spawned === 2 || spawned === 3) {
+          spareURLs.add('http://127.0.0.1:' + args[0].find(a => a.startsWith('--http_port=')).slice(12));
+          console.log('spare:' + proc.pid);
+        }
         return proc;
       };
       const { prewarmLocalClickHouse, startLocalClickHouse } = await import(${JSON.stringify(module)});
       prewarmLocalClickHouse(2);
-      const prepare = async () => {
-        const n = ++prepared;
-        if (${JSON.stringify(state)} === 'preparing' && (n === 2 || n === 3)) await new Promise(() => {});
+      const prepare = async client => {
+        ++prepared;
+        if (${JSON.stringify(state)} === 'preparing' && spareURLs.has(client.config.url)) await new Promise(() => {});
       };
       await (await startLocalClickHouse({ prepare })).stop();
       await (await startLocalClickHouse({ prepare })).stop();
