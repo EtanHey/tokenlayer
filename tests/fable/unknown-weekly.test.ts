@@ -158,9 +158,15 @@ test("estimated exhaustion preserves the reserve conflict instead of enabling A"
 });
 
 
+const mockFetch = (implementation: (
+  input: Parameters<typeof fetch>[0], options?: Parameters<typeof fetch>[1],
+) => Promise<Response>) => spyOn(globalThis, "fetch").mockImplementation(
+  Object.assign(implementation, { preconnect: globalThis.fetch.preconnect }),
+);
+
 test("history timeout cancels the actual ClickHouse fetch", async () => {
   let signal: AbortSignal | null | undefined;
-  const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((_url, options) => {
+  const fetchSpy = mockFetch((_url, options) => {
     signal = options?.signal;
     return new Promise((_resolve, reject) => {
       signal?.addEventListener("abort", () => reject(signal!.reason), { once: true });
@@ -175,7 +181,7 @@ test("history timeout cancels the actual ClickHouse fetch", async () => {
 
 test("settled history queries clear their timeout without later cancellation", async () => {
   let signal: AbortSignal | null | undefined;
-  const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => {
+  const fetchSpy = mockFetch(async (_url, options) => {
     signal = options?.signal;
     return new Response("");
   });
