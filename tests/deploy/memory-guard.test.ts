@@ -21,6 +21,8 @@ test('the shared read user runs under the reader profile: 8 GiB per query, spill
   expect(reader).toContain('<optimize_read_in_window_order>1</optimize_read_in_window_order>');
   // A caller may lower the cap, never raise it or set 0 (unlimited).
   expect(block('max_memory_usage', block('constraints', reader))).toBe(`<min>1</min><max>${8 * GiB}</max>`);
+  // Same for temp disk: 0 would be unlimited spill onto the M1's disk (security pre-review S1).
+  expect(block('max_temporary_data_on_disk_size_for_query', block('constraints', reader))).toBe(`<min>1</min><max>${8 * GiB}</max>`);
 });
 
 test('the writer user stays on the uncapped default profile with the same password source', () => {
