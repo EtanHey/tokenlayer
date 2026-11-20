@@ -34,8 +34,10 @@
       <password_sha256_hex from_env="CLICKHOUSE_PASSWORD_SHA256" hide_in_preprocessed="true"/>
       <networks><ip>127.0.0.1</ip></networks><profile>reader</profile><quota>default</quota>
     </tokenlayer>
+    <!-- Own password (clickhouse-writer.env), so the reader's cannot lift the cap. Rendered into this mode-600 file
+         rather than the server env, so `setup.sh config` applies it by reload. -->
     <tokenlayer_writer>
-      <password_sha256_hex from_env="CLICKHOUSE_PASSWORD_SHA256" hide_in_preprocessed="true"/>
+      <password_sha256_hex hide_in_preprocessed="true">__WRITERHASH__</password_sha256_hex>
       <networks><ip>127.0.0.1</ip></networks><profile>default</profile><quota>default</quota>
     </tokenlayer_writer>
   </users>
