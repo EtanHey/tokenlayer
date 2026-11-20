@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { enrich, parseHistory } from './projection';
 import { serialize, staleSnapshot } from './snapshot';
+import { readVendors } from './vendors';
 
 const remote = '. ~/.config/tokenlayer/hub.env; printf \'Authorization: Bearer %s\\n\' "$CLIPROXY_MGMT_KEY" | curl -fsS -m 10 -H @- http://127.0.0.1:8317/v8/management/credentials';
 const dir = join(homedir(), '.config/tokenlayer');
@@ -38,6 +39,8 @@ try {
     value = { generated_at: null, source: 'cliproxy-hub', stale: true, accounts: [], last_error: 'hub unavailable' };
   }
 }
+// Read fresh every run, hub or no hub; readVendors never throws.
+value = { ...value, vendors: await readVendors(join(homedir(), '.t3/caches')) };
 const tmp = `${target}.${process.pid}.tmp`;
 try {
   await writeFile(tmp, serialize(value), { mode: 0o644, flag: 'wx' });
