@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import { test as clickhouseTest } from '../support/clickhouse-gate';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { historyFixtureDirectories } from '../fixtures/history-temp';
@@ -42,7 +43,7 @@ test('CLI batch flag rejects malformed, missing, duplicate and ambiguous forms b
     expect((await cli(temp(), ['--help'])).out).toContain('--batch-bytes');
 });
 
-test('actual CLI batching: default/1MiB/4MiB imports and fresh-state cross-window replay preserve native rows', async () => {
+clickhouseTest('actual CLI batching: default/1MiB/4MiB imports and fresh-state cross-window replay preserve native rows', async () => {
     const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE });
     let requests = 0, inserts = 0;
     // Observe actual HTTP requests; forward every response from the real isolated binary unchanged.

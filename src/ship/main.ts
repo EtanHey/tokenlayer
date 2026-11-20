@@ -15,8 +15,10 @@ installErrorHandlers();
 import { loadState } from "./state";
 import { verifySessionSchema } from "../lib/session-schema";
 import { ClickHouse, fixed } from "../lib/clickhouse";
+import { RetryingClickHouse } from "../lib/clickhouse-retry";
 import { expandHome, loadEnvFiles } from "../lib/env";
 import { shipOnce, type ShipOptions } from "./ship";
+import { Heartbeat, HEARTBEAT_EVERY_MS, type PassOutcome } from "./heartbeat";
 
 const args = process.argv.slice(2);
 const flag = (name: string) => {
@@ -52,7 +54,7 @@ const opts: ShipOptions = {
     { kind: "antigravity-cli", dir: expandHome(env.TOKENLAYER_ANTIGRAVITY_CLI_DIR ?? "~/.gemini/antigravity-cli/brain") },
     { kind: "t3-antigravity", dir: expandHome(env.TOKENLAYER_T3_ANTIGRAVITY_DIR ?? "~/.t3/userdata/providers/antigravity") },
   ],
-  clickhouse: fixed(ClickHouse.fromEnv(env)),
+  clickhouse: fixed(RetryingClickHouse.fromEnv(env)),
   statePath: expandHome(env.TOKENLAYER_SHIP_STATE ?? "~/.config/tokenlayer/ship-state.json"),
   sinceMs,
   rateBytesPerSec: Math.round(rateMb * 1024 * 1024),
@@ -66,18 +68,27 @@ await verifySessionSchema(opts.clickhouse);
 let stopping = false;
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => (stopping = true));
 
+// The daemon's heartbeat (src/ship/heartbeat.ts). A backfill is not the daemon, so it never beats: a manual run
+// must not make a dead daemon look alive. A plain ClickHouse has no unsent retries, so a down store never stalls the loop.
+const heartbeat = backfill ? undefined : new Heartbeat(new ClickHouse(opts.clickhouse.config), machine, HEARTBEAT_EVERY_MS,
+  (m) => writeErr(`${new Date().toISOString()} tokenlayer-ship: ${m}`));
+
 do {
   const started = Date.now();
+  let pass: PassOutcome = { files: 0, lines: 0, bytes: 0, durationMs: 0 };
   try {
     const r = await shipOnce({ ...opts, shouldStop: () => stopping });
+    pass = { files: r.files, lines: r.lines, bytes: r.bytes, durationMs: Date.now() - started };
     if (r.lines || r.resets) {
       writeOut(`${new Date().toISOString()} files=${r.files} lines=${r.lines} bytes=${r.bytes} resets=${r.resets}`);
     }
   } catch (err) {
+    pass = { ...pass, durationMs: Date.now() - started, error: err };
     writeErr(`${new Date().toISOString()} tokenlayer-ship: ${(err as Error).message}`);
     if (err instanceof AggregateError) for (const cause of err.errors) writeErr(cause instanceof Error ? cause.message : cause);
     if (backfill) process.exit(1);
   }
+  await heartbeat?.beat(pass);
   if (backfill) break;
   const wait = Math.max(0, intervalMs - (Date.now() - started));
   for (let waited = 0; waited < wait && !stopping; waited += 250) await Bun.sleep(Math.min(250, wait - waited));

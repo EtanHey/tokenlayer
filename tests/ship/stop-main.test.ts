@@ -21,11 +21,13 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) test(`main ${signal} finish
     .matchAll(/^    (\w+)\s+(\w+(?:\([^\n]*?\))?)/gm)].filter(m => m[1] !== 'INDEX')
     .map(m => ({ name: m[1], type: m[2] }));
   const admitted = deferred(), ack = deferred(), received = deferred();
-  const inserts: string[] = [];
+  const inserts: string[] = [], heartbeats: { lines: number; result: string }[] = [];
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(req) {
     const body = await req.text(), query = new URL(req.url).searchParams.get('query') ?? '';
     if (body.includes('system.tables')) return Response.json({ sorting_key: 'machine, path, generation, byte_offset, content_hash', engine: 'ReplacingMergeTree' });
     if (body.includes('system.columns')) return new Response(columns.map(c => JSON.stringify(c)).join('\n'));
+    // The daemon's heartbeat after the stopped pass (src/ship/heartbeat.ts).
+    if (query.startsWith('INSERT INTO tokenlayer.ship_heartbeat ')) { heartbeats.push(JSON.parse(body.trim())); return new Response(''); }
     if (!query.startsWith('INSERT INTO tokenlayer.session_events ')) return new Response('unexpected fixture query', { status: 400 });
     inserts.push(JSON.parse(body.trim()).path);
     admitted.resolve();
@@ -63,6 +65,7 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) test(`main ${signal} finish
     expect(await stderr).toBe('');
     expect(await output).toContain('lines=1');
     expect(inserts).toHaveLength(1);
+    expect(heartbeats).toMatchObject([{ lines: 1, result: 'ok' }]);
     const files = JSON.parse(readFileSync(state, 'utf8')).files;
     expect(files[inserts[0]].offset).toBe(Buffer.byteLength(line));
     expect(Object.values(files).filter(cp => (cp as { offset: number }).offset > 0)).toHaveLength(1);

@@ -4,7 +4,7 @@ const HOUR = 3600000;
 export const projection = 'linear over last 60 min of hub quota observations';
 type Sample = { label: string; window: 'weekly' | 'fable'; observed_at: string; pct: number; resets_at: string | null };
 const round = (n: number) => Math.round(n * 10) / 10;
-function iso(value: unknown): string | null {
+export function iso(value: unknown): string | null {
   if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) return null;
   return new Date(value).toISOString();
 }

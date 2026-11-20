@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { expect } from "bun:test";
+import { test } from "../support/clickhouse-gate";
 import { applySchema } from "../../src/lib/schema";
 import { startLocalClickHouse } from "../../src/lib/local-clickhouse";
 import { parseLine } from "../../src/ship/parse";
@@ -17,13 +18,24 @@ test("comparison keeps UTC-day credits separate from rolling quota gauges and de
     await put("claude.jsonl", "t3", { timestamp: "2026-11-03T03:00:00Z", type: "assistant", sessionId: "claude", message: { id: "msg", role: "assistant", usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 20 } } });
     await put("codex.jsonl", "t3", { timestamp: "2026-11-03T03:00:00Z", type: "event_msg", payload: { type: "token_count", rate_limits: { primary: { used_percent: 12, window_minutes: 300 }, secondary: { used_percent: 30, window_minutes: 10080 } }, info: { last_token_usage: { input_tokens: 30, cached_input_tokens: 20, output_tokens: 5 } } } });
     await put("agy.jsonl", "t3", { created_at: "2026-11-03T03:00:00Z" }, { ts: "2026-11-03 03:00:00.000", input_tokens: 7, output_tokens: 3 });
-    await ch.client.insert("credentials_snap", [{ ts: "2026-11-03 03:00:00.000", provider: "claude", credential: "fixture", utilization_5h: 0.25, utilization_7d: 0.5 }]);
+    // Claude quota gauges come from the hub's per-response rate-limit headers (proxy_usage.ratelimit).
+    // A reading for another provider, an out-of-range value and a non-number never count.
+    const served = (n: number, provider: string, ratelimit: Record<string, string>) => ({
+      ts: "2026-11-03 0" + n + ":00:00.000", execution_id: "e" + n + provider, hub: "m1", credential: "fixture", provider, ratelimit,
+    });
+    await ch.client.insert("proxy_usage", [
+      served(1, "claude", { "anthropic-ratelimit-unified-5h-utilization": "0.25", "anthropic-ratelimit-unified-7d-utilization": "0.4" }),
+      served(2, "claude", { "anthropic-ratelimit-unified-7d-utilization": "0.5", "anthropic-ratelimit-unified-7d_oi-utilization": "0.9" }),
+      served(3, "claude", { "anthropic-ratelimit-unified-5h-utilization": "7", "anthropic-ratelimit-unified-7d-utilization": "n/a" }),
+      served(4, "codex", { "anthropic-ratelimit-unified-7d-utilization": "0.99" }),
+    ]);
     const rows = await ch.client.queryJSON("SELECT provider, tokens, credits_used, daily_allowance_used_pct, peak_5h_used_pct, peak_weekly_used_pct, tokens_per_1pct_allowance FROM tokenlayer.v_provider_usage_compare ORDER BY provider");
     expect(rows).toEqual([
       { provider: "antigravity", tokens: 10, credits_used: null, daily_allowance_used_pct: null, peak_5h_used_pct: null, peak_weekly_used_pct: null, tokens_per_1pct_allowance: null },
       { provider: "claude", tokens: 35, credits_used: null, daily_allowance_used_pct: null, peak_5h_used_pct: 25, peak_weekly_used_pct: 50, tokens_per_1pct_allowance: null },
       { provider: "codex", tokens: 35, credits_used: null, daily_allowance_used_pct: null, peak_5h_used_pct: 12, peak_weekly_used_pct: 30, tokens_per_1pct_allowance: null },
       { provider: "kiro", tokens: null, credits_used: 0.25, daily_allowance_used_pct: 0.5, peak_5h_used_pct: null, peak_weekly_used_pct: null, tokens_per_1pct_allowance: null },
+      { provider: "typesafe", tokens: null, credits_used: null, daily_allowance_used_pct: null, peak_5h_used_pct: null, peak_weekly_used_pct: null, tokens_per_1pct_allowance: null },
     ]);
     await put("kiro/unknown.jsonl", "kiro", {}, { ts: "2026-11-03 03:00:00.000", session_id: "cancelled", type: "kiro:usage_summary", message_id: "cancelled", credits: null });
     await put("kiro/only-unknown.jsonl", "kiro", {}, { ts: "2026-11-04 03:00:00.000", session_id: "only-unknown", type: "kiro:usage_summary", message_id: "cancelled", credits: null });

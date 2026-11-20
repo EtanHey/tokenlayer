@@ -1,6 +1,20 @@
-type Meter = { utilization: number | null; stale: boolean; reset: unknown };
+type Meter = { utilization: number | null; stale: boolean; reset: unknown; status?: string };
 type Account = { email?: string; status?: string; weekly: Meter; fable: Meter;
   resets?: { left: number | null } };
+function resetAt(reset: unknown) {
+  const text = String(reset ?? "");
+  return /^\d+(\.\d+)?$/.test(text) ? Number(text) * 1000 : reset == null ? NaN : Date.parse(text);
+}
+export function weeklyCapped(weekly: Meter, exhaustedAt = .95) {
+  return String(weekly.status).toLowerCase() === "rejected" ||
+    (weekly.utilization !== null && weekly.utilization >= exhaustedAt);
+}
+/** A capped weekly reading stays true until its reset, even after it goes stale (a capped account
+ * serves no traffic, so nothing refreshes it). Returns the reset time, or null. */
+export function cappedUntil(weekly: Meter, exhaustedAt = .95, now = Date.now()) {
+  const at = resetAt(weekly.reset);
+  return weeklyCapped(weekly, exhaustedAt) && at > now ? at : null;
+}
 export function arrangement(accounts: Account[], now = Date.now()) {
   const usable = accounts.filter(c => c.status === "active" && !c.weekly.stale && !c.fable.stale &&
     c.weekly.utilization !== null && c.fable.utilization !== null &&
@@ -17,7 +31,9 @@ export function arrangement(accounts: Account[], now = Date.now()) {
   const time = when && Number.isFinite(when.getTime()) ? when.toLocaleString("en-GB", {
     timeZone: "Asia/Jerusalem", weekday: "short", hour: "2-digit", minute: "2-digit"
   }) : "its weekly reset";
-  const stale = next && (next.status !== "active" || next.weekly.stale || next.fable.stale ||
+  // A capped account's stale reading still proves when it comes back: wait for that reset.
+  const stale = next && cappedUntil(next.weekly, undefined, now) === null &&
+    (next.status !== "active" || next.weekly.stale || next.fable.stale ||
     next.weekly.utilization === null || next.fable.utilization === null);
   if (stale) return { keepOff: true, account, reason: `Keep OFF: ${account} data stale; recheck Usage.` };
   return { keepOff, account, reason: keepOff
