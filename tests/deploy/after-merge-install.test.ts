@@ -289,13 +289,15 @@ describe('inherited xtrace never exposes credentials', () => {
     const schemaBackup = join(backups, `after-merge-${o.stamp}`);
     mkdirSync(schemaBackup, { recursive: true });
     writeFileSync(join(backups, 'clickhouse.xml.synthetic'), '<clickhouse/>');
-    for (const view of ['006', '009']) writeFileSync(join(schemaBackup, `${view}.sql`), 'CREATE VIEW synthetic AS SELECT 1;\n');
+    // Exceed pipe capacity so a fake client that closes stdin early reliably SIGPIPEs the rollback's sed.
+    for (const view of ['006', '009']) writeFileSync(join(schemaBackup, `${view}.sql`), 'CREATE VIEW synthetic AS SELECT 1;\n' + '-- synthetic schema padding\n'.repeat(8192));
     mkdirSync(bin, { recursive: true });
     mkdirSync(tl, { recursive: true });
     mkdirSync(join(home, '.local/bin'), { recursive: true });
     writeFileSync(join(tl, 'clickhouse.env'), `CLICKHOUSE_USER=reader\nCLICKHOUSE_PASSWORD=${secret}\n`, { mode: 0o600 });
     writeFileSync(join(tl, 'clickhouse-writer.env'), `CLICKHOUSE_USER=writer\nCLICKHOUSE_PASSWORD=${secret}-writer\n`, { mode: 0o600 });
-    writeFileSync(join(home, '.local/bin/clickhouse-test'), '#!/bin/sh\n[ -n "$CLICKHOUSE_PASSWORD" ] || exit 9\necho client-ok\n', { mode: 0o755 });
+    // A real --multiquery client consumes SQL from stdin; -q/--queries-file calls must not wait for stdin.
+    writeFileSync(join(home, '.local/bin/clickhouse-test'), '#!/bin/sh\n[ -n "$CLICKHOUSE_PASSWORD" ] || exit 9\ncase " $* " in *" --multiquery "*) cat >/dev/null ;; esac\necho client-ok\n', { mode: 0o755 });
     const startup = join(home, 'startup');
     writeFileSync(startup, 'echo STARTUP-RAN >&2\nset -x\n');
     writeFileSync(join(bin, 'bash'), '#!/bin/sh\nexec /bin/bash "$@"\n', { mode: 0o755 });
