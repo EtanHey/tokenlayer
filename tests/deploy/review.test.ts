@@ -210,6 +210,14 @@ test('credential transfer publishes only a successful nonempty private file and 
   expect(run('synthetic', '0').status).toBe(0); expect(readFileSync(path, 'utf8')).toBe('synthetic');
   expect(statSync(path).mode & 0o777).toBe(0o600);
   expect(run('replacement', '0').status).not.toBe(0); expect(readFileSync(path, 'utf8')).toBe('synthetic');
+  // The writer password is copied the same way, by name; no other file name is accepted.
+  const copy = (name: string) => spawnSync('bash', ['scripts/deploy/copy-password.sh', 'stub-host', name], { env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, TRANSFER_TEXT: 'writer-synthetic', TRANSFER_STATUS: '0' }, stdio: 'pipe' });
+  const writer = join(home, '.config/tokenlayer/clickhouse-writer.env');
+  expect(copy('hub.env').status).not.toBe(0); expect(existsSync(join(home, '.config/tokenlayer/hub.env'))).toBe(false);
+  expect(copy('../clickhouse.env').status).not.toBe(0);
+  expect(copy('clickhouse-writer.env').status).toBe(0); expect(readFileSync(writer, 'utf8')).toBe('writer-synthetic');
+  expect(statSync(writer).mode & 0o777).toBe(0o600);
+  expect(copy('clickhouse-writer.env').status).not.toBe(0); expect(readFileSync(path, 'utf8')).toBe('synthetic');
 });
 test('every required hub binary is checked before config, logs or launchd changes', () => {
   const required = ['openssl', 'plutil', 'launchctl', 'tailscale'];
