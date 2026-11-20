@@ -8,7 +8,7 @@ const block = (tag: string, within = xml) => within.match(new RegExp(`<${tag}>([
 const profiles = block('profiles');
 const users = block('users');
 
-test('the shared read user runs under the reader profile: 8 GiB per query, spills at 4 GiB, 8 GiB of temp disk', () => {
+test('the shared read user runs under the reader profile: 8 GiB per query, spills at 4 GiB, 8 GiB of temp disk, windows read in order', () => {
   expect(block('profile', block('tokenlayer', users))).toBe('reader');
   const reader = block('reader', profiles);
   expect(reader).toContain('<profile>default</profile>');
@@ -16,6 +16,9 @@ test('the shared read user runs under the reader profile: 8 GiB per query, spill
   expect(reader).toContain(`<max_bytes_before_external_group_by>${4 * GiB}</max_bytes_before_external_group_by>`);
   expect(reader).toContain(`<max_bytes_before_external_sort>${4 * GiB}</max_bytes_before_external_sort>`);
   expect(reader).toContain(`<max_temporary_data_on_disk_size_for_query>${8 * GiB}</max_temporary_data_on_disk_size_for_query>`);
+  // Windows that follow the table order (v_session_events_context's stream windows) read in order instead of
+  // sorting the whole table: the 1-day token sum drops from 4.7 to 1.7 GiB (R5).
+  expect(reader).toContain('<optimize_read_in_window_order>1</optimize_read_in_window_order>');
   // A caller may lower the cap, never raise it or set 0 (unlimited).
   expect(block('max_memory_usage', block('constraints', reader))).toBe(`<min>1</min><max>${8 * GiB}</max>`);
   // Same for temp disk: 0 would be unlimited spill onto the M1's disk (security pre-review S1).
