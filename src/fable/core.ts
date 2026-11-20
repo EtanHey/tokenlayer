@@ -201,7 +201,10 @@ function fableWindow(c: Observation, now: number) {
   const q = fableQuota(c);
   const old = quotaWindow(q, "7d_oi", now, false);
   const week = quotaWindow(c.quota, "7d", now);
-  if (old && old.reset <= now && week && week.reset > old.reset)
+  if (old && old.reset <= now &&
+      Date.parse(q?.observed_at ?? "") < old.reset &&
+      week && Date.parse(c.quota?.observed_at ?? "") > old.reset &&
+      week.reset > now)
     return { u: 0, rejected: false, reset: week.reset, expired: true };
   return quotaWindow(q, "7d_oi", now);
 }

@@ -125,3 +125,5 @@ evidence rules prevent automatic recovery after a known human reset, use
 that press and attempt local recovery; reuse its operation id on retry. This
 manual command updates reset bookkeeping, unless `--skip-count` is supplied for
 recovery of an already-accounted press. No command presses Anthropic's reset.
+
+Expiry requires the Fable observation to precede its reset, and a fresh weekly observation strictly after that boundary with a still-future reset. Post-reset rejections and contradictory timing keep their cap policy.
