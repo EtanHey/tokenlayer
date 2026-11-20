@@ -10,9 +10,9 @@ const shared = globalThis as { __tokenlayerClickHouseSkips?: string[] };
 export const clickhouseSkips = (shared.__tokenlayerClickHouseSkips ??= []);
 
 /**
- * `test` for files where every test starts a real local ClickHouse. Without the binary each
- * test is skipped and recorded, never passed; CI has the binary and its integration row
- * refuses any skip.
+ * `test` for cases that start a real local ClickHouse. Without the binary each gated
+ * case is skipped and recorded, never passed; CI has the binary and its integration row
+ * refuses any skip. Mixed files use Bun's ordinary `test` for ClickHouse-independent cases.
  */
 export const test = ((name: string, ...rest: unknown[]) => {
   if (clickhouseAbsent) clickhouseSkips.push(name);
