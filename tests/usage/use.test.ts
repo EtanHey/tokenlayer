@@ -52,13 +52,13 @@ test('readUse posts the query with header credentials and maps the reply; a Clic
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(req) {
     seen.push({ user: req.headers.get('x-clickhouse-user'), key: req.headers.get('x-clickhouse-key'), url: req.url, body: await req.text() });
     return fail ? new Response('Code: 241. DB::Exception: synthetic', { headers: { 'X-ClickHouse-Exception-Code': '241' } })
-      : new Response(rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+      : Response.json({ data: rows });
   } });
   try {
     const env = { CLICKHOUSE_URL: `http://127.0.0.1:${server.port}`, CLICKHOUSE_USER: 'reader', CLICKHOUSE_PASSWORD: 'synthetic-key' };
     expect(await readUse(now, env)).toEqual(useBlocks(rows, observed_at));
     expect(seen[0]).toMatchObject({ user: 'reader', key: 'synthetic-key', body: useSql(now) });
-    expect(new URL(seen[0]!.url).searchParams.get('default_format')).toBe('JSONEachRow');
+    expect(new URL(seen[0]!.url).searchParams.get('default_format')).toBe('JSON');
     expect(seen[0]!.url).not.toContain('synthetic-key');
     fail = true;
     expect((await readUse(now, env)).kiro).toEqual({ observed_at: null, source, last_error: 'store unavailable' });
@@ -71,7 +71,7 @@ test('default reader loads standard dotenv files with clickhouse overrides witho
   const seen: (string | null)[][] = [];
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(req) {
     seen.push([req.headers.get('x-clickhouse-user'), req.headers.get('x-clickhouse-key')]);
-    return new Response('');
+    return Response.json({ data: [] });
   } });
   try {
     const dir = join(home, '.config/tokenlayer');

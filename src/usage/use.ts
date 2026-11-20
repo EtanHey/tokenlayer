@@ -12,9 +12,8 @@ const VENDORS = ['antigravity', 'kiro', 'codex'], source = 'clickhouse:session_e
 const totalSql = `toString(mapSort(JSONExtract(raw,'payload','info','total_token_usage','Map(String,UInt64)')))`;
 // Recent replay/revision dedup plus capped history for active Codex paths (both window cuts).
 export const useSql = (now: number) => `WITH fromUnixTimestamp64Milli(${Math.trunc(now)})-INTERVAL 1 DAY AS d,
-recent AS (SELECT multiIf(path LIKE '%/.kiro/sessions/%','kiro',
-path LIKE '%/.gemini/antigravity-cli/brain/%' OR path LIKE '%/.t3/userdata/providers/antigravity/%','antigravity',
-path LIKE '%/.codex/sessions/%','codex','') v,(machine,path) p,
+recent AS (SELECT if(match(path,'/[.](gemini/antigravity-cli/brain|t3/userdata/providers/antigravity)/'),
+'antigravity',extract(path,'/[.](kiro|codex)/sessions/')) v,(machine,path) p,
 if(message_id='',content_hash,message_id) h,
 argMax((ts,input_tokens,output_tokens,credits,type IN ('PLANNER_RESPONSE','kiro:assistant') OR
 (type='event_msg' AND role='token_count' AND JSONType(raw,'payload','info','last_token_usage')='Object'),${totalSql}),ingested_at) x,
@@ -49,11 +48,10 @@ const files = () => Object.assign({}, ...['ship', 'clickhouse'].map(f => {
 export async function readUse(now = Date.now(), env: Record<string, string> = files()) {
   try {
     if (!env.CLICKHOUSE_URL) throw 0;
-    const res = await fetch(`${env.CLICKHOUSE_URL}/?wait_end_of_query=1&default_format=JSONEachRow`, { method: 'POST', body: useSql(now),
+    const res = await fetch(`${env.CLICKHOUSE_URL}/?wait_end_of_query=1&default_format=JSON`, { method: 'POST', body: useSql(now),
       headers: { 'X-ClickHouse-User': env.CLICKHOUSE_USER ?? '', 'X-ClickHouse-Key': env.CLICKHOUSE_PASSWORD ?? '' }, signal: AbortSignal.timeout(25000) });
-    const text = await res.text();
     if (!res.ok || res.headers.has('x-clickhouse-exception-code')) throw 0;
-    return useBlocks(text.split('\n').filter(Boolean).map(l => JSON.parse(l)), new Date(now).toISOString());
+    return useBlocks((await res.json()).data, new Date(now).toISOString());
   } catch {
     return Object.fromEntries(VENDORS.map(v => [v, { observed_at: null, source, last_error: 'store unavailable' }])) as Record<string, Use>;
   }

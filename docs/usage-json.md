@@ -56,7 +56,9 @@ cannot re-credit an older response. The query caps reads at 20 million rows and
 Cap failures remain unavailable; the writer never retries uncapped. The historical
 0.15 s / 0.3 GB measurement predates logical crediting and does not qualify this query.
 The address and the capped `tokenlayer` login come from `~/.config/tokenlayer/ship.env` and
-`clickhouse.env`, which the M4 already has for ship. The writer never falls back to a default store.
+`clickhouse.env`, which the M4 already has for ship. These use standard dotenv syntax (the native
+`node:util` parser): quote values containing `#` or whitespace; `clickhouse.env`
+overrides `ship.env`. The writer never falls back to a default store.
 
 `use` has `observed_at`, `source` (`clickhouse:session_events`), and `24h` and `7d` windows.
 Each window has:
@@ -104,3 +106,19 @@ The top-level `projection` identifies this linear method. Projection uses observ
 time rather than poll time and is an estimate, not a promised exhaustion time.
 Consumers must check `stale` and observation ages. An outage preserves validated
 published fields and marks the snapshot stale; it does not invent observations.
+
+## Usage bundle budget (PR #183 Round 2)
+
+With Bun 1.4.3 and the ratchet's unminified `target: bun` build, exact parent
+#174 (`e3e4a7c`) is 27,849 B and reviewed #183 (`87972dd`) is 31,905 B.
+The original 3,200 B allowance gives a 31,049 B limit: 856 B over.
+The native dotenv parser, native JSON response decoding and shared vendor-root
+regex reduce the corrected candidate to 31,280 B (625 B smaller; +3,431 B over
+parent). It still exceeds the original limit by 231 B. Further removal would
+compromise the retained logical-crediting/history bounds or require a wider
+rewrite of the existing writer, so this PR explicitly sets growth=0.125 and
+allowance=3456. The exact-parent limit becomes 31,305 B, leaving 25 B.
+This is a disclosed feature allowance, not a passing claim against a stale main
+baseline. Stacked CI still measures against `origin/main`; parents must land first.
+#203 retains its separate tighten-back to growth=0.01 / allowance=2048; preserve
+that value when the stack is merged. No query read/memory/time cap is raised.
