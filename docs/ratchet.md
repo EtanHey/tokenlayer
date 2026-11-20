@@ -66,7 +66,7 @@ Ratchet commands and limits stay unchanged; their default measurements include t
 
 ### First-ingest storage (R2)
 
-Apply schema/004a_session_first_ingest.sql before enabling the updated lag reader. Its insert-triggered
+Apply schema/010a_session_first_ingest.sql before enabling the updated lag reader. Its insert-triggered
 materialized view keeps a mergeable minimum per machine, event timestamp and content hash, independently
 of session_events replacement. Same-key and generation replays cannot advance it. The small fact table
 keeps one day by event time; imports outside that range do not populate it.
