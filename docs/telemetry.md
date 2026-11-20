@@ -99,6 +99,11 @@ it was removed from the schema on 2026-11-19. A hub that already has the empty t
   checkpoint loss replays the current generation, and late harness
   classification preserves that generation. Losing both files loses revision lineage and can add replay rows;
   content hashes still protect different archived content. Restore the sidecar to retain lineage.
+- A journal ahead of a surviving checkpoint on the same generation (a failed insert, or a stop between the
+  journal write and the checkpoint) resumes from the acknowledged checkpoint once both prefixes verify; only the
+  unacknowledged suffix re-ships. Before R8 this replayed the whole file from offset 0, so every network blip on
+  a Mac re-inserted its active sessions: 2.5M of 11.4M `session_events` rows (22%) on 2026-11-19, kept apart by
+  the 1 GiB background-merge cap. Missing checkpoints, other generations and compressed files still replay.
 - Version 3 checkpoints hash the entire acknowledged prefix using streaming 64 KiB buffers. Changed files
   verify that prefix before resuming; batch hashes extend incrementally, avoiding a full rehash per chunk.
   The verified prefix hash is reused to extend batches from their exact source buffers before insertion;
