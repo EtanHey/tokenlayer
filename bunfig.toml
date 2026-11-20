@@ -2,3 +2,5 @@
 root = "./tests"
 # Review archives and the separately required property suite are excluded here.
 pathIgnorePatterns = ["docs.local/**", "**/*.property.test.ts"]
+# Hermetic environment and an explicit list of ClickHouse skips; see tests/preload.ts.
+preload = ["./tests/preload.ts"]
