@@ -47,9 +47,9 @@ export class ClickHouse {
    * wait_end_of_query=1 (errors then get a real status) and still checks X-ClickHouse-Exception-Code.
    * Error text is redacted: ClickHouse echoes the rows it could not parse.
    */
-  protected async post(what: string, params: URLSearchParams, body: string | Buffer, bodyIsResult: boolean): Promise<string> {
+  protected async post(what: string, params: URLSearchParams, body: string | Buffer, bodyIsResult: boolean, signal?: AbortSignal): Promise<string> {
     params.set("wait_end_of_query", "1");
-    const res = await fetch(`${this.config.url}/?${params}`, { method: "POST", headers: { "X-ClickHouse-User": this.config.user, "X-ClickHouse-Key": this.config.password }, body: typeof body === "string" ? body : new Uint8Array(body) });
+    const res = await fetch(`${this.config.url}/?${params}`, { method: "POST", signal, headers: { "X-ClickHouse-User": this.config.user, "X-ClickHouse-Key": this.config.password }, body: typeof body === "string" ? body : new Uint8Array(body) });
     const text = await res.text();
     const code = res.headers.get("x-clickhouse-exception-code");
     // An insert answers with an empty body, so any exception text in it means the insert failed.
@@ -76,12 +76,12 @@ export class ClickHouse {
   }
 
   /** Run a statement; returns the response body as text. `queryId` names it on the server, so it can be killed. */
-  async exec(sql: string, options: { queryId?: string } = {}): Promise<string> {
-    return this.post("query", new URLSearchParams(options.queryId ? { query_id: options.queryId } : {}), sql, true);
+  async exec(sql: string, options: { queryId?: string; signal?: AbortSignal } = {}): Promise<string> {
+    return this.post("query", new URLSearchParams(options.queryId ? { query_id: options.queryId } : {}), sql, true, options.signal);
   }
 
-  async queryJSON<T = Record<string, unknown>>(sql: string): Promise<T[]> {
-    const text = await this.exec(`${sql}\nFORMAT JSONEachRow`);
+  async queryJSON<T = Record<string, unknown>>(sql: string, options: { signal?: AbortSignal } = {}): Promise<T[]> {
+    const text = await this.exec(`${sql}\nFORMAT JSONEachRow`, options);
     return text
       .split("\n")
       .filter(Boolean)
