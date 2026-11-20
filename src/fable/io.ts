@@ -5,6 +5,8 @@ import {
   plan,
   intent,
   usable,
+  hasWeekly,
+  type LastWeekly,
   type State,
   type Observation,
   type Plan,
@@ -18,7 +20,11 @@ export class Hub {
   constructor(
     readonly url: string,
     private key: string,
+    private history?: (c: Observation) => Promise<LastWeekly | undefined>,
   ) {}
+  async lastWeekly(c: Observation) {
+    return this.history?.(c);
+  }
   async request<T = unknown>(
     method: string,
     path: string,
@@ -85,14 +91,20 @@ export interface ExecutorHub {
   catalog(id: string): Promise<string[]>;
   registry(): Promise<string[]>;
   patch(id: string, fields: Partial<Fields>): Promise<void>;
+  /** History for a credential the hub has no weekly reading for; optional and best-effort. */
+  lastWeekly?(c: Observation): Promise<LastWeekly | undefined>;
 }
 /** Inventory is checked around catalog reads; the final observation happens after their last await. */
 export async function observe(
   s: State,
   hub: ExecutorHub,
 ): Promise<Observation[]> {
-  if (!inventory(s, await hub.observations()))
-    throw Error("credential inventory changed");
+  const first = await hub.observations();
+  if (!inventory(s, first)) throw Error("credential inventory changed");
+  const history: Record<string, LastWeekly | undefined> = {};
+  for (const c of first)
+    if (hub.lastWeekly && !hasWeekly(c.quota))
+      history[c.id] = await hub.lastWeekly(c).catch(() => undefined);
   const catalogs: Record<string, string[]> = {};
   for (const id of Object.keys(s.baseline)) {
     catalogs[id] = await hub.catalog(id);
@@ -104,7 +116,11 @@ export async function observe(
   }
   const obs = await hub.observations();
   if (!inventory(s, obs)) throw Error("credential inventory changed");
-  return obs.map((c) => ({ ...c, catalog: catalogs[c.id] }));
+  return obs.map((c) => ({
+    ...c,
+    catalog: catalogs[c.id],
+    ...(history[c.id] && !hasWeekly(c.quota) ? { last_weekly: history[c.id] } : {}),
+  }));
 }
 /** Single writer owns these fields. Effective catalogs cannot prove absence of latent wildcard rules. */
 export async function execute(
