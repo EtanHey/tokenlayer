@@ -178,7 +178,10 @@ export function quotaWindow(
     !status
   )
     return null;
-  return { u, rejected: status === "rejected" };
+  const reset = /^\d+(?:\.\d+)?$/.test(sig[p + "reset"] ?? "")
+    ? Math.floor(Number(sig[p + "reset"])) * 1000
+    : NaN;
+  return { u, rejected: status === "rejected", reset };
 }
 function fableQuota(c: Observation) {
   return Object.entries(c.model_quotas ?? {})
@@ -188,6 +191,22 @@ function fableQuota(c: Observation) {
       (a, b) =>
         Date.parse(b.observed_at ?? "") - Date.parse(a.observed_at ?? ""),
     )[0];
+}
+/**
+ * The Fable reading is only refreshed by a Fable request, so after a weekly reset an idle
+ * account keeps the old window's reading. A reading whose reset has passed is expired (zero
+ * use, not rejected) once a fresh weekly signal shows a later window; otherwise staleness refuses.
+ */
+function fableWindow(c: Observation, now: number) {
+  const q = fableQuota(c);
+  const old = quotaWindow(q, "7d_oi", now, false);
+  const week = quotaWindow(c.quota, "7d", now);
+  if (old && old.reset <= now &&
+      Date.parse(q?.observed_at ?? "") < old.reset &&
+      week && Date.parse(c.quota?.observed_at ?? "") > old.reset &&
+      week.reset > now)
+    return { u: 0, rejected: false, reset: week.reset, expired: true };
+  return quotaWindow(q, "7d_oi", now);
 }
 function cooldown(c: Observation, model: string, now: number) {
   return (c.cooldowns ?? []).some(
@@ -206,7 +225,7 @@ export function usable(
 ) {
   c = currentQuota(s, c, now);
   const week = quotaWindow(c.quota, "7d", now);
-  const fable = quotaWindow(fableQuota(c), "7d_oi", now);
+  const fable = fableWindow(c, now);
   return (
     !!c.catalog?.includes(model) &&
     c.status === "active" &&
@@ -246,7 +265,7 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
   if (!a || !b)
     return { ...p, applied: "UNKNOWN", reason: "account not found" };
   const week = quotaWindow(a.quota, "7d", now),
-    fable = quotaWindow(fableQuota(a), "7d_oi", now);
+    fable = fableWindow(a, now);
   const n = week ? Math.max(0, week.u - 0.5 * (fable?.u ?? 0)) : 0;
   const reserve =
     s.fableReserveOnA &&
@@ -313,8 +332,9 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
       );
       const prefix = "anthropic-ratelimit-unified-7d_oi-";
       const cap =
-        signals[prefix + "status"] === "rejected" ||
-        Number(signals[prefix + "utilization"]) >= s.thresholds.fableCapAt;
+        !(fable && "expired" in fable) &&
+        (signals[prefix + "status"] === "rejected" ||
+          Number(signals[prefix + "utilization"]) >= s.thresholds.fableCapAt);
       if (!au && !bu) {
         p.exceptions[model] = "NO_UPSTREAM";
         continue;
