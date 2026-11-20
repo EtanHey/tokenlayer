@@ -91,4 +91,50 @@ describe.skipIf(!clickhouseBinary())("ship heartbeat → real local ClickHouse �
     await ch.client.exec("INSERT INTO tokenlayer.ship_heartbeat (machine, ts, result, error_class, files, lines, bytes, duration_ms, ingested_at) VALUES ('m4', now64(3) - INTERVAL 6 HOUR, 'ok', '', 0, 0, 0, 5, now64(3) - INTERVAL 6 HOUR)");
     expect(measure("ship_heartbeat_age_s_m4", { TOKENLAYER_M4_HOST: "h1-unreachable.invalid" })).toEqual({ exit: 0, out: "skip" });
   });
+
+  /** Beats for a Mac, one a minute back from `fromMin` minutes ago, each 'ok' or an error class. */
+  const insertBeats = (machine: string, classes: string[], fromMin = 0) => ch.client.exec(
+    `INSERT INTO tokenlayer.ship_heartbeat (machine, ts, result, error_class, files, lines, bytes, duration_ms, ingested_at) VALUES ${classes.map((c, i) =>
+      `('${machine}', now64(3) - INTERVAL ${fromMin + i} MINUTE, '${c === "ok" ? "ok" : "error"}', '${c === "ok" ? "" : c}', 0, 0, 0, 5, now64(3) - INTERVAL ${fromMin + i} MINUTE)`).join(", ")}`);
+  const failing = (machine: string, extra: Record<string, string> = {}) => {
+    const { exit, out } = measure(`ship_heartbeat_failing_${machine}`, extra);
+    expect(exit).toBe(0);
+    return out === "skip" ? "skip" : JSON.parse(out) as { value: number; threshold: number; say: string };
+  };
+
+  test("failing shipper: every M1 beat in the last 15 min is an error → the failing row trips; an older ok beat doesn't save it", async () => {
+    await ch.client.exec("TRUNCATE TABLE tokenlayer.ship_heartbeat");
+    // 14 failing beats in the window, the last ok passes 16–20 min ago, and a healthy M4 that must not hide the M1.
+    await insertBeats("m1", Array(14).fill("file_errors"));
+    await insertBeats("m1", Array(5).fill("ok"), 16);
+    await insertBeats("m4", Array(15).fill("ok"));
+    const m = failing("m1");
+    expect(m).toEqual({ value: 14, threshold: 0, say: "all 14 heartbeats in the last 15 min failed (file_errors): the shipper runs, but no pass succeeds" });
+    expect(evaluate(row("ship_heartbeat_failing_m1"), (m as { value: number }).value)).toBe(false);
+    // The age row stays green: the shipper is alive, which is why this row exists.
+    expect(evaluate(row("ship_heartbeat_age_s_m1"), Number(measure("ship_heartbeat_age_s_m1").out))).toBe(true);
+  });
+
+  test("mixed: one ok beat among the failures in the window passes", async () => {
+    await ch.client.exec("TRUNCATE TABLE tokenlayer.ship_heartbeat");
+    await insertBeats("m1", ["file_errors", "other", "ok", "file_errors", "store_unreachable"]);
+    expect(failing("m1")).toEqual({ value: 0, threshold: 0, say: "1 of 5 heartbeats in the last 15 min ok" });
+  });
+
+  test("recovery: the real daemon's next ok pass clears the failing row", async () => {
+    await ch.client.exec("TRUNCATE TABLE tokenlayer.ship_heartbeat");
+    await insertBeats("m1", Array(10).fill("other"));
+    expect(failing("m1")).toMatchObject({ value: 10 });
+    expect(await runDaemon("m1")).toBe(1);
+    const m = failing("m1");
+    expect(m).toEqual({ value: 0, threshold: 0, say: "1 of 11 heartbeats in the last 15 min ok" });
+    expect(evaluate(row("ship_heartbeat_failing_m1"), (m as { value: number }).value)).toBe(true);
+  }, 30000);
+
+  test("no beat in the window holds the state (the age row's job); an unreachable M4 skips however it fails", async () => {
+    await ch.client.exec("TRUNCATE TABLE tokenlayer.ship_heartbeat");
+    expect(failing("m1")).toBe("skip");
+    await insertBeats("m4", Array(15).fill("file_errors"));
+    expect(failing("m4", { TOKENLAYER_M4_HOST: "h2-unreachable.invalid" })).toBe("skip");
+  });
 });

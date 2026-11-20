@@ -328,7 +328,7 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
   const lowWhileCopying = (low: () => Promise<number>) => async () => (await runningCopies(ch)) ? low() : 2 ** 50;
 
   test("S6: the watchdog kills at the floor plus a margin, before the floor itself breaks", async () => {
-    await bulk(ch, 20_000);
+    await freshMonthly(() => bulk(ch, 20_000)); // only the slow part, so a low read always lands during its copy
     const floorBytes = 2 ** 40;
     const report = await repartitionSessionEvents(ch.client, {
       floorBytes, freeBytes: lowWhileCopying(async () => floorBytes + 2 ** 30), extraCopySettings: SLOW_COPY, watchMs: 100,
@@ -340,7 +340,7 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
   }, 60_000);
 
   test("S7: free disk that cannot be read counts as unsafe and kills the copy", async () => {
-    await bulk(ch, 20_000);
+    await freshMonthly(() => bulk(ch, 20_000)); // only the slow part, so a low read always lands during its copy
     const report = await repartitionSessionEvents(ch.client, {
       floorBytes: 2 ** 40, freeBytes: lowWhileCopying(async () => { throw new Error("memory limit (total) exceeded"); }),
       extraCopySettings: SLOW_COPY, watchMs: 100,
@@ -351,13 +351,22 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
     expect(await liveCount("startsWith(path, 'bulk-')")).toBeLessThan(20000);
   }, 60_000);
 
-  /** The client with its first `n` KILL statements answered but never sent, like a KILL that runs before the query is listed. */
+  /**
+   * The client with its first `n` KILL statements answered but never sent, like a KILL that runs before the query is
+   * listed. Its copies sleep 0.3 ms a row (about 6 s for the bulk day; ClickHouse caps a sleep at 3 s per 8192-row
+   * granule): SLOW_COPY's speed limit let a CI copy end within 1.5 s.
+   */
   const losingKills = (n: number) => {
     let lost = 0;
     return new Proxy(ch.client, {
       get(target, prop, receiver) {
         if (prop === "exec") {
-          return (sql: string, o?: { queryId?: string }) => (/^\s*KILL /.test(sql) && lost++ < n ? Promise.resolve("") : target.exec(sql, o));
+          return (sql: string, o?: { queryId?: string }) => {
+            if (/^\s*KILL /.test(sql) && lost++ < n) return Promise.resolve("");
+            const slowed = o?.queryId?.startsWith("r12-") ? sql.replace(/\n\s*SETTINGS /, " AND sleepEachRow(0.0003) = 0\n SETTINGS ") : sql;
+            if (o?.queryId?.startsWith("r12-") && slowed === sql) throw new Error("test proxy could not slow the copy");
+            return target.exec(slowed, o);
+          };
         }
         return Reflect.get(target, prop, receiver);
       },
@@ -365,7 +374,7 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
   };
 
   test("S7: a KILL that did nothing is re-issued until the copy is gone", async () => {
-    await bulk(ch, 20_000);
+    await freshMonthly(() => bulk(ch, 20_000)); // only the slow part, so a low read always lands during its copy
     const report = await repartitionSessionEvents(losingKills(1), {
       floorBytes: 2 ** 40, freeBytes: lowWhileCopying(async () => 0), extraCopySettings: SLOW_COPY, watchMs: 100,
     });
@@ -376,13 +385,14 @@ describe.skipIf(!clickhouseBinary())("monthly → daily repartition → real loc
   }, 60_000);
 
   test("S7: a kill that cannot be confirmed stops the run loudly", async () => {
-    await bulk(ch, 20_000);
+    await freshMonthly(() => bulk(ch, 20_000)); // only the slow part, so a low read always lands during its copy
     try {
-      await expect(repartitionSessionEvents(losingKills(Infinity), {
+      const outcome = await repartitionSessionEvents(losingKills(Infinity), {
         floorBytes: 2 ** 40, freeBytes: lowWhileCopying(async () => 0), extraCopySettings: SLOW_COPY, watchMs: 100, killConfirmMs: 1500,
-      })).rejects.toThrow(/not confirmed.*may still be writing/);
+      }).then(report => ({ report }), error => ({ error: String(error) }));
+      expect(outcome).toEqual({ error: expect.stringMatching(/not confirmed.*may still be writing/) });
     } finally {
-      await ch.client.exec("KILL QUERY WHERE startsWith(query_id, 'r12-') SYNC");
+      await ch.client.exec("KILL QUERY WHERE startsWith(query_id, 'r12-') SYNC").catch(() => {}); // 26.11 throws when none runs
     }
     expect(await archiveCount("startsWith(path, 'bulk-')")).toBe(20000);
   }, 60_000);

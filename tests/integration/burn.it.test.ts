@@ -11,8 +11,8 @@ const reserve = { pct: 8, from: "file" };
 describe.skipIf(!clickhouseBinary())("claude_burn_2h SQL → real local ClickHouse", () => {
   let ch: LocalClickHouse;
   /** One request per (account, minutes before NOW, weekly utilization). `fable` adds a 7d_oi key the row must ignore. */
-  const insert = (rows: [string, number, number, boolean?][]) => ch.client.exec(`INSERT INTO tokenlayer.proxy_usage (ts, execution_id, credential, account_hash, provider, ratelimit) VALUES ${rows.map(([account, min, u, fable], i) =>
-    `(toDateTime64(${NOW - min * 60}, 3, 'UTC'), 'e${i}-${Math.random()}', 'cred-${account}', '${account}', 'claude', map('anthropic-ratelimit-unified-7d-utilization', '${u}', 'anthropic-ratelimit-unified-7d-reset', '${RESET}'${fable ? ", 'anthropic-ratelimit-unified-7d_oi-utilization', '0.99'" : ""}))`).join(",")}`);
+  const insert = (rows: [string, number, number, boolean?, number?][]) => ch.client.exec(`INSERT INTO tokenlayer.proxy_usage (ts, execution_id, credential, account_hash, provider, ratelimit) VALUES ${rows.map(([account, min, u, fable, reset], i) =>
+    `(toDateTime64(${NOW - min * 60}, 3, 'UTC'), 'e${i}-${Math.random()}', 'cred-${account}', '${account}', 'claude', map('anthropic-ratelimit-unified-7d-utilization', '${u}', 'anthropic-ratelimit-unified-7d-reset', '${reset ?? RESET}'${fable ? ", 'anthropic-ratelimit-unified-7d_oi-utilization', '0.99'" : ""}))`).join(",")}`);
   const verdict = async () => burnVerdict(parsePoints(await ch.client.exec(burnSQL(NOW))), reserve, NOW);
 
   beforeAll(async () => {
@@ -41,6 +41,18 @@ describe.skipIf(!clickhouseBinary())("claude_burn_2h SQL → real local ClickHou
     const v = await verdict();
     expect(v).toMatchObject({ value: 3.5, fail: true });
     expect(v.say).toStartWith("over twice the target: Claude ran 3.5%/h for the last 2 h and 5%/h for the last hour");
+  });
+
+  test("reset inside a bucket retains both cycles: 2 old-week + 3 new-week points, not 99", async () => {
+    await ch.client.exec("TRUNCATE TABLE tokenlayer.proxy_usage");
+    const oldReset = NOW - 113 * 60; // 7 min after window start, inside its first bucket
+    await insert([["a", 130, 0.97, false, oldReset], ["a", 118, 0.99, false, oldReset], ["a", 110, 0.03, false, oldReset + 7 * 86400]]);
+    const points = parsePoints(await ch.client.exec(burnSQL(NOW)));
+    expect(points).toHaveLength(3);
+    expect(points.map(p => p.u)).toEqual([0.97, 0.99, 0.03]);
+    const v = await verdict();
+    expect(v.value).toBe(2.5);
+    expect(v.say).toContain("97% of the week");
   });
 
   test("no request at all in 2 h → 0%/h; no reading in 8 days → no target, fails", async () => {

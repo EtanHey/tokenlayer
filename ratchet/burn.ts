@@ -28,9 +28,9 @@ export type Reserve = { pct: number; from: string };
 export type Verdict = { value: number; threshold: number | null; fail: boolean; say: string };
 
 /**
- * Per account: the last weekly utilization (a fraction) before the window, then the max per 15-minute bucket inside
+ * Per account: the last weekly utilization (a fraction) before the window, then the max per quota cycle and 15-minute bucket inside
  * it. Max, not last: requests in one bucket can land out of order. Buckets count back from `nowS`, so the last hour
- * starts on a bucket edge. The table is a ReplacingMergeTree; a duplicate row never changes a max, so no FINAL.
+ * starts on a bucket edge. A reset inside a bucket keeps both cycles in reset order. The table is a ReplacingMergeTree; a duplicate row never changes a max, so no FINAL.
  * `at` is the last reading's second, rounded up, so a reading after a window edge never sorts before it.
  */
 export const burnSQL = (nowS: number, windowS = BURN_WINDOW_S, lookbackS = BURN_LOOKBACK_S) => `SELECT account_hash AS account, base, bucket,
@@ -39,11 +39,12 @@ export const burnSQL = (nowS: number, windowS = BURN_WINDOW_S, lookbackS = BURN_
     SELECT account_hash, ts, toFloat64OrNull(ratelimit['${WEEK_UTILIZATION}']) AS util,
       toUInt64OrZero(ratelimit['${WEEK_RESET}']) AS wreset,
       toUInt8(ts <= toDateTime(${nowS - windowS}, 'UTC')) AS base,
+      if(base = 1, 0, wreset) AS cycle,
       if(base = 1, 0, ${nowS} - 900 * (intDiv(${nowS * 1000} - toUnixTimestamp64Milli(ts), 900000) + 1)) AS bucket
     FROM tokenlayer.proxy_usage
     WHERE ts > toDateTime(${nowS - windowS - lookbackS}, 'UTC') AND ts <= toDateTime(${nowS}, 'UTC')
       AND mapContains(ratelimit, '${WEEK_UTILIZATION}') AND util IS NOT NULL)
-  GROUP BY account, base, bucket ORDER BY account, base DESC, bucket
+  GROUP BY account, base, bucket, cycle ORDER BY account, base DESC, bucket, reset
   FORMAT JSONEachRow`;
 
 export const parsePoints = (jsonEachRow: string): Point[] => jsonEachRow.split('\n').filter(Boolean).map(line => {
@@ -62,7 +63,7 @@ export function burnRise(points: Point[], windowStartS: number): number {
   const byAccount = new Map<string, Point[]>();
   for (const p of points) byAccount.set(p.account, [...(byAccount.get(p.account) ?? []), p]);
   for (const all of byAccount.values()) {
-    all.sort((a, b) => b.base - a.base || a.bucket - b.bucket);
+    all.sort((a, b) => b.base - a.base || a.bucket - b.bucket || a.reset - b.reset);
     let from = 0;
     all.forEach((p, i) => { if (p.base === 1 || p.at <= windowStartS) from = i; });
     const pts = all.slice(from);

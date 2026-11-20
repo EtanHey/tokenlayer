@@ -164,7 +164,8 @@ it was removed from the schema on 2026-11-19. A hub that already has the empty t
   No paths, messages or content. It writes at most once a minute while the class stays the same, and at once when it
   changes; a write that fails is logged once by class and retried next pass, with no unsent retries, so a down store
   never stalls the loop. Rows expire after 30 days. A `--backfill` never beats. The live rows
-  `ship_heartbeat_age_s_m1` / `_m4` read it (docs/ratchet.md).
+  `ship_heartbeat_age_s_m1` / `_m4` read it for silence, and `ship_heartbeat_failing_m1` / `_m4` for 15 min with no ok
+  pass (docs/ratchet.md).
 - Not shipped yet: T3 Code's own thread store (SQLite, see the PR-b body) and the stray Codex rollout at `~/.t3/*.jsonl`.
 
 Agents default to `v_session_events_meta` (an explicit metadata allowlist) and `v_requests`
@@ -203,7 +204,7 @@ LIMIT 50
 `reader` profile in `config/clickhouse.xml.template`:
 - Each query is capped at 8 GiB (`max_memory_usage`). A caller may lower the cap, but may not raise it or set 0
   (ClickHouse refuses with code 452).
-- GROUP BY and ORDER BY spill to disk past 4 GiB, with at most 8 GiB of temporary disk per query.
+- GROUP BY and ORDER BY spill to disk past 4 GiB, with at most 8 GiB of temporary disk per query. Like the memory cap, a caller may lower the temp-disk limit but not lift it or set 0 (unlimited).
 
 Ship and drain write as `tokenlayer_writer`, which stays uncapped. It has its own password in
 `~/.config/tokenlayer/clickhouse-writer.env` (mode 600, loaded last by their plists), so the reader's password cannot

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { burnRise, burnVerdict, DEFAULT_RESERVE_PCT, readReserve, type Point, type Reserve } from "../../ratchet/burn";
+import { burnSQL, burnRise, burnVerdict, DEFAULT_RESERVE_PCT, readReserve, type Point, type Reserve } from "../../ratchet/burn";
 import { liveRows, plan } from "../../ratchet/live-schedule";
 
 const rows = JSON.parse(readFileSync("ratchet/rows.json", "utf8")).rows;
@@ -118,4 +118,22 @@ test("a weekly reset inside the window counts the new week's use; a fall alone c
   // The new week began before the window: its pre-window use is unknown, only the in-window rise counts.
   expect(burnRise([base(0.97, "a", START - 3600), at(45, 0.10, "a", START - 3600 + 7 * 86400), at(90, 0.12, "a", START - 3600 + 7 * 86400)], START)).toBe(0.02);
   expect(burnRise([base(0.50), at(30, 0.49)], START)).toBe(0);
+});
+
+test("quota cycles in one bucket retain chronological order even if result rows are reversed", () => {
+  const oldReset = START + 7 * 60;
+  const old = { ...at(2, 0.99, "a", oldReset), bucket: START };
+  const fresh = { ...at(10, 0.03, "a", oldReset + 7 * 86400), bucket: START };
+  const points = [base(0.97, "a", oldReset), fresh, old];
+  expect(burnRise(points, START)).toBe(0.05);
+  const v = burnVerdict(points, reserve, NOW);
+  expect(v.value).toBe(2.5);
+  expect(v.say).toContain("97% of the week");
+});
+
+test("SQL keeps in-window quota cycles separate but retains only the last baseline", () => {
+  const sql = burnSQL(NOW);
+  expect(sql).toContain("if(base = 1, 0, wreset) AS cycle");
+  expect(sql).toContain("GROUP BY account, base, bucket, cycle");
+  expect(sql).toContain("ORDER BY account, base DESC, bucket, reset");
 });
