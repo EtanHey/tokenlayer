@@ -1,4 +1,5 @@
-import { expect, test, spyOn } from 'bun:test';
+import { expect, spyOn } from 'bun:test';
+import { test } from '../support/clickhouse-gate';
 import { mkdirSync, writeFileSync, readFileSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { historyFixtureDirectories } from '../fixtures/history-temp';
