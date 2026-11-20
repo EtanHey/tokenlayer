@@ -18,7 +18,7 @@ function fixture(raw = Buffer.from('{"sessionId":"synthetic","projectHash":"p","
   const save = () => fs.writeFileSync(manifest,JSON.stringify(spec),{mode:0o600}); save();
   return { dir,path,manifest,out,raw,source,spec,save, clean:()=>fs.rmSync(dir,{recursive:true,force:true}) };
 }
-const cli = (f:ReturnType<typeof fixture>) => Bun.spawnSync(["bun",resolve("src/metadata/gemini-main.ts"),f.manifest,f.out]);
+const cli = (f:ReturnType<typeof fixture>) => Bun.spawnSync(["bun",resolve("src/metadata/gemini-main.ts"),f.manifest,f.out],{env:process.env});
 test("real CLI exports exact UTF8 spans and six counter states, private atomic hashes and HOLD", () => {
   const f=fixture(); try {
     const p=cli(f); expect(p.exitCode).toBe(2); expect(p.stderr.toString()).toBe("");
@@ -101,7 +101,7 @@ test("SIGKILL after pending-manifest fsync cannot publish completion", async () 
       import {exportGeminiJson} from ${JSON.stringify(resolve("src/metadata/gemini-export.ts"))};
       spyOn(custodyOps,"commit").mockImplementation(()=>{process.kill(process.pid,"SIGKILL");});
       exportGeminiJson(${JSON.stringify(f.manifest)},${JSON.stringify(f.out)});`;
-    const child=Bun.spawn(["bun","-e",program],{stdout:"pipe",stderr:"pipe"});await child.exited;
+    const child=Bun.spawn(["bun","-e",program],{stdout:"pipe",stderr:"pipe",env:process.env});await child.exited;
     expect(child.signalCode).toBe("SIGKILL");expect(fs.existsSync(join(f.out,"manifest.json"))).toBe(false);
     expect(fs.existsSync(join(f.out,"manifest.json.pending"))).toBe(true);
     expect((await new Response(child.stderr).text())).toBe("");

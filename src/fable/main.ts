@@ -10,6 +10,7 @@ import { loadEnvFiles } from "../lib/env";
 import { defaults, plan, intent } from "./core";
 import { restoreOff, offReadback } from "./off";
 import { migrate, adopt } from "./baseline";
+import { weeklyHistory } from "./history";
 import { Hub, statePath, save, locked, execute, observe } from "./io";
 const args = process.argv.slice(2),
   command = args.shift();
@@ -68,6 +69,7 @@ const env = loadEnvFiles(
 const hub = new Hub(
   env.TOKENLAYER_HUB_URL ?? "http://127.0.0.1:8317",
   env.CLIPROXY_MGMT_KEY ?? "",
+  weeklyHistory(ClickHouse.fromEnv(env)),
 );
 function applyPreferences(s: ResetState) {
   for (const [key, flag] of [
