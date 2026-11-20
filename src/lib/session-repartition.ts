@@ -29,7 +29,7 @@ import { SCHEMA_DIR } from "./schema";
  *      Every version of a key is copied as it is and the TTL's per-row predicate applies, so the result equals what
  *      the monthly table would keep. Duplicate versions collapse as each day's parts merge (FINAL reads already do).
  *      Until a part is copied, views show only the days of it already copied.
- *   3. Drop the archive once it holds no parts.
+ *   3. Hold the archive while any relevant INSERT runs; refresh its parts after the writers finish, then drop it only when empty.
  *
  * `dryRun` sends SELECTs only, in every state. An abort signal (Ctrl-C) kills the running copy on the server before
  * the call rejects; a copy left running by a killed client makes the next run refuse until it ends.
@@ -60,6 +60,8 @@ export const KILL_MARGIN = 2 * GiB;
 export const FAILED_READS_TO_KILL = 3;
 /** How long the watchdog keeps re-issuing KILL before it stops the run loudly, the copy perhaps still writing. */
 export const KILL_CONFIRM_MS = 60_000;
+/** Per control request; the long-running copy has its own query_id and no such deadline. */
+export const CONTROL_TIMEOUT_MS = 5_000;
 /**
  * A session line averages about 5.5 KB. With default blocks (65k rows per read thread, 256 MiB insert squashing) a
  * local copy of 464 MiB peaked at 4.85 GiB of memory (the hub login caps a query at 8 GiB); these bounds held it to
@@ -150,6 +152,8 @@ export type RepartitionOptions = {
   killMarginBytes?: number;
   /** How long the watchdog keeps re-issuing KILL before the run stops loudly. Default KILL_CONFIRM_MS. */
   killConfirmMs?: number;
+  /** Deadline for a watchdog disk/KILL/process request. Default 5 s; separate from the copy. */
+  controlTimeoutMs?: number;
   /** Why the shippers are not ready for daily partitions (empty: ready). Checked before the swap. Default: shipper-ready.ts. */
   shipperCheck?: () => Promise<string[]>;
   /** Disk multiplier per copied day; default DAY_AMPLIFICATION. */
@@ -165,7 +169,7 @@ export type RepartitionOptions = {
   /** Abort (Ctrl-C): kill the running copy on the server, then reject. */
   signal?: AbortSignal;
   /** Free disk in bytes; default system.disks (free_space + keep_free_space, as `df` shows it). Tests replace it. */
-  freeBytes?: (ch: ClickHouse) => Promise<number>;
+  freeBytes?: (ch: ClickHouse, signal?: AbortSignal) => Promise<number>;
   /** Settings over the copy's own (tests slow the copy down to watch it). */
   extraCopySettings?: Record<string, string | number>;
   log?: (line: string) => void;
@@ -179,8 +183,8 @@ export function keptRowsSQL(at: string): string {
 const gib = (b: number) => (b / GiB).toFixed(2);
 
 /** Disk free as `df` reports it: ClickHouse's free_space excludes keep_free_space_bytes. */
-async function diskFreeBytes(ch: ClickHouse): Promise<number> {
-  const [d] = await ch.queryJSON<{ free: string }>("SELECT toString(free_space + keep_free_space) AS free FROM system.disks WHERE name = 'default'");
+async function diskFreeBytes(ch: ClickHouse, signal?: AbortSignal): Promise<number> {
+  const [d] = await ch.queryJSON<{ free: string }>("SELECT toString(free_space + keep_free_space) AS free FROM system.disks WHERE name = 'default'", { signal });
   return Number(d?.free ?? 0);
 }
 
@@ -191,8 +195,8 @@ function selectOnly(ch: ClickHouse): ClickHouse {
   };
   return new Proxy(ch, {
     get(target, prop, receiver) {
-      if (prop === "exec") return (sql: string, o?: { queryId?: string }) => { guard(sql); return target.exec(sql, o); };
-      if (prop === "queryJSON") return (sql: string) => { guard(sql); return target.queryJSON(sql); };
+      if (prop === "exec") return (sql: string, o?: { queryId?: string; signal?: AbortSignal }) => { guard(sql); return target.exec(sql, o); };
+      if (prop === "queryJSON") return (sql: string, o?: { signal?: AbortSignal }) => { guard(sql); return target.queryJSON(sql, o); };
       if (prop === "insert") return () => { throw new Error("dry run refused an insert"); };
       return Reflect.get(target, prop, receiver);
     },
@@ -296,15 +300,18 @@ export async function repartitionSessionEvents(ch: ClickHouse, options: Repartit
   const settleMs = options.settleMs ?? 600_000;
   const watchMs = options.watchMs ?? 1_000;
   const killConfirmMs = options.killConfirmMs ?? KILL_CONFIRM_MS;
+  const controlTimeoutMs = options.controlTimeoutMs ?? CONTROL_TIMEOUT_MS;
   // A NaN or negative bound passes every comparison the wrong way and turns the disk checks off.
   const bad = Object.entries({ floorBytes, margin, settleMs, watchMs, killConfirmMs }).filter(([, v]) => !Number.isFinite(v) || v < 0);
+  if (!Number.isFinite(controlTimeoutMs) || controlTimeoutMs <= 0) bad.push(["controlTimeoutMs", controlTimeoutMs]);
   if (!Number.isFinite(k) || k < 1) bad.push(["amplification", k]);
   if (options.maxParts !== undefined && !(Number.isInteger(options.maxParts) && options.maxParts >= 0)) bad.push(["maxParts", options.maxParts]);
   if (bad.length) throw new Error(`refusing malformed options: ${bad.map(([n, v]) => `${n} = ${v}`).join(", ")}`);
   const shipperCheck = options.shipperCheck ?? (async () => (await import("./shipper-ready")).shipperProblems());
   const log = options.log ?? (() => {});
   const signal = options.signal;
-  const free = () => (options.freeBytes ?? diskFreeBytes)(db);
+  const rawFree = (signal?: AbortSignal) => (options.freeBytes ?? diskFreeBytes)(db, signal);
+  const free = () => boundedControl(rawFree, controlTimeoutMs, signal);
   const partNeed = (p: PartPlan) => COPY_GROWTH * p.bytes + k * p.maxDayBytes;
   const need = (plan: PartPlan[]) => floorBytes + margin + Math.max(0, ...plan.map(partNeed));
   const largest = (plan: PartPlan[]) => plan.reduce<PartPlan | undefined>((a, p) => (!a || partNeed(p) > partNeed(a) ? p : a), undefined);
@@ -436,7 +443,7 @@ export async function repartitionSessionEvents(ch: ClickHouse, options: Repartit
       if (stopped) break copying;
       const queryId = `${runId}-${p.part}-${d.day}`;
       stopped = await copyWatched(ch, `INSERT INTO ${LIVE} (${columns}) SELECT ${columns} FROM ${ARCHIVE} WHERE _part = '${p.part}' AND toYYYYMMDD(ts) = ${d.day} AND ${keptRowsSQL(cutoff)}
-        SETTINGS ${settings}`, queryId, { free, killBelow: floorBytes + margin, watchMs, killConfirmMs, signal });
+        SETTINGS ${settings}`, queryId, { free: rawFree, killBelow: floorBytes + margin, watchMs, killConfirmMs, controlTimeoutMs, signal });
       if (signal?.aborted) throw new Error(`aborted: killed ${queryId} on the server; ${p.part} stays in the archive. Rerun to resume`);
       if (stopped) break copying;
       log(`  ${p.part} day ${d.day}: ${d.rows} rows (~${gib(d.bytes)} GiB) copied, ${((Date.now() - started) / 1000).toFixed(1)} s into the part`);
@@ -455,13 +462,14 @@ export async function repartitionSessionEvents(ch: ClickHouse, options: Repartit
   if (stopped) log(`stop: ${stopped}`);
 
   // Step 3. An insert that resolved the monthly table before the EXCHANGE still writes into the archive; DROP TABLE
-  // would wait for it and then drop its rows. Any insert older than this run could be one.
+  // would wait for it and then drop its rows. Hold for ALL relevant inserts: run-start ages miss writers
+  // admitted during preflight, and a resumed run has no durable swap timestamp. Once none remain, refresh
+  // parts below; any writer that resolved the old table has now committed (or failed).
   if (!remaining.length && !stopped) {
-    const seconds = Math.ceil((Date.now() - runStarted) / 1000);
     const old = await ch.queryJSON<{ query_id: string }>(
       `SELECT query_id FROM system.processes WHERE query_kind = 'Insert' AND NOT startsWith(query_id, '${COPY_QUERY_PREFIX}')
-       AND positionCaseInsensitive(query, 'session_events') > 0 AND elapsed >= ${seconds}`);
-    if (old.length) stopped = `inserts older than this run are still running (${old.map(o => o.query_id).join(", ")}); rerun once they end`;
+       AND positionCaseInsensitive(query, 'session_events') > 0`);
+    if (old.length) stopped = `session_events inserts are still running (${old.map(o => o.query_id).join(", ")}); rerun once they end`;
   }
   remaining = await parts(ch, "session_events_monthly");
   if (remaining.length || stopped) {
@@ -474,6 +482,31 @@ export async function repartitionSessionEvents(ch: ClickHouse, options: Repartit
   return { state: "done", freeBytes: await free(), floorBytes, needBytes: floorBytes, copied, remaining };
 }
 
+/** Bound the entire control operation (including response-body reads), and cancel its transport. */
+async function boundedControl<T>(request: (signal: AbortSignal) => Promise<T>, timeoutMs: number, parent?: AbortSignal): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort = () => {};
+  const interrupted = new Promise<never>((_, reject) => {
+    const stop = (error: Error) => { controller.abort(error); reject(error); };
+    onAbort = () => stop(new Error("control request aborted"));
+    if (parent?.aborted) onAbort();
+    else {
+      parent?.addEventListener("abort", onAbort, { once: true });
+      timer = setTimeout(() => stop(new Error(`control request timed out after ${timeoutMs} ms`)), timeoutMs);
+    }
+  });
+  try {
+    return await Promise.race([interrupted, Promise.resolve().then(() => {
+      controller.signal.throwIfAborted();
+      return request(controller.signal);
+    })]);
+  } finally {
+    clearTimeout(timer);
+    parent?.removeEventListener("abort", onAbort);
+  }
+}
+
 /**
  * Run one copy under `queryId` and watch it. KILL it on the server when free disk falls under `killBelow`, when free
  * disk cannot be read FAILED_READS_TO_KILL times in a row, or when `signal` aborts; rows it already wrote stay, and the
@@ -481,9 +514,10 @@ export async function repartitionSessionEvents(ch: ClickHouse, options: Repartit
  * ended and system.processes no longer lists it (a KILL sent before the query is listed does nothing). Returns why it
  * was killed, or undefined when it finished; throws when the kill cannot be confirmed within `killConfirmMs`.
  */
-async function copyWatched(ch: ClickHouse, sql: string, queryId: string,
-  o: { free: () => Promise<number>; killBelow: number; watchMs: number; killConfirmMs: number; signal?: AbortSignal }): Promise<string | undefined> {
+export async function copyWatched(ch: ClickHouse, sql: string, queryId: string,
+  o: { free: (signal?: AbortSignal) => Promise<number>; killBelow: number; watchMs: number; killConfirmMs: number; controlTimeoutMs?: number; signal?: AbortSignal }): Promise<string | undefined> {
   if (o.signal?.aborted) return "aborted";
+  const controlMs = o.controlTimeoutMs ?? CONTROL_TIMEOUT_MS;
   let reason: string | undefined;
   let ended = false, failure: unknown;
   const insert = ch.exec(sql, { queryId }).then(() => {}, error => { failure = error; }).finally(() => { ended = true; });
@@ -496,7 +530,7 @@ async function copyWatched(ch: ClickHouse, sql: string, queryId: string,
       await tick();
       if (ended || reason) break;
       try {
-        const f = await o.free();
+        const f = await boundedControl(o.free, controlMs, o.signal);
         failedReads = 0;
         if (f < o.killBelow) reason = `free ${gib(f)} GiB fell under ${gib(o.killBelow)} GiB (floor plus kill margin) during ${queryId}; killed it`;
       } catch (error) {
@@ -506,15 +540,24 @@ async function copyWatched(ch: ClickHouse, sql: string, queryId: string,
       }
     }
     if (reason) {
-      for (const deadline = Date.now() + o.killConfirmMs; ;) {
-        await ch.exec(`KILL QUERY WHERE query_id = '${queryId}' ASYNC`).catch(() => {});
-        await Promise.race([Bun.sleep(o.watchMs), insert]);
-        const listed = ended ? await ch.queryJSON(`SELECT 1 FROM system.processes WHERE query_id = '${queryId}'`).then(r => r.length > 0, () => true) : true;
+      const deadline = Date.now() + o.killConfirmMs;
+      const unconfirmed = () => new Error(`${reason}, but the kill of ${queryId} is not confirmed after ${o.killConfirmMs / 1000} s: it may still be writing. ` +
+        `Run KILL QUERY WHERE query_id = '${queryId}' SYNC, watch df, and rerun only once system.processes no longer lists it`);
+      // Cleanup must continue after the caller aborts. Each control has its own signal,
+      // bounded by BOTH the per-request timeout and the overall confirmation deadline.
+      const control = <T>(request: (signal: AbortSignal) => Promise<T>) => {
+        const left = deadline - Date.now();
+        if (left <= 0) throw unconfirmed();
+        return boundedControl(request, Math.min(controlMs, left));
+      };
+      for (;;) {
+        await control(signal => ch.exec(`KILL QUERY WHERE query_id = '${queryId}' ASYNC`, { signal })).catch(() => {});
+        if (Date.now() >= deadline) throw unconfirmed();
+        await Bun.sleep(Math.min(o.watchMs, deadline - Date.now()));
+        if (Date.now() >= deadline) throw unconfirmed();
+        const listed = ended ? await control(signal => ch.queryJSON(`SELECT 1 FROM system.processes WHERE query_id = '${queryId}'`, { signal })).then(r => r.length > 0, () => true) : true;
         if (!listed) break;
-        if (Date.now() >= deadline) {
-          throw new Error(`${reason}, but the kill of ${queryId} is not confirmed after ${o.killConfirmMs / 1000} s: it may still be writing. ` +
-            `Run KILL QUERY WHERE query_id = '${queryId}' SYNC, watch df, and rerun only once system.processes no longer lists it`);
-        }
+        if (Date.now() >= deadline) throw unconfirmed();
       }
     }
   } finally {
