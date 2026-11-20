@@ -76,11 +76,12 @@ export class ClickHouse {
   }
 
   /** Run a statement; returns the response body as text. `queryId` names it on the server, so it can be killed. */
-  async exec(sql: string, options: { queryId?: string; signal?: AbortSignal } = {}): Promise<string> {
-    return this.post("query", new URLSearchParams(options.queryId ? { query_id: options.queryId } : {}), sql, true, options.signal);
+  async exec(sql: string, options: { queryId?: string; signal?: AbortSignal } | AbortSignal = {}): Promise<string> {
+    const { queryId, signal } = options instanceof AbortSignal ? { signal: options } : options;
+    return this.post("query", new URLSearchParams(queryId ? { query_id: queryId } : {}), sql, true, signal);
   }
 
-  async queryJSON<T = Record<string, unknown>>(sql: string, options: { signal?: AbortSignal } = {}): Promise<T[]> {
+  async queryJSON<T = Record<string, unknown>>(sql: string, options: { signal?: AbortSignal } | AbortSignal = {}): Promise<T[]> {
     const text = await this.exec(`${sql}\nFORMAT JSONEachRow`, options);
     return text
       .split("\n")
