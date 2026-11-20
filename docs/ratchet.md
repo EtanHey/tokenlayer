@@ -63,3 +63,15 @@ Long `*.property.test.ts` entries are excluded from default discovery. `bun run 
 runs them with `TOKENLAYER_PROPERTY_N=300`; the required `ci` job gives that step its own 10-minute budget.
 The full step retains all archive assertions and checks 300 completed operation sequences / 1,200 SIGKILLs.
 Ratchet commands and limits stay unchanged; their default measurements include the short smoke checks.
+
+### First-ingest storage (R2)
+
+Apply schema/004a_session_first_ingest.sql before enabling the updated lag reader. Its insert-triggered
+materialized view keeps a mergeable minimum per machine, event timestamp and content hash, independently
+of session_events replacement. Same-key and generation replays cannot advance it. The small fact table
+keeps one day by event time; imports outside that range do not populate it.
+
+Do not backfill it from surviving session_events versions: earlier ingestion times may already be gone.
+After initial schema installation, collect a complete 60-minute live window before treating this row as
+qualified evidence. The empty-window value remains 0; it does not establish warm-up or shipper liveness.
+Schema application and that warm-up are deployment gates, not proven by unit tests.

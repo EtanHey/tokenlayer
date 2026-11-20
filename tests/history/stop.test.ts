@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { linkSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { linkSync, mkdtempSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StreamingHistoryClient } from '../../scripts/history/stream';
@@ -16,7 +16,8 @@ const row = (i: number) => ({ machine: 'fixture', path: '/synthetic/history', ge
 
 for (const mode of ['terminal-stop', 'terminal-continue', 'recovered-full', 'recovered-zero', 'recovered-partial'] as const) {
     test(`terminal-ledger await: ${mode}`, async () => {
-        const directory = mkdtempSync(join(process.env.TOKENLAYER_TEST_ARTIFACT_DIR ?? tmpdir(), 'history-stop-'));
+        // macOS tmpdir() is under the /var -> /private/var symlink; the journal refuses a non-canonical audit path.
+        const directory = realpathSync(mkdtempSync(join(process.env.TOKENLAYER_TEST_ARTIFACT_DIR ?? tmpdir(), 'history-stop-')));
         const ledger = join(directory, 'ledger.ndjson'), stored = new Set<string>(), inserts: string[] = [];
         const recovered = mode.startsWith('recovered'), stoppedMode = mode !== 'terminal-continue';
         const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(req) {
