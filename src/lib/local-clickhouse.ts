@@ -84,9 +84,22 @@ export function stopPrewarmedLocalClickHouse(key?: string): number {
   const spares = [...prewarm.starting].filter(spare => key === undefined || spare.key === key);
   if (key === undefined) { prewarm.ready.clear(); prewarm.asked.clear(); } else prewarm.ready.delete(key);
   for (const spare of spares) {
+    spare.cancelled = true;
+    spare.proc.kill("SIGKILL");
+  }
+  for (const spare of spares) {
+    // exit handlers cannot await proc.exited. SIGKILL delivery is asynchronous: wait for
+    // OS exit evidence before unlinking, otherwise a starting server can recreate files.
+    // A zombie is already inert; Bun reaps it when the runner resumes or exits.
+    const deadline = Date.now() + 2000;
+    while (spare.proc.exitCode === null) {
+      const status = Bun.spawnSync(["ps", "-o", "stat=", "-p", String(spare.proc.pid)]);
+      if ((status.exitCode === 1 && !status.stdout.length && !status.stderr.length) || (status.exitCode === 0 && /^Z/.test(status.stdout.toString().trim()))) break;
+      if (status.exitCode !== 0 || Date.now() >= deadline) throw Error("pre-warm child exit could not be confirmed");
+      Bun.sleepSync(1);
+    }
+    rmSync(spare.dir, { recursive: true, force: true });
     prewarm.starting.delete(spare);
-    try { spare.proc.kill("SIGKILL"); } catch {}
-    try { rmSync(spare.dir, { recursive: true, force: true }); } catch {}
   }
   return spares.length;
 }
