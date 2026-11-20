@@ -67,6 +67,9 @@ export function resolveCommit(repo: string, input: string) {
 export function prelude(mac: Mac, o: Options) {
   assertOptions(o);
   return [
+    'set +x',
+    'set +v',
+    'unset BASH_ENV ENV; export -n SHELLOPTS BASHOPTS',
     'set -euo pipefail',
     'export PATH=/opt/homebrew/bin:$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
     `S=${quote(o.sha)}; MAC=${mac}`,
@@ -74,7 +77,7 @@ export function prelude(mac: Mac, o: Options) {
     `LA=$HOME/Library/LaunchAgents; D=gui/$(id -u); B=$TL/backups/after-merge-${quote(o.stamp)}; MARK=$TL/after-merge/$S`,
     `CH="$HOME"/${quote(o.clickhouse)}`,
     // Reader (capped) login unless a second env file is named; clickhouse-writer.env sets the writer.
-    'chq() { ( set -a; . "$TL/clickhouse.env"; [[ -n ${2:-} ]] && . "$TL/$2"; set +a; "$CH" client --port 19000 --user "$CLICKHOUSE_USER" -q "$1" ); }',
+    'chq() { ( set +x; set -a; . "$TL/clickhouse.env"; [[ -n ${2:-} ]] && . "$TL/$2"; set +a; "$CH" client --port 19000 --user "$CLICKHOUSE_USER" -q "$1" ); }',
     // One top-level field of a loaded job (pid, runs, state, program, "last exit code"); empty when not loaded.
     'lf() { launchctl print "$D/$1" 2>/dev/null | sed -n "s/^\t$2 = //p" | head -1 || true; }',
     // Wait up to $1 seconds for a condition.
@@ -214,7 +217,7 @@ import { readFileSync } from 'node:fs'; process.exit(clickhouseConfig() === read
         '(( $(chq "SELECT uptime()") >= ${BEFORE:-0} ))',
       ].join(' && '),
       checks: 'live file = render; tokenlayer capped at 8 GiB with window-order read; writer logs in uncapped; writer env 600; no restart (uptime grew)',
-      rollback: 'cp -p "$(ls -t ~/.config/tokenlayer/backups/clickhouse.xml.* | head -1)" ~/.config/tokenlayer/clickhouse.xml && (set -a; . ~/.config/tokenlayer/clickhouse.env; set +a; "$CH" client --port 19000 --user "$CLICKHOUSE_USER" -q "SYSTEM RELOAD CONFIG")',
+      rollback: 'cp -p "$(ls -t ~/.config/tokenlayer/backups/clickhouse.xml.* | head -1)" ~/.config/tokenlayer/clickhouse.xml && (set +x; set -a; . ~/.config/tokenlayer/clickhouse.env; set +a; "$CH" client --port 19000 --user "$CLICKHOUSE_USER" -q "SYSTEM RELOAD CONFIG")',
     },
     {
       id: 'm4-writer-env', mac: 'm4', title: 'the M4 has the writer login env', from: 'R6 §3 M4', after: ['m4-pin', 'm1-clickhouse-config'],
@@ -230,7 +233,7 @@ import { readFileSync } from 'node:fs'; process.exit(clickhouseConfig() === read
         'chq "SHOW CREATE TABLE tokenlayer.v_session_events_context FORMAT TSVRaw" > "$B/006.sql"',
         'chq "SHOW CREATE TABLE tokenlayer.v_provider_usage_compare FORMAT TSVRaw" > "$B/009.sql"',
         // Single files, not schema:apply: that re-runs every file and migrateSessionSchema (Sol §5).
-        'for f in 008a_systemone_calls 006_session_context 009_provider_usage_compare 012_ship_heartbeat; do ( set -a; . "$TL/clickhouse.env"; set +a; "$CH" client --port 19000 --user "$CLICKHOUSE_USER" --queries-file "$APP/schema/$f.sql" ); echo "applied $f"; done',
+        'for f in 008a_systemone_calls 006_session_context 009_provider_usage_compare 012_ship_heartbeat; do ( set +x; set -a; . "$TL/clickhouse.env"; set +a; "$CH" client --port 19000 --user "$CLICKHOUSE_USER" --queries-file "$APP/schema/$f.sql" ); echo "applied $f"; done',
       ],
       verify: [
         '[[ $(chq "EXISTS TABLE tokenlayer.systemone_calls") == 1 && $(chq "EXISTS TABLE tokenlayer.ship_heartbeat") == 1 ]]',
@@ -240,7 +243,7 @@ import { readFileSync } from 'node:fs'; process.exit(clickhouseConfig() === read
         'chq "SELECT * FROM tokenlayer.v_provider_usage_compare LIMIT 0" && chq "SELECT * FROM tokenlayer.v_session_events_context LIMIT 0"',
       ].join(' && '),
       checks: 'both tables exist; 009 has R7 columns, C1 peaks from proxy_usage and J2 typesafe; 006 reads token_total; both views bind',
-      rollback: 'for v in 006 009; do sed "1s/^CREATE VIEW/CREATE OR REPLACE VIEW/" "$B/$v.sql" | (set -a; . ~/.config/tokenlayer/clickhouse.env; set +a; "$CH" client --port 19000 --user "$CLICKHOUSE_USER" --multiquery); done   # 008a/012 stay (new tables; dropping data is Etan\'s call)',
+      rollback: 'for v in 006 009; do sed "1s/^CREATE VIEW/CREATE OR REPLACE VIEW/" "$B/$v.sql" | (set +x; set -a; . ~/.config/tokenlayer/clickhouse.env; set +a; "$CH" client --port 19000 --user "$CLICKHOUSE_USER" --multiquery); done   # 008a/012 stay (new tables; dropping data is Etan\'s call)',
     },
     // ── Ship code on both Macs after the heartbeat table, before the ratchet snapshot (H1's order) ──
     launchJob(o, 'm1', 'ship', {
@@ -262,9 +265,9 @@ import { readFileSync } from 'node:fs'; process.exit(clickhouseConfig() === read
       health: {
         mac: 'm1',
         // The allowed login is a site value in the plist; it is sent as the header, never printed.
-        script: 'p=$(plutil -extract EnvironmentVariables.TOKENLAYER_DASHBOARD_PORT raw "$LA/com.tokenlayer.dashboard.plist" 2>/dev/null || echo 8448); ' +
+        script: '( set +x; p=$(plutil -extract EnvironmentVariables.TOKENLAYER_DASHBOARD_PORT raw "$LA/com.tokenlayer.dashboard.plist" 2>/dev/null || echo 8448); ' +
           'login=$(plutil -extract EnvironmentVariables.TOKENLAYER_DASHBOARD_LOGINS raw "$LA/com.tokenlayer.dashboard.plist" | cut -d, -f1 | tr -d " "); ' +
-          'n=$(curl -fsS -m 15 -H "Tailscale-User-Login: $login" "http://127.0.0.1:$p/api/burn" | bun -e "const r = JSON.parse(await Bun.stdin.text()); console.log(Array.isArray(r) ? r.length : (r.rows ?? []).length)"); echo "burn rows $n"; (( n > 0 ))',
+          'n=$(curl -fsS -m 15 -H "Tailscale-User-Login: $login" "http://127.0.0.1:$p/api/burn" | bun -e "const r = JSON.parse(await Bun.stdin.text()); console.log(Array.isArray(r) ? r.length : (r.rows ?? []).length)"); echo "burn rows $n"; (( n > 0 )) )',
         checks: '/api/burn answers 200 with rows',
       },
     }),
@@ -446,8 +449,13 @@ free=$(df -g / | awk 'NR==2{print $4}')
 /** POSIX single quotes for one ssh argument. */
 export const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 export const realExec: Exec = async (mac, script) => {
-  const argv = mac === 'm1' ? ['bash', '-c', script] : ['ssh', '-n', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', 'macbook-pro', `bash -c ${quote(script)}`];
-  const p = Bun.spawn(argv, { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
+  // Do not let caller debug options or startup files run before the script's first tracing guard.
+  // The remote environment is independent of ours, so scrub it at the remote bash boundary too.
+  const env = { ...process.env };
+  for (const key of ['SHELLOPTS', 'BASHOPTS', 'BASH_ENV', 'ENV']) delete env[key];
+  const guarded = `set +x\nset +v\nunset BASH_ENV ENV; export -n SHELLOPTS BASHOPTS\n${script}`;
+  const argv = mac === 'm1' ? ['bash', '-c', guarded] : ['ssh', '-n', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', 'macbook-pro', `env -u SHELLOPTS -u BASHOPTS -u BASH_ENV -u ENV bash -c ${quote(guarded)}`];
+  const p = Bun.spawn(argv, { env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
   const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
   return { code: await p.exited, out: `${out}${err}`.trim() };
 };

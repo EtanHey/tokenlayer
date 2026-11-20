@@ -277,3 +277,78 @@ describe('--commit is validated and resolved before any script is built', () => 
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 });
+
+// Synthetic credentials only. Both execution routes stay on this machine behind stand-in bash/ssh.
+describe('inherited xtrace never exposes credentials', () => {
+  function fixture() {
+    const home = mkdtempSync(join(tmpdir(), 'i1-xtrace-'));
+    const bin = join(home, 'bin');
+    const tl = join(home, '.config/tokenlayer');
+    const secret = 'fake-i1-password-never-log-7c931';
+    const backups = join(tl, 'backups');
+    const schemaBackup = join(backups, `after-merge-${o.stamp}`);
+    mkdirSync(schemaBackup, { recursive: true });
+    writeFileSync(join(backups, 'clickhouse.xml.synthetic'), '<clickhouse/>');
+    for (const view of ['006', '009']) writeFileSync(join(schemaBackup, `${view}.sql`), 'CREATE VIEW synthetic AS SELECT 1;\n');
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(tl, { recursive: true });
+    mkdirSync(join(home, '.local/bin'), { recursive: true });
+    writeFileSync(join(tl, 'clickhouse.env'), `CLICKHOUSE_USER=reader\nCLICKHOUSE_PASSWORD=${secret}\n`, { mode: 0o600 });
+    writeFileSync(join(tl, 'clickhouse-writer.env'), `CLICKHOUSE_USER=writer\nCLICKHOUSE_PASSWORD=${secret}-writer\n`, { mode: 0o600 });
+    writeFileSync(join(home, '.local/bin/clickhouse-test'), '#!/bin/sh\n[ -n "$CLICKHOUSE_PASSWORD" ] || exit 9\necho client-ok\n', { mode: 0o755 });
+    const startup = join(home, 'startup');
+    writeFileSync(startup, 'echo STARTUP-RAN >&2\nset -x\n');
+    writeFileSync(join(bin, 'bash'), '#!/bin/sh\nexec /bin/bash "$@"\n', { mode: 0o755 });
+    // Simulate a remote environment independently inheriting tracing and a startup file.
+    writeFileSync(join(bin, 'ssh'), `#!/bin/sh\nfor arg do remote=$arg; done\nexec /usr/bin/env SHELLOPTS=xtrace BASH_ENV=${quote(startup)} /bin/sh -c "$remote"\n`, { mode: 0o755 });
+    return { home, bin, startup, secret };
+  }
+
+  test('generated preludes and each credential subshell disable caller tracing', () => {
+    const f = fixture();
+    try {
+      for (const mac of ['m1', 'm4'] as const) {
+        const bodies = [
+          'set -x; chq "SELECT 1"; chq "SELECT 1" clickhouse-writer.env',
+          `set -x; ${plan(o).find(s => s.id === 'm1-schema')!.apply.at(-1)!}`,
+          ...['m1-clickhouse-config', 'm1-schema'].map(id => `set -x; ${plan(o).find(s => s.id === id)!.rollback}`),
+        ];
+        for (const body of bodies) {
+          const r = spawnSync('/bin/bash', ['-c', `${prelude(mac, o)}\n${body}`], {
+            encoding: 'utf8', env: { HOME: f.home, PATH: '/usr/bin:/bin', SHELLOPTS: 'xtrace' },
+          });
+          expect(r.status).toBe(0);
+          expect(r.stdout).toContain('client-ok');
+          expect(r.stdout.includes(f.secret) || r.stderr.includes(f.secret)).toBe(false);
+        }
+      }
+    } finally { rmSync(f.home, { recursive: true, force: true }); }
+  });
+
+  test('realExec scrubs shell startup variables locally and over stand-in ssh', () => {
+    const f = fixture();
+    try {
+      const driver = join(f.home, 'driver.ts');
+      const module = join(import.meta.dir, '../../scripts/after-merge-install.ts');
+      writeFileSync(driver, `import { realExec, prelude } from ${JSON.stringify(module)};
+const opts = ${JSON.stringify(o)};
+for (const mac of ['m1', 'm4'] as const) {
+  const r = await realExec(mac, prelude(mac, opts) + '\\nchq "SELECT 1"; chq "SELECT 1" clickhouse-writer.env', 'probe', 'synthetic');
+  console.log(JSON.stringify(r));
+}
+`);
+      const r = spawnSync(process.execPath, [driver], {
+        encoding: 'utf8', env: { HOME: f.home, PATH: `${f.bin}:/usr/bin:/bin`, SHELLOPTS: 'xtrace', BASHOPTS: 'verbose', BASH_ENV: f.startup, ENV: f.startup },
+      });
+      expect(r.status).toBe(0);
+      expect(r.stdout.includes(f.secret) || r.stderr.includes(f.secret)).toBe(false);
+      expect(r.stdout).not.toContain('STARTUP-RAN');
+      const results = r.stdout.trim().split('\n').map(line => JSON.parse(line));
+      expect(results).toHaveLength(2);
+      for (const result of results) {
+        expect(result.code).toBe(0);
+        expect(result.out).toContain('client-ok');
+      }
+    } finally { rmSync(f.home, { recursive: true, force: true }); }
+  });
+});
