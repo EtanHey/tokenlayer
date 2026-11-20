@@ -29,10 +29,12 @@ test('a vendor with no rows in the window counts zero, and Kiro with no known cr
   expect(Object.keys(u)).toEqual(['antigravity', 'kiro', 'codex']);
 });
 
-test('the query is bounded to seven days before the given clock and capped in memory and time', () => {
+test('recent events are time-bounded and Codex history lookup has explicit read, memory and time caps', () => {
   const sql = useSql(now);
   expect(sql).toContain(`fromUnixTimestamp64Milli(${now})-INTERVAL 1 DAY d`);
   expect(sql).toContain('ts>=d-INTERVAL 6 DAY AND ts<=d+INTERVAL 1 DAY');
+  expect(sql).toContain("(machine,path) IN (SELECT p FROM recent WHERE v='codex')");
+  expect(sql).toContain("max_rows_to_read=20000000,max_bytes_to_read=8e9,read_overflow_mode='throw'");
   expect(sql).toMatch(/max_memory_usage=2e9,max_execution_time=20$/);
 });
 

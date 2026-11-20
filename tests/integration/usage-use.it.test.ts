@@ -59,15 +59,15 @@ test("Codex refreshes do not count as responses, including repeats across both w
     await applySchema(ch.client);
     const clock = 1_800_000_000_000, day = 86_400_000;
     const path = "/home/fixture/.codex/sessions/rollout-refresh.jsonl";
-    const total = (n: number) => ({ input_tokens: n, output_tokens: n / 10, total_tokens: n * 1.1 });
+    const total = (n: number) => ({ input_tokens: n, output_tokens: n / 10, total_tokens: n + n / 10 });
     const last = total(100);
     const event = (offset: number, n: number | null, index: number, extra: Record<string, unknown> = {}) => {
       const raw = JSON.stringify({ timestamp: new Date(clock + offset).toISOString(), type: "event_msg", payload: {
-        type: "token_count", info: n === null ? null : { total_token_usage: total(n), last_token_usage: last },
+        type: "token_count", info: n === null ? null : { total_token_usage: index === 6 ? Object.fromEntries(Object.entries(total(n)).reverse()) : total(n), last_token_usage: last },
         rate_limits: { primary: { used_percent: index } }
       } });
       return { machine: "fixture", harness: "t3", path, generation: "g1", byte_offset: index * 1000,
-        content_hash: `line-${index}`, line_bytes: raw.length, ingested_at: "2027-01-15 09:00:00.000", ...parseLine(raw), ...extra };
+        content_hash: `line-${index}`, line_bytes: raw.length, ingested_at: new Date(clock + 3_600_000).toISOString().replace("T", " ").replace("Z", ""), ...parseLine(raw), ...extra };
     };
     await ch.client.insert("session_events", [
       event(-8 * day, 100, 1), // First observation is outside seven days.
@@ -77,7 +77,7 @@ test("Codex refreshes do not count as responses, including repeats across both w
       event(-3000, 300, 5), // The one new response in 24h.
       event(-2000, 300, 6), // Different timestamp/hash/rate_limits, same cumulative usage.
       event(-1000, null, 7), // Rate-limit-only refresh.
-      event(-3000, 300, 5, { generation: "g2", ingested_at: "2027-01-15 09:01:00.000" }),
+      event(-3000, 300, 5, { generation: "g2", ingested_at: new Date(clock + 3_660_000).toISOString().replace("T", " ").replace("Z", "") }),
       event(-500, 300, 8, { machine: "other" }), // Same path/total on another machine is independent.
       event(-500, 400, 9, { path: "/home/fixture/projects/antigravity/.codex-other/rollout.jsonl" }),
       event(-500, 400, 10, { path: "/home/fixture/.codex-other/sessions/rollout.jsonl" }),
