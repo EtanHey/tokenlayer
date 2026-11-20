@@ -2,6 +2,7 @@ import { fakeHub, state } from "../fable/fixtures";
 import { writeFileSync } from "node:fs";
 import { test, expect } from "bun:test";
 import { createHandler, recommend } from "../../src/dashboard/server";
+import { arrangement } from "../../src/dashboard/advice";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createHmac } from "node:crypto";
@@ -33,8 +34,41 @@ test("separate refill/rescue, mixed-case rejection, stale and unknown reset guid
   expect(
     recommend(account({ reset: String((now + 30 * 3600000) / 1000), status: "rejected" }), {}, now).reason,
   ).toContain("Under 36 h");
-  expect(recommend(account({ stale: true, status: "rejected" }), {}, now).verdict).toBe("UNKNOWN");
+  expect(recommend(account({ stale: true, status: "rejected", reset: "invalid" }), {}, now).verdict)
+    .toBe("UNKNOWN");
   expect(recommend(account({}, { stale: false }), {}, now).verdict).toBe("wait");
+});
+test("a capped account's stale reading still names rule (b) until its reset", () => {
+  // r5: one account's weekly was rejected, so it served no traffic and its reading went stale.
+  const capped = recommend(account({ stale: true, status: "rejected", utilization: 1 },
+    { utilization: 0.4, status: "allowed", stale: true }), {}, now);
+  expect(capped.verdict).toBe("consider");
+  expect(capped.reason).toContain("weekly cap reached");
+  expect(capped.reason).toContain("(b)");
+  expect(capped.reason).not.toContain("Observations stale");
+  // Nothing to refund: never "consider", never "0% of week".
+  const empty = recommend(account({ stale: true, status: "rejected", utilization: 1 },
+    { utilization: 0, status: "allowed", stale: true }), {}, now);
+  expect(empty.verdict).toBe("wait");
+  expect(empty.reason).toContain("a reset refunds nothing now");
+  expect(empty.reason).not.toContain("0% of week");
+  // The reading's window has ended: the cap no longer proves anything.
+  const ended = recommend(account({ stale: true, status: "rejected", utilization: 1,
+    reset: new Date(now - 3600000).toISOString() }), {}, now);
+  expect(ended.verdict).toBe("UNKNOWN");
+  expect(ended.reason).not.toContain("weekly cap reached");
+  expect(ended.reason).toContain("reset has passed");
+});
+test("the arrangement waits for a capped account's reset instead of calling it stale", () => {
+  const meter = (u: number, stale = false, status = "allowed") =>
+    ({ utilization: u, stale, status, reset: new Date(now + 30 * 3600000).toISOString() });
+  const plan = arrangement([
+    { email: "open", status: "active", weekly: meter(0.3), fable: meter(0.1) },
+    { email: "capped", status: "active", weekly: meter(1, true, "rejected"), fable: meter(0, true) },
+  ], now);
+  expect(plan.keepOff).toBe(true);
+  expect(plan.reason).not.toContain("stale");
+  expect(plan.reason).toContain("Keep OFF until capped resets");
 });
 test("HTTP writes, replay, validation, isolated history and environment key canaries", async () => {
   const dir = mkdtempSync(tmpdir() + "/dash-regression-");

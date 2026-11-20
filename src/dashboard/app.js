@@ -123,15 +123,17 @@ async function refresh() {
           card.append(
             text(
               "p",
-              "Estimated cap: " +
+              "Burn, last 6 h: " +
                 (b.projections
-                  .filter(function callback4(p) {
-                    return p.key.startsWith(c.email);
+                  .filter(function ownBurn(p) {
+                    return p.key.startsWith(c.email + ":");
                   })
-                  .map(function callback5(p) {
-                    return time(p.projectedCapAt);
+                  .map(function burnLine(p) {
+                    return p.key.slice(c.email.length + 1) + " " +
+                      (!p.perHour ? "flat" : "+" + (p.perHour * 100).toFixed(1) + "%/h" +
+                        (p.projectedCapAt ? ", cap " + time(p.projectedCapAt) : ", no cap before reset"));
                   })
-                  .join(", ") || "insufficient observations"),
+                  .join(" · ") || "insufficient observations"),
             ),
           );
         $("#accounts").append(card);
@@ -314,7 +316,8 @@ for (const [id, path] of [
       !confirm(
         id === "pressed"
           ? "Confirm you already pressed a reset in Claude?"
-          : id === "switch" ? "Change Fable split routing for " + e.target.account.value + "?"
+          : id === "switch" ? (turningOn() ? "Turn Fable split ON for " + e.target.account.value + "?"
+            : "Turn Fable split OFF?")
           : "Confirm this change?",
       )
     )
@@ -323,7 +326,7 @@ for (const [id, path] of [
       body = { account: f.account.value };
     if (id === "switch")
       Object.assign(body, {
-        on: latestState?.state.requested?.mode !== "manual",
+        on: turningOn(),
         strict: f.strict.checked,
         spillover: f.spillover.value === "auto" ? "auto" : f.spillover.value === "true",
         allowNonFableOnFableAccount: f.allowNonFableOnFableAccount.checked,
@@ -347,6 +350,9 @@ for (const [id, path] of [
       if (id === "pressed") $("#retry").hidden = false;
     }
   };
+function turningOn() {
+  return latestState?.state.requested?.mode !== "manual";
+}
 function updateToggle() {
   const applied = latestState?.applied ?? "UNKNOWN";
   const on = latestState?.requested?.mode === "manual";
