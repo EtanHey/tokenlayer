@@ -1,6 +1,6 @@
 import { afterAll } from 'bun:test';
 import { CLICKHOUSE_SKIP_REASON, clickhouseAbsent, clickhouseSkips } from './support/clickhouse-gate';
-import { prewarmLocalClickHouse, stopPrewarmedLocalClickHouse } from '../src/lib/local-clickhouse';
+import { prewarmLocalClickHouse, drainPrewarmedLocalClickHouse } from '../src/lib/local-clickhouse';
 
 // Agent shells export GIT_EDITOR, and a Git hook exports GIT_DIR and friends. The Gemini output
 // guard refuses any GIT_* variable, so an ambient one fails every custody test on the Macs and
@@ -26,5 +26,5 @@ if (clickhouseAbsent) {
 // hidden. TOKENLAYER_CH_PREWARM=0 turns it off. Spares are stopped after the last file and on exit.
 if (!clickhouseAbsent) {
   prewarmLocalClickHouse(Number(process.env.TOKENLAYER_CH_PREWARM ?? 2));
-  afterAll(() => { stopPrewarmedLocalClickHouse(); });
+  afterAll(() => drainPrewarmedLocalClickHouse());
 }
