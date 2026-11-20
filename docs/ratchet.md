@@ -31,7 +31,7 @@ and one `cleared` line when it turns green again; nothing while it stays the sam
 
 `claude_burn_2h` catches an idle Claude week (whatever is left at the weekly reset is lost). It reads the hub's own
 `anthropic-ratelimit-unified-7d-utilization` in `proxy_usage.ratelimit` (fractions; `7d_oi`, a per-model quota, is not
-counted): per account, the last reading before the window, then the max per 15-minute bucket. The week used in the last
+counted): per account, the last reading before the window, then the max per quota cycle and 15-minute bucket. A reset inside a bucket keeps both cycles in reset order. The week used in the last
 2 h is each account's rises summed over accounts (a new weekly cycle that began in the window counts its use; one that
 began earlier counts only the rise after its first reading). No request at all reads 0%/h. The target is orc's:
 

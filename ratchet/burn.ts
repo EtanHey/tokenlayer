@@ -21,9 +21,9 @@ export type Target = { pct_per_hour: number; set_by?: string; until?: string };
 export type Verdict = { value: number; threshold: number | null; say: string };
 
 /**
- * Per account: the last weekly utilization (a fraction) before the window, then the max per quota cycle and 15-minute bucket inside
- * it. A reset inside a bucket must retain both cycles, ordered by reset time. Max, not last: requests in one bucket can land out of order. The table is a ReplacingMergeTree; a duplicate row
- * never changes a max, so no FINAL.
+ * Per account: the last weekly utilization before the window, then the max per quota cycle and
+ * 15-minute bucket. A reset inside a bucket retains both cycles, ordered by reset time. Max, not last:
+ * requests in one bucket can land out of order. Duplicate rows never change a max, so no FINAL.
  */
 export const burnSQL = (nowS: number, windowS = BURN_WINDOW_S, lookbackS = BURN_LOOKBACK_S) => `SELECT account_hash AS account, base, bucket,
     if(base = 1, argMax(util, ts), max(util)) AS u, argMax(wreset, ts) AS reset, toUnixTimestamp(max(ts)) AS at
