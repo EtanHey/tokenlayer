@@ -16,6 +16,13 @@ export function page(token: string) {
 <p id="mismatch" role="alert"></p>
 <span id="mode">Loading current routing…</span>
 </header>
+<section id="all-tools" aria-labelledby="all-tools-title">
+<h2 id="all-tools-title">All tools</h2>
+<p id="tools-source" class="muted">Loading every tool's usage…</p>
+<ul id="tools" class="tools"></ul>
+<small>Claude: hub readback and hub traffic only. Codex, Cursor, Antigravity, Kiro: the M4's usage.json.
+Times are Israel time, zone shown (IST/IDT).</small>
+</section>
 <section>
 <h2>Fable split</h2>
 <p>Changes apply to hub routing. Catalogs and priorities below are read back from the management API.</p>

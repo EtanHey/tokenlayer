@@ -1,3 +1,4 @@
+import { israelClock } from "./israel-time";
 type Meter = { utilization: number | null; stale: boolean; reset: unknown; status?: string };
 type Account = { email?: string; status?: string; weekly: Meter; fable: Meter;
   resets?: { left: number | null } };
@@ -28,9 +29,7 @@ export function arrangement(accounts: Account[], now = Date.now()) {
   const account = keepOff ? next?.email ?? ranked[0]?.email ?? null : ranked[0]?.email ?? null;
   const reset = next?.weekly.reset;
   const when = reset ? new Date(/^\d+$/.test(String(reset)) ? Number(reset) * 1000 : String(reset)) : null;
-  const time = when && Number.isFinite(when.getTime()) ? when.toLocaleString("en-GB", {
-    timeZone: "Asia/Jerusalem", weekday: "short", hour: "2-digit", minute: "2-digit"
-  }) : "its weekly reset";
+  const time = when && Number.isFinite(when.getTime()) ? israelClock(when) : "its weekly reset";
   // A capped account's stale reading still proves when it comes back: wait for that reset.
   const stale = next && cappedUntil(next.weekly, undefined, now) === null &&
     (next.status !== "active" || next.weekly.stale || next.fable.stale ||

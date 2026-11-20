@@ -45,6 +45,35 @@ have null numbers, `stale: true` and a fixed `last_error`. Kiro's cache carries 
 usage at all (status, auth, version and models only), so `vendors.kiro` stays null with a
 `note` listing the cache's top-level key names.
 
+### Counted use (`vendors.<v>.use`)
+
+Counted use complements vendor quota readings: `vendors.{antigravity,kiro,codex}.use` counts
+what the shippers recorded in `tokenlayer.session_events`. Recent events are bounded
+to the last 7 days. Codex additionally looks behind that boundary for the first
+observation of cumulative usage on those same machine/path identities, so a refresh
+cannot re-credit an older response. The query caps reads at 20 million rows and
+8 GB, memory at 2 GB and execution at 20 seconds (client timeout: 25 seconds).
+Cap failures remain unavailable; the writer never retries uncapped. The historical
+0.15 s / 0.3 GB measurement predates logical crediting and does not qualify this query.
+The address and the capped `tokenlayer` login come from `~/.config/tokenlayer/ship.env` and
+`clickhouse.env`, which the M4 already has for ship. These use standard dotenv syntax (the native
+`node:util` parser): quote values containing `#` or whitespace; `clickhouse.env`
+overrides `ship.env`. The writer never falls back to a default store.
+
+`use` has `observed_at`, `source` (`clickhouse:session_events`), and `24h` and `7d` windows.
+Each window has:
+
+- `sessions`: session files.
+- `requests`: model responses. These are Antigravity planner responses, Kiro assistant messages and Codex `token_count` events with real usage. Repeated cumulative totals and rate-limit-only refreshes contribute neither requests nor tokens.
+- `input_tokens` and `output_tokens`: Antigravity and Codex only. Kiro rows carry none, so they are null.
+- `credits`: Kiro only. This is the sum of known `usage_summary` credits; it is null when no turn reported any.
+
+Vendor roots are `/.kiro/sessions/`, `/.gemini/antigravity-cli/brain/`,
+`/.t3/userdata/providers/antigravity/` and `/.codex/sessions/` (including T3-run
+Codex sessions). Similar words elsewhere in a path do not select a vendor. A replayed line or a later revision of the same Kiro turn counts once,
+at its latest value. Cursor sessions are not shipped, so `vendors.cursor` has no `use`. On any
+failure, `use` is `{observed_at: null, source, last_error: "store unavailable"}`.
+
 ## M4 installation
 
 Build with `bun build --target=bun src/usage/main.ts --outfile ~/.config/tokenlayer/bin/usage.js`.
@@ -77,3 +106,23 @@ The top-level `projection` identifies this linear method. Projection uses observ
 time rather than poll time and is an estimate, not a promised exhaustion time.
 Consumers must check `stale` and observation ages. An outage preserves validated
 published fields and marks the snapshot stale; it does not invent observations.
+
+## Usage bundle budget (successor to #183)
+
+Bun 1.4.3, unminified `target: bun`, against main `38747f4`:
+main is 27,849 B; this successor is 31,251 B, a 3,402 B increase.
+Main's growth=0.1 / allowance=2560 policy would permit 30,409 B,
+so the remaining gap is 842 B. This PR discloses growth=0.125 /
+allowance=3456, retaining #183's final allowance and giving a 31,305 B
+limit with 54 B headroom against today's main.
+
+Trimming the reviewed 31,905 B reader with native dotenv parsing,
+native JSON decoding, shared vendor-root matching and a shared unavailable
+projection saves 654 B. A generated aggregation/window projection was tried
+and was larger. The remaining query handles exact replay, Kiro revisions,
+canonical Codex totals and first observations before both window cuts;
+removing those parts would break the refresh fixture. Getting below the
+remaining allowance would require a broader writer rewrite, rather than
+removing a redundant dependency from this reader. No query cap is raised.
+The separate #203 tighten-back remains lead-owned; remeasure it after this
+successor rather than treating these feature measurements as its proof.

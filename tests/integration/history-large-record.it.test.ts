@@ -15,9 +15,8 @@ import { LOCAL_FLOOR } from '../../scripts/history/journal';
 const temp = historyFixtureDirectories('large-cli-'), MiB = 1024 ** 2;
 
 test('full CLI: explicit 11/13 MiB history records at LF813 preserve raw/hash/offsets and replay', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE });
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema });
     try {
-        await applySchema(local.client);
         for (const compressed of [false, true]) {
             const home = temp(), root = join(home, 'roots'); mkdirSync(root);
             const id = `00000000-0000-4000-8000-0000000000${compressed ? '13' : '11'}`;
@@ -66,9 +65,8 @@ test('full CLI: explicit 11/13 MiB history records at LF813 preserve raw/hash/of
 }, 60000);
 
 test('serialization exact sizes, unchanged 128 MiB cap, 4096 rows, local pending and low hub space refuse before insert', async () => {
-    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE });
+    const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema });
     try {
-        await applySchema(local.client);
         const dir = temp(), raw = Buffer.concat([Buffer.from([0, 1, 9, 10, 13, 34, 92, 255]), Buffer.from('é🙂')]);
         const special = { raw: raw.toString(), [RAW_BYTES]: raw, text: '\ud800\u0000\b\f\\"é🙂' };
         expect(rowBytes(special)).toBe(Buffer.byteLength(JSON.stringify(special)));

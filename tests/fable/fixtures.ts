@@ -4,13 +4,13 @@ import {
   type Observation,
   type Fields,
 } from "../../src/fable/core";
-const now = Date.now();
 export const models = [
   "claude-fable-5-2",
   "claude-opus-5-5",
   "claude-sonnet-5-5",
 ];
 export function observed(id: string, week = 0.2, fable = 0.2): Observation {
+  const now = Date.now();
   const q = {
     observed_at: new Date(now).toISOString(),
     signals: {

@@ -12,8 +12,7 @@ describe.skipIf(!clickhouseBinary())("per-partition FINAL is in effect → real 
   let ch: LocalClickHouse;
   let dir: string;
   beforeAll(async () => {
-    ch = await startLocalClickHouse();
-    await applySchema(ch.client);
+    ch = await startLocalClickHouse({ prepare: applySchema });
     const row = (ts: string, ingested: string) => `('m4', 'claude', '/s/0a1b2c3d-0000-4000-8000-000000000001.jsonl', 'g1', 0, '${"a".repeat(64)}', toDateTime64('${ts}', 3, 'UTC'), toDateTime64('${ingested}', 3, 'UTC'))`;
     await ch.client.exec(`INSERT INTO tokenlayer.session_events (machine, harness, path, generation, byte_offset, content_hash, ts, ingested_at) VALUES ${row("2026-10-31 23:59:00", "2026-11-01 00:00:00")}`);
     await ch.client.exec(`INSERT INTO tokenlayer.session_events (machine, harness, path, generation, byte_offset, content_hash, ts, ingested_at) VALUES ${row("2026-11-01 00:01:00", "2026-11-01 00:02:00")}`);
