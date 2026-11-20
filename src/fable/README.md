@@ -13,6 +13,11 @@ hit; priority alone does not migrate existing sessions.
 
 The Fable reserve is on by default: inferred non-Fable usage is
 `7d - 0.5 * 7d_oi`, confidence medium. Missing Fable readings use `7d` conservatively.
+A Fable reading whose reset has passed is expired, so it counts as zero use and
+not rejected, but only when a fresh weekly signal shows a later window. An idle
+account's Fable reading only refreshes on a Fable request, so after a weekly
+reset it would otherwise keep refusing. A stale reading whose reset is still
+ahead, or one with no reset time, still refuses.
 At 0.45 the reserve excludes non-Fable from A even if B cannot serve it. That
 conflict is DEGRADED. `set --allow-non-fable-on-fable-account` persists an override;
 `set --protect-fable-reserve` restores protection. These commands use the saved
@@ -120,3 +125,5 @@ evidence rules prevent automatic recovery after a known human reset, use
 that press and attempt local recovery; reuse its operation id on retry. This
 manual command updates reset bookkeeping, unless `--skip-count` is supplied for
 recovery of an already-accounted press. No command presses Anthropic's reset.
+
+Expiry requires the Fable observation to precede its reset, and a fresh weekly observation strictly after that boundary with a still-future reset. Post-reset rejections and contradictory timing keep their cap policy.
