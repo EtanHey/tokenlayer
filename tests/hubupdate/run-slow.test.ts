@@ -1,8 +1,16 @@
-import { test, expect } from "bun:test";
+import { test, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { rmSync } from "node:fs";
 import { flat, peek, setup, state, until, type World } from "./world";
 const runMod = () => import("../../src/hubupdate/run");
 const probeMod = () => import("../../src/hubupdate/probe");
+
+// World already injects now/sleep and command timeouts. This suite checks retry decisions,
+// not crash durability: keep real journal bytes/renames, but remove disk-flush latency from
+// Bun's wall-clock test deadline (two rollbacks perform dozens of synchronous flushes).
+let flush: ReturnType<typeof spyOn<typeof fs, "fsyncSync">>;
+beforeEach(() => { flush = spyOn(fs, "fsyncSync").mockImplementation(() => {}); });
+afterEach(() => { flush.mockRestore(); });
 
 // Slice C: a slow Homebrew must not look like a bad upgrade. Measured 2026-11-15/16 on the hub Mac: `brew info` hit
 // its 15 s limit in 6 of 39 runs (normally 0.5 s). The logged line of such a run (hubupdate.log line 18) was:
