@@ -100,3 +100,23 @@ test("an expired Fable rejection is no longer a cap (no WAIT_AT_CAP)", () => {
   expect(p.applied).toBe("DEGRADED");
   expect(allowed(models, p.desired.b)).toContain(fable);
 });
+
+for (const [name, overrides] of [
+  ["rejection observed after reset", { fableObservedAt: now - 1000 }],
+  ["rejection observed at reset", { fableObservedAt: Math.floor((now - 300000) / 1000) * 1000 }],
+  ["weekly observation before reset", { weekObservedAt: now - 4 * 60000, fableReset: now - 2 * 60000 }],
+  ["weekly observation at reset", { fableReset: now - 120000, weekObservedAt: Math.floor((now - 120000) / 1000) * 1000 }],
+  ["weekly reset also past", { weekReset: now - 60000 }],
+] as const) {
+  test(`expiry refuses ${name} and preserves cap policy`, () => {
+    const a = afterReset(overrides);
+    const s = state();
+    s.spillover = false;
+    expect(usable(s, a, fable, now)).toBe(false);
+    expect(plan(s, [a, exhaustedB()], now).exceptions[fable]).toBe("NO_UPSTREAM");
+    a.cooldowns = [{ scope: "model", model_key: fable, remaining_seconds: 60 }];
+    const p = plan(s, [a, observed("b")], now);
+    expect(p.exceptions[fable]).toBe("WAIT_AT_CAP");
+    expect(allowed(models, p.desired.b)).not.toContain(fable);
+  });
+}

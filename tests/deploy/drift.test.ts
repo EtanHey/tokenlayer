@@ -37,20 +37,65 @@ test('a site value missing from env and the installed plist is refused, never gu
   expect(() => renderJob('dashboard', { home, machine: 'm1', site: () => undefined })).toThrow('TOKENLAYER_DASHBOARD_LOGINS');
 });
 
-test('diffPlist names each differing path and hides secret-shaped values', () => {
+test('diffPlist names each differing path, never an env value, and prints only paths and flags elsewhere', () => {
   const live = { Label: 'x', ProgramArguments: ['/a/bun', '/a/main.ts'], EnvironmentVariables: { PATH: '/bin', TOKENLAYER_DASHBOARD_LOGINS: 'me@github', CLICKHOUSE_PASSWORD: 'p1' } };
   const repo = { Label: 'x', ProgramArguments: ['/b/bun', '/a/main.ts'], EnvironmentVariables: { TOKENLAYER_DASHBOARD_LOGINS: 'you@github', CLICKHOUSE_PASSWORD: 'p2', NEW: '1' }, KeepAlive: true };
   const lines = diffPlist(live, repo);
   expect(lines).toEqual([
-    'EnvironmentVariables.CLICKHOUSE_PASSWORD: values differ (hidden)',
-    'EnvironmentVariables.NEW: live <absent>, repo "1"',
-    'EnvironmentVariables.PATH: live "/bin", repo <absent>',
-    'EnvironmentVariables.TOKENLAYER_DASHBOARD_LOGINS: values differ (hidden)',
-    'KeepAlive: live <absent>, repo true',
-    'ProgramArguments[0]: live "/a/bun", repo "/b/bun"',
+    'EnvironmentVariables.CLICKHOUSE_PASSWORD: differs',
+    'EnvironmentVariables.NEW: only-template',
+    'EnvironmentVariables.PATH: only-live',
+    'EnvironmentVariables.TOKENLAYER_DASHBOARD_LOGINS: differs',
+    'KeepAlive: only-template (true)',
+    'ProgramArguments[0]: differs (live "/a/bun", template "/b/bun")',
   ]);
   expect(lines.join('\n')).not.toMatch(/p1|p2|me@|you@/);
   expect(diffPlist(repo, structuredClone(repo))).toEqual([]);
+});
+
+// Security pre-review M2 (20 Nov): a block on one side only was printed whole, children and all. Values are synthetic.
+const SECRET = /SYNTHETIC-SECRET/;
+test('a block on one side only lists its key names, never its values, whatever the key is called', () => {
+  const env = {
+    CLIPROXY_MGMT_KEY: 'SYNTHETIC-SECRET-1', HUB_APIKEY: 'SYNTHETIC-SECRET-2', TOKENLAYER_AUTH: 'SYNTHETIC-SECRET-3', CLICKHOUSE_PASS: 'SYNTHETIC-SECRET-4',
+    TOKENLAYER_MODE: 'SYNTHETIC-SECRET-5', NOTES: 'SYNTHETIC-SECRET-6', PATH: '/bin', TOKENLAYER_MACHINE: 'm1',
+  };
+  const names = Object.keys(env).sort();
+  for (const [live, repo, side] of [[{ EnvironmentVariables: env }, {}, 'only-live'], [{}, { EnvironmentVariables: env }, 'only-template']] as const) {
+    const lines = diffPlist(live, repo);
+    expect(lines).toEqual(names.map(k => `EnvironmentVariables.${k}: ${side}`));
+    expect(lines.join('\n')).not.toMatch(SECRET);
+    expect(lines.join('\n')).not.toMatch(/\/bin|m1/); // innocent values are not printed either
+  }
+  const both = diffPlist({ EnvironmentVariables: env }, { EnvironmentVariables: Object.fromEntries(names.map(k => [k, 'other'])) });
+  expect(both).toEqual(names.map(k => `EnvironmentVariables.${k}: differs`));
+  expect(both.join('\n')).not.toMatch(SECRET);
+  // A block that is a dict on one side and something else on the other names the shape, not the value.
+  const shape = diffPlist({ EnvironmentVariables: { CLIPROXY_MGMT_KEY: 'SYNTHETIC-SECRET-1' } }, { EnvironmentVariables: 'SYNTHETIC-SECRET-7' });
+  expect(shape).toEqual(['EnvironmentVariables: differs (live <dict>, template <string>)', 'EnvironmentVariables.CLIPROXY_MGMT_KEY: only-live']);
+});
+
+test('ProgramArguments prints paths and flags only; any other argument is redacted', () => {
+  const live = { ProgramArguments: ['/opt/homebrew/bin/bun', '/app/current/src/ship/main.ts', '--password=SYNTHETIC-SECRET-8', 'SYNTHETIC-SECRET-9', '--machine', 'tail'] };
+  const repo = { ProgramArguments: ['/opt/homebrew/bin/bun', '/app/current/src/ship/main.ts', '--password=SYNTHETIC-SECRET-10', 'SYNTHETIC-SECRET-11', '--verbose'] };
+  const lines = diffPlist(live, repo);
+  expect(lines).toEqual([
+    'ProgramArguments[2]: differs',
+    'ProgramArguments[3]: differs',
+    'ProgramArguments[4]: differs (live "--machine", template "--verbose")',
+    'ProgramArguments[5]: only-live',
+  ]);
+  expect(lines.join('\n')).not.toMatch(SECRET);
+  const one = diffPlist(live, {});
+  expect(one).toEqual([
+    'ProgramArguments[0]: only-live ("/opt/homebrew/bin/bun")',
+    'ProgramArguments[1]: only-live ("/app/current/src/ship/main.ts")',
+    'ProgramArguments[2]: only-live',
+    'ProgramArguments[3]: only-live',
+    'ProgramArguments[4]: only-live ("--machine")',
+    'ProgramArguments[5]: only-live',
+  ]);
+  expect(one.join('\n')).not.toMatch(SECRET);
 });
 
 test('drift: clean jobs pass; changed, missing and unmanaged jobs fail; ignored labels are listed', () => {
@@ -74,7 +119,7 @@ test('drift: clean jobs pass; changed, missing and unmanaged jobs fail; ignored 
     'ok    ship',
     'DRIFT spendtable: no template in this repo (add one, or list the label in ~/.config/tokenlayer/drift-ignore)',
     'DRIFT usage:',
-    `        ProgramArguments[0]: live "${root}/.local/share/vite-plus/bin/bun", repo "/opt/homebrew/bin/bun"`,
+    `        ProgramArguments[0]: differs (live "${root}/.local/share/vite-plus/bin/bun", template "/opt/homebrew/bin/bun")`,
   ]);
 
   writeFileSync(`${root}/.config/tokenlayer/drift-ignore`, '# outside this repo\ncom.tokenlayer.spendtable\ncom.tokenlayer.fable\n');

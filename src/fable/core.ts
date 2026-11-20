@@ -202,7 +202,9 @@ function weeklyWindow(s: State, c: Observation, now: number) {
   const w = quotaWindow(c.quota, "7d", now);
   const h = c.last_weekly;
   if (w || hasWeekly(c.quota) || !h || !Number.isFinite(h.u) || h.u < 0 ||
-      !h.status || !Number.isFinite(h.reset))
+      !h.status || !Number.isFinite(h.reset) || h.reset <= 0 ||
+      !Number.isFinite(Date.parse(h.observed_at)) || Date.parse(h.observed_at) > now ||
+      Date.parse(h.observed_at) >= h.reset)
     return w;
   if (h.reset <= now)
     return { u: 0, rejected: false, reset: NaN, estimated: "new-window" as const };
@@ -228,7 +230,10 @@ function fableWindow(c: Observation, now: number) {
   const q = fableQuota(c);
   const old = quotaWindow(q, "7d_oi", now, false);
   const week = quotaWindow(c.quota, "7d", now);
-  if (old && old.reset <= now && week && week.reset > old.reset)
+  if (old && old.reset <= now &&
+      Date.parse(q?.observed_at ?? "") < old.reset &&
+      week && Date.parse(c.quota?.observed_at ?? "") > old.reset &&
+      week.reset > now)
     return { u: 0, rejected: false, reset: week.reset, expired: true };
   return quotaWindow(q, "7d_oi", now);
 }
@@ -326,7 +331,7 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
       reason:
         "unreadable or stale signals; routing restored to normal (both accounts serve everything)",
     };
-  // An estimated account keeps its role: the hub only learns its level from a request it serves.
+  // History is explicitly estimated; it never outranks usable fresh capacity by default.
   for (const c of obs) {
     const e = weeklyWindow(s, c, now);
     if (e && "estimated" in e) (p.weeklyEstimated ??= {})[c.id] = e.estimated;
@@ -346,6 +351,17 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
       m,
       now,
     );
+  if (p.weeklyEstimated?.[b.id] && !p.weeklyEstimated?.[a.id] && !reserve &&
+      (!s.strictFableAccount || p.weeklyEstimated[b.id] === "exhausted") &&
+      s.baseline[a.id].models.some((m) => !isFable(m) && can(a, m))) {
+    desired[a.id].priority = 100;
+    desired[b.id].priority = 50;
+  }
+  // The hub does not enforce usable(): encode historical exhaustion in its actual catalog.
+  for (const c of obs) {
+    if (p.weeklyEstimated?.[c.id] === "exhausted")
+      desired[c.id].excluded_models = s.baseline[c.id].models.filter((m) => !isFable(m));
+  }
   let transient = false;
   for (const model of [...new Set(potential.flatMap((c) => c.catalog))].filter(
     (m) => m.startsWith("claude-"),
@@ -388,7 +404,10 @@ export function plan(s: State, obs: Observation[], now = Date.now()): Plan {
     fableOnB.length &&
     fableOnB.every((m) => desired[b.id].excluded_models?.includes(m))
   )
-    desired[b.id].excluded_models = ["claude-fable-*"];
+    desired[b.id].excluded_models = [
+      ...desired[b.id].excluded_models!.filter((m) => !isFable(m)),
+      "claude-fable-*",
+    ];
   const exceptions = Object.values(p.exceptions);
   if (exceptions.some((x) => x !== "WAIT_AT_CAP")) p.applied = "DEGRADED";
   else if (exceptions.includes("WAIT_AT_CAP")) p.applied = "ON_WAIT_AT_CAP";
