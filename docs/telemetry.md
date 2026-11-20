@@ -159,6 +159,12 @@ it was removed from the schema on 2026-11-19. A hub that already has the empty t
   `input_tokens` means uncached input for both harnesses (Codex `input_tokens - cached_input_tokens`).
 - The daemon picks up un-checkpointed files only if modified in the last 24 h; `--backfill [--since DATE]` does history
   at `--rate-mb` (default 5 MB/s).
+- Heartbeat: after each pass the daemon writes one row to `tokenlayer.ship_heartbeat` (schema/012): machine, pass
+  time, `ok`/`error`, an error class (`store_unreachable`, `file_errors` or `other`), files, lines, bytes and duration.
+  No paths, messages or content. It writes at most once a minute while the class stays the same, and at once when it
+  changes; a write that fails is logged once by class and retried next pass, with no unsent retries, so a down store
+  never stalls the loop. Rows expire after 30 days. A `--backfill` never beats. The live rows
+  `ship_heartbeat_age_s_m1` / `_m4` read it (docs/ratchet.md).
 - Not shipped yet: T3 Code's own thread store (SQLite, see the PR-b body) and the stray Codex rollout at `~/.t3/*.jsonl`.
 
 Agents default to `v_session_events_meta` (an explicit metadata allowlist) and `v_requests`
