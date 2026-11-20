@@ -203,7 +203,7 @@ LIMIT 50
 `reader` profile in `config/clickhouse.xml.template`:
 - Each query is capped at 8 GiB (`max_memory_usage`). A caller may lower the cap, but may not raise it or set 0
   (ClickHouse refuses with code 452).
-- GROUP BY and ORDER BY spill to disk past 4 GiB, with at most 8 GiB of temporary disk per query.
+- GROUP BY and ORDER BY spill to disk past 4 GiB, with at most 8 GiB of temporary disk per query. Like the memory cap, a caller may lower the temp-disk limit but not lift it or set 0 (unlimited).
 
 Ship and drain write as `tokenlayer_writer`, which stays uncapped. It has its own password in
 `~/.config/tokenlayer/clickhouse-writer.env` (mode 600, loaded last by their plists), so the reader's password cannot
