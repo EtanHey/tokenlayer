@@ -37,9 +37,8 @@ test.skipIf(!clickhouseBinary())("NIT-4 sample validation writes only its sample
   // Schema-validator fixture only, matching validatedDryRun's validation:// seeds.
   // It is not archive admission and asserts no historical machine/path/generation.
   const sample:Event[]=[{...parseLine(bytes.toString()),machine:"validation",harness:"claude",path:"validation://fixture",generation:"fixture",byte_offset:0,content_hash:sha256(bytes),line_bytes:bytes.length}];
-  const local=await startLocalClickHouse();
+  const local=await startLocalClickHouse({ prepare: applySchema });
   try {
-    await applySchema(local.client);
     const baseline="baseline\n";
     await local.client.insert("session_events",sample.map(r=>({...r,path:"validation://baseline",raw:baseline,content_hash:sha256(Buffer.from(baseline))})));
     expect(await validation.validateSample(local.client, sample)).toBe(1);
@@ -58,9 +57,8 @@ test.skipIf(!clickhouseBinary())("F-1 held archive and current shipper preserve 
   await expectHeld(manifest([row],[]));
   mkdirSync(".local",{recursive:true});
   const dir=mkdtempSync(join(process.cwd(),".local/child-identity-")),path=join(dir,"rollout-child.jsonl");writeFileSync(path,bytes);
-  const local=await startLocalClickHouse();
+  const local=await startLocalClickHouse({ prepare: applySchema });
   try {
-    await applySchema(local.client);
     await shipOnce({machine:"m4",roots:[{kind:"codex",dir}],statePath:join(dir,"state"),clickhouse:local.client,rateBytesPerSec:0});
     // The current writer preserves line-local IDs; historical owner propagation is held.
     expect(await local.client.queryJSON("SELECT session_id FROM tokenlayer.session_events FINAL ORDER BY byte_offset")).toEqual([{session_id:"child"},{session_id:""}]);

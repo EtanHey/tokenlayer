@@ -15,9 +15,8 @@ for (const trigger of ["backfill", "mtime"] as const) test.skipIf(!clickhouseBin
   const row: Inventory = { machine: "m4", source_kind: "live", container: "", member_path: path, session_id: "session", harness: "claude", bytes: String(bytes.length), lines: "1", first_ts: "2026-01-01", last_ts: "2026-01-01", cwd: "/Users/etanheyman/Gits/example", sha256: sha256(bytes), mtime: "" };
   const entries = () => manifest([row, { ...row, member_path: "copy.jsonl", source_kind: "archive_dir" }], [], { m4: [dir] });
   const read = async () => (async function* () { yield bytes; })();
-  const local = await startLocalClickHouse();
+  const local = await startLocalClickHouse({ prepare: applySchema });
   try {
-    await applySchema(local.client);
     const opts = { machine: "m4", roots: [{ kind: "claude" as const, dir }], statePath: join(dir, "state"), clickhouse: local.client, rateBytesPerSec: 0 };
     const recent = { ...opts, sinceMs: Date.now() - 86_400_000 };
     expect((await shipOnce(recent)).lines).toBe(0);

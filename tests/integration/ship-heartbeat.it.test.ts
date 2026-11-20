@@ -14,8 +14,7 @@ describe.skipIf(!clickhouseBinary())("ship heartbeat â†’ real local ClickHouse â
   let ch: LocalClickHouse;
   let dir: string;
   beforeAll(async () => {
-    ch = await startLocalClickHouse();
-    await applySchema(ch.client);
+    ch = await startLocalClickHouse({ prepare: applySchema });
     mkdirSync(join(repo, ".local"), { recursive: true });
     dir = mkdtempSync(join(repo, ".local/ship-heartbeat-it-"));
   }, 40000);

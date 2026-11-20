@@ -15,8 +15,7 @@ describe.skipIf(!clickhouseBinary())("claude_burn_2h SQL → real local ClickHou
   const verdict = async () => burnVerdict(parsePoints(await ch.client.exec(burnSQL(NOW))), target, NOW);
 
   beforeAll(async () => {
-    ch = await startLocalClickHouse();
-    await applySchema(ch.client);
+    ch = await startLocalClickHouse({ prepare: applySchema });
   }, 40000);
   afterAll(async () => { await ch?.stop(); });
 

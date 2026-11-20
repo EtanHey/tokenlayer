@@ -14,8 +14,7 @@ describe.skipIf(!clickhouseBinary())("dashboard burn → real local ClickHouse",
   let ch: LocalClickHouse;
   let dir: string;
   beforeAll(async () => {
-    ch = await startLocalClickHouse();
-    await applySchema(ch.client);
+    ch = await startLocalClickHouse({ prepare: applySchema });
     dir = mkdtempSync(join(tmpdir(), "dash-burn-it-"));
   }, 40_000);
   afterAll(async () => {

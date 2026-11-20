@@ -24,8 +24,7 @@ describe.skipIf(!clickhouseBinary())("live rows shipper_live_lag_s and ch_live_q
   let ch: LocalClickHouse;
   let home: string;
   beforeAll(async () => {
-    ch = await startLocalClickHouse();
-    await applySchema(ch.client);
+    ch = await startLocalClickHouse({ prepare: applySchema });
     home = mkdtempSync(join(tmpdir(), "live-rows-"));
   }, 40000);
   afterAll(async () => {

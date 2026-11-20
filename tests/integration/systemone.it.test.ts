@@ -14,8 +14,7 @@ describe.skipIf(!clickhouseBinary())("Jev ledgers → real local ClickHouse syst
   let ch: LocalClickHouse;
   let dir: string;
   beforeAll(async () => {
-    ch = await startLocalClickHouse();
-    await applySchema(ch.client);
+    ch = await startLocalClickHouse({ prepare: applySchema });
     dir = mkdtempSync(join(tmpdir(), "jev-it-"));
     for (const [name, sub] of [["e8-state-live", "E8-state-live"], ["e8-state-preflight", "E8-state"]]) {
       mkdirSync(join(dir, "roots", sub), { recursive: true });

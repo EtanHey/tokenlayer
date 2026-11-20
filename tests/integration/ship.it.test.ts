@@ -18,8 +18,7 @@ describe.skipIf(!clickhouseBinary())("ship → real local ClickHouse", () => {
   const partition = (date: Date) => date.toISOString().slice(0, 10).replaceAll("-", "");
 
   beforeAll(async () => {
-    ch = await startLocalClickHouse();
-    await applySchema(ch.client);
+    ch = await startLocalClickHouse({ prepare: applySchema });
     dir = mkdtempSync(join(tmpdir(), "tokenlayer-ship-it-"));
     mkdirSync(join(dir, "claude", "p"), { recursive: true });
     mkdirSync(join(dir, "codex"), { recursive: true });

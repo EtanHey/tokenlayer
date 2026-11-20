@@ -5,9 +5,8 @@ import { startLocalClickHouse } from "../../src/lib/local-clickhouse";
 import { parseLine } from "../../src/ship/parse";
 
 test("comparison keeps UTC-day credits separate from rolling quota gauges and deduplicates Kiro turns", async () => {
-  const ch = await startLocalClickHouse();
+  const ch = await startLocalClickHouse({ prepare: applySchema });
   try {
-    await applySchema(ch.client);
     const put = async (path: string, harness: string, raw: unknown, extras = {}) => ch.client.insert("session_events", [{
       ...parseLine(JSON.stringify(raw)), machine: "fixture", path, harness, generation: "g1", byte_offset: 0,
       content_hash: "v1", line_bytes: 1, ingested_at: "2026-11-03 04:00:00.000", ...extras,
