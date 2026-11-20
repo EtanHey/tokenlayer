@@ -21,8 +21,8 @@ export type Target = { pct_per_hour: number; set_by?: string; until?: string };
 export type Verdict = { value: number; threshold: number | null; say: string };
 
 /**
- * Per account: the last weekly utilization (a fraction) before the window, then the max per 15-minute bucket inside
- * it. Max, not last: requests in one bucket can land out of order. The table is a ReplacingMergeTree; a duplicate row
+ * Per account: the last weekly utilization (a fraction) before the window, then the max per quota cycle and 15-minute bucket inside
+ * it. A reset inside a bucket must retain both cycles, ordered by reset time. Max, not last: requests in one bucket can land out of order. The table is a ReplacingMergeTree; a duplicate row
  * never changes a max, so no FINAL.
  */
 export const burnSQL = (nowS: number, windowS = BURN_WINDOW_S, lookbackS = BURN_LOOKBACK_S) => `SELECT account_hash AS account, base, bucket,
@@ -31,11 +31,12 @@ export const burnSQL = (nowS: number, windowS = BURN_WINDOW_S, lookbackS = BURN_
     SELECT account_hash, ts, toFloat64OrNull(ratelimit['${WEEK_UTILIZATION}']) AS util,
       toUInt64OrZero(ratelimit['${WEEK_RESET}']) AS wreset,
       toUInt8(ts <= toDateTime(${nowS - windowS}, 'UTC')) AS base,
+      if(base = 1, 0, wreset) AS cycle,
       if(base = 1, 0, toUnixTimestamp(toStartOfFifteenMinutes(ts))) AS bucket
     FROM tokenlayer.proxy_usage
     WHERE ts > toDateTime(${nowS - windowS - lookbackS}, 'UTC') AND ts <= toDateTime(${nowS}, 'UTC')
       AND mapContains(ratelimit, '${WEEK_UTILIZATION}') AND util IS NOT NULL)
-  GROUP BY account, base, bucket ORDER BY account, base DESC, bucket
+  GROUP BY account, base, bucket, cycle ORDER BY account, base DESC, bucket, reset
   FORMAT JSONEachRow`;
 
 export const parsePoints = (jsonEachRow: string): Point[] => jsonEachRow.split('\n').filter(Boolean).map(line => {
@@ -53,7 +54,7 @@ export function burnRise(points: Point[], windowStartS: number): number {
   const byAccount = new Map<string, Point[]>();
   for (const p of points) byAccount.set(p.account, [...(byAccount.get(p.account) ?? []), p]);
   for (const pts of byAccount.values()) {
-    pts.sort((a, b) => b.base - a.base || a.bucket - b.bucket);
+    pts.sort((a, b) => b.base - a.base || a.bucket - b.bucket || a.reset - b.reset);
     for (let i = 1; i < pts.length; i++) {
       const prev = pts[i - 1]!, p = pts[i]!;
       const newCycle = p.reset > prev.reset + 3600;
