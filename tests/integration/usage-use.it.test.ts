@@ -3,7 +3,7 @@ import { test } from "../support/clickhouse-gate";
 import { applySchema } from "../../src/lib/schema";
 import { startLocalClickHouse } from "../../src/lib/local-clickhouse";
 import { parseLine } from "../../src/ship/parse";
-import { readUse } from "../../src/usage/use";
+import { readUse, useSql } from "../../src/usage/use";
 
 // Fixture rows shaped like the live store on 2026-11-19 (paths, types, roles); values invented.
 test("counted use dedupes replays and revisions, keeps the 24 h and 7 d windows apart, and ignores Claude", async () => {
@@ -41,6 +41,8 @@ test("counted use dedupes replays and revisions, keeps the 24 h and 7 d windows 
     ]);
     const { url, user, password } = ch.client.config;
     const now = Date.parse("2026-11-19T12:00:00Z"), observed_at = "2026-11-19T12:00:00.000Z", source = "clickhouse:session_events";
+    // Surface SQL failures in CI; production readUse deliberately reports only unavailable.
+    await ch.client.queryJSON(useSql(now));
     expect(await readUse(now, { CLICKHOUSE_URL: url, CLICKHOUSE_USER: user, CLICKHOUSE_PASSWORD: password })).toEqual({
       antigravity: { observed_at, source, "24h": { sessions: 1, requests: 1, input_tokens: 100, output_tokens: 10, credits: null },
         "7d": { sessions: 2, requests: 2, input_tokens: 107, output_tokens: 13, credits: null } },
@@ -83,6 +85,7 @@ test("Codex refreshes do not count as responses, including repeats across both w
       event(-500, 400, 10, { path: "/home/fixture/.codex-other/sessions/rollout.jsonl" }),
     ]);
     const { url, user, password } = ch.client.config;
+    await ch.client.queryJSON(useSql(clock));
     const use = await readUse(clock, { CLICKHOUSE_URL: url, CLICKHOUSE_USER: user, CLICKHOUSE_PASSWORD: password });
     expect(use.codex).toMatchObject({
       "24h": { sessions: 2, requests: 2, input_tokens: 200, output_tokens: 20 },
