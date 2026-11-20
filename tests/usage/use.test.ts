@@ -1,4 +1,7 @@
 import { expect, test } from 'bun:test';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { readUse, useBlocks, useSql } from '../../src/usage/use';
 
 const now = Date.parse('2026-11-19T12:00:00Z');
@@ -31,7 +34,7 @@ test('a vendor with no rows in the window counts zero, and Kiro with no known cr
 
 test('recent events are time-bounded and Codex history lookup has explicit read, memory and time caps', () => {
   const sql = useSql(now);
-  expect(sql).toContain(`fromUnixTimestamp64Milli(${now})-INTERVAL 1 DAY d`);
+  expect(sql).toContain(`fromUnixTimestamp64Milli(${now})-INTERVAL 1 DAY AS d`);
   expect(sql).toContain('ts>=d-INTERVAL 6 DAY AND ts<=d+INTERVAL 1 DAY');
   expect(sql).toContain("(machine,path) IN (SELECT p FROM recent WHERE v='codex')");
   expect(sql).toContain("max_rows_to_read=20000000,max_bytes_to_read=8e9,read_overflow_mode='throw'");
@@ -60,4 +63,34 @@ test('readUse posts the query with header credentials and maps the reply; a Clic
     fail = true;
     expect((await readUse(now, env)).kiro).toEqual({ observed_at: null, source, last_error: 'store unavailable' });
   } finally { server.stop(true); }
+});
+
+
+test('default reader loads standard dotenv files with clickhouse overrides without exposing credentials', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'usage-env-'));
+  const seen: (string | null)[][] = [];
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(req) {
+    seen.push([req.headers.get('x-clickhouse-user'), req.headers.get('x-clickhouse-key')]);
+    return new Response('');
+  } });
+  try {
+    const dir = join(home, '.config/tokenlayer');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'ship.env'), `export CLICKHOUSE_URL=http://127.0.0.1:${server.port}
+CLICKHOUSE_USER=old
+CLICKHOUSE_PASSWORD=old
+`, { mode: 0o600 });
+    writeFileSync(join(dir, 'clickhouse.env'), `# standard dotenv quoting
+export CLICKHOUSE_USER=reader
+CLICKHOUSE_PASSWORD="synthetic # value=with punctuation"
+`, { mode: 0o600 });
+    const proc = Bun.spawn([process.execPath, '-e', `import { readUse } from ${JSON.stringify(resolve('src/usage/use.ts'))}; console.log(JSON.stringify(await readUse(${now})));`],
+      { env: { ...process.env, HOME: home }, stdout: 'pipe', stderr: 'pipe' });
+    const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    expect(code).toBe(0);
+    expect(err).toBe('');
+    expect(JSON.parse(out)).toEqual(useBlocks([], observed_at));
+    expect(seen).toEqual([['reader', 'synthetic # value=with punctuation']]);
+    expect(out).not.toContain('synthetic # value');
+  } finally { server.stop(true); rmSync(home, { recursive: true, force: true }); }
 });

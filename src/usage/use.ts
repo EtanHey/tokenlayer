@@ -2,7 +2,7 @@
 // no quota, so counts stand in. Cursor sessions are not shipped, so Cursor gets none.
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { parseEnv } from '../lib/env';
+import { parseEnv } from 'node:util';
 
 export type UseWindow = { sessions: number; requests: number; input_tokens: number | null; output_tokens: number | null; credits: number | null };
 export type Use = { observed_at: string | null; source: string; last_error?: string; '24h'?: UseWindow; '7d'?: UseWindow };
@@ -11,7 +11,7 @@ const VENDORS = ['antigravity', 'kiro', 'codex'], source = 'clickhouse:session_e
 // Canonical cumulative usage, so JSON key order cannot re-credit a refresh.
 const totalSql = `toString(mapSort(JSONExtract(raw,'payload','info','total_token_usage','Map(String,UInt64)')))`;
 // Recent replay/revision dedup plus capped history for active Codex paths (both window cuts).
-export const useSql = (now: number) => `WITH fromUnixTimestamp64Milli(${Math.trunc(now)})-INTERVAL 1 DAY d,
+export const useSql = (now: number) => `WITH fromUnixTimestamp64Milli(${Math.trunc(now)})-INTERVAL 1 DAY AS d,
 recent AS (SELECT multiIf(path LIKE '%/.kiro/sessions/%','kiro',
 path LIKE '%/.gemini/antigravity-cli/brain/%' OR path LIKE '%/.t3/userdata/providers/antigravity/%','antigravity',
 path LIKE '%/.codex/sessions/%','codex','') v,(machine,path) p,
