@@ -1,7 +1,7 @@
 // D2 render test: the real page and app.js in headless Chrome at 390 px (phone) and 1280 px, through CDP device
 // emulation. Read-only: GETs only, nothing is clicked. Skips (and says so) when no Chrome/Chromium is installed;
 // set CHROME_BIN to point at one. D2_SHOTS=<dir> also writes the screenshots there.
-import { test, expect, afterAll } from "bun:test";
+import { test, expect, beforeAll, afterAll } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,9 +32,12 @@ const STATES: Record<string, M4Snapshot> = {
 };
 
 const dirs: string[] = [];
-const procs: { kill(): void }[] = [];
-afterAll(() => {
+const procs: ReturnType<typeof Bun.spawn>[] = [];
+let socket: WebSocket | undefined;
+afterAll(async () => {
+  socket?.close();
   for (const p of procs) p.kill();
+  await Promise.all(procs.map(p => p.exited));
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
 
@@ -54,10 +57,26 @@ function serve(snap: M4Snapshot) {
   } });
 }
 
-let shared: ReturnType<typeof launch> | null = null;
-/** One headless Chrome for the whole file (a cold start is ~1-5 s); each test navigates it afresh. */
-const browser = () => (shared ??= launch());
+const LAUNCH_TIMEOUT_MS = 60_000;
+let shared: Awaited<ReturnType<typeof launch>>;
+// Startup has its own budget: a slow CI cold start must not consume a render test's timeout.
+// Throw from the suite hook once, so launch failure blocks every render without a rejected-promise cascade.
+beforeAll(async () => {
+  if (!chrome) return;
+  try {
+    shared = await launch();
+  } catch (cause) {
+    throw new Error("Dashboard render tests: Chrome startup failed; all renders blocked", { cause });
+  }
+}, LAUNCH_TIMEOUT_MS + 5_000);
 async function launch() {
+  const deadline = Date.now() + LAUNCH_TIMEOUT_MS;
+  const remaining = () => {
+    const ms = deadline - Date.now();
+    if (ms <= 0) throw new Error(`Chrome did not become ready within ${LAUNCH_TIMEOUT_MS} ms`);
+    if (p.exitCode !== null) throw new Error(`Chrome exited before startup (exit ${p.exitCode})`);
+    return ms;
+  };
   const dir = mkdtempSync(tmpdir() + "/dash-chrome-");
   dirs.push(dir);
   const p = Bun.spawn([chrome!, "--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + dir, "--no-first-run",
@@ -65,15 +84,23 @@ async function launch() {
     "about:blank"], { stdout: "ignore", stderr: "ignore" });
   procs.push(p);
   const portFile = join(dir, "DevToolsActivePort");
-  for (let i = 0; i < 200 && !existsSync(portFile); i++) await Bun.sleep(50);
+  while (!existsSync(portFile)) { remaining(); await Bun.sleep(50); }
   const port = readFileSync(portFile, "utf8").split("\n")[0];
   let targets: any[] = [];
-  for (let i = 0; i < 100 && !targets.some((t) => t.type === "page"); i++) {
-    targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json().catch(() => []);
+  while (!targets.some((t) => t.type === "page")) {
+    const signal = AbortSignal.timeout(remaining());
+    targets = await fetch(`http://127.0.0.1:${port}/json/list`, { signal })
+      .then(r => r.json()).catch(() => []);
     if (!targets.some((t) => t.type === "page")) await Bun.sleep(50);
   }
   const ws = new WebSocket(targets.find((t) => t.type === "page").webSocketDebuggerUrl);
-  await new Promise((r) => (ws.onopen = r));
+  socket = ws;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Chrome CDP connection timed out")), remaining());
+    ws.onopen = () => { clearTimeout(timer); resolve(); };
+    ws.onerror = () => { clearTimeout(timer); reject(new Error("Chrome CDP connection failed")); };
+    ws.onclose = () => { clearTimeout(timer); reject(new Error("Chrome CDP closed during startup")); };
+  });
   let id = 0;
   const pending = new Map<number, (v: any) => void>();
   ws.onmessage = (e) => { const m = JSON.parse(String(e.data)); pending.get(m.id)?.(m.result); };
@@ -96,7 +123,7 @@ for (const [name, snap] of Object.entries(STATES))
   for (const width of [390, 1280])
     test.skipIf(!chrome)(`renders the All tools panel at ${width} px (${name} M4)`, async () => {
       const server = serve(snap);
-      const b = await browser();
+      const b = shared;
       try {
         await b.send("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: width < 600 ? 2 : 1, mobile: width < 600 });
         await b.send("Page.navigate", { url: `http://127.0.0.1:${server.port}/` });
