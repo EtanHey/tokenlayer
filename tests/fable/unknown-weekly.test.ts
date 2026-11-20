@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test";
-import { plan, usable, type Observation } from "../../src/fable/core";
+import { expect, test, spyOn } from "bun:test";
+import { allowed, plan, usable, type Observation } from "../../src/fable/core";
 import { observe } from "../../src/fable/io";
 import { weeklyHistory } from "../../src/fable/history";
+import { ClickHouse } from "../../src/lib/clickhouse";
 import { labelHash } from "../../src/lib/hash";
 import { fakeHub, models, observed, state } from "./fixtures";
 
@@ -36,8 +37,8 @@ test("a last reading whose reset has passed is an estimated new window: usable, 
   expect(usable(state(), b, opus, now)).toBe(true);
   const p = plan(state(), [observed("a"), b], now);
   expect(p.applied).toBe("ON");
-  expect(p.desired.a.priority).toBe(50);
-  expect(p.desired.b.priority).toBe(100);
+  expect(p.desired.a.priority).toBe(100);
+  expect(p.desired.b.priority).toBe(50);
   expect(p.weeklyEstimated).toEqual({ b: "new-window" });
   expect(p.reason).toContain("estimated");
 });
@@ -49,6 +50,9 @@ test("a last reading at the exhausted threshold whose reset is ahead is exhauste
   const p = plan(state(), [observed("a"), b], now);
   expect(p.applied).toBe("ON");
   expect(p.weeklyEstimated).toEqual({ b: "exhausted" });
+  expect(p.desired.a.priority).toBeGreaterThan(p.desired.b.priority!);
+  expect(allowed(models, p.desired.a)).toContain(opus);
+  expect(allowed(models, p.desired.b)).not.toContain(opus);
 });
 
 test("a rejected last reading whose reset is ahead is exhausted", () => {
@@ -120,4 +124,66 @@ test("weeklyHistory returns nothing for no rows or an unreadable row", async () 
   expect(await weeklyHistory({ queryJSON: async () => [] } as never)(observed("b"))).toBeUndefined();
   const bad = { queryJSON: async () => [{ u: "x", reset: "1795312800", status: "allowed", ms: "1" }] };
   expect(await weeklyHistory(bad as never)(observed("b"))).toBeUndefined();
+});
+
+for (const offset of [-1000, 0, 1000]) {
+  test(`history adapter never recovers a rejection observed at/after reset (${offset})`, async () => {
+    const reset = Math.floor((now - 120000) / 1000) * 1000;
+    const b = idleB();
+    b.last_weekly = await weeklyHistory({ queryJSON: async () => [{
+      u: "1", status: "rejected", reset: String(reset / 1000), ms: String(reset + offset),
+    }] } as never)(b);
+    expect(usable(state(), b, opus, now)).toBe(offset < 0);
+    const p = plan(state(), [observed("a"), b], now);
+    if (offset < 0) expect(p.weeklyEstimated).toEqual({ b: "new-window" });
+    else expect(p.applied).toBe("UNKNOWN");
+  });
+}
+
+test("invalid/future history timestamps never establish recovery", () => {
+  for (const observed_at of ["invalid", new Date(now + hour).toISOString()]) {
+    const b = idleB({ u: 1, reset: now - hour, status: "rejected" });
+    b.last_weekly!.observed_at = observed_at;
+    expect(usable(state(), b, opus, now)).toBe(false);
+    expect(plan(state(), [observed("a"), b], now).applied).toBe("UNKNOWN");
+  }
+});
+
+test("estimated exhaustion preserves the reserve conflict instead of enabling A", () => {
+  const b = idleB({ u: 0.95, reset: now + hour });
+  const p = plan(state(), [observed("a", 0.9, 0), b], now);
+  expect(p.exceptions[opus]).toBe("RESERVE_CONFLICT");
+  expect(allowed(models, p.desired.a)).not.toContain(opus);
+  expect(allowed(models, p.desired.b)).not.toContain(opus);
+});
+
+
+test("history timeout cancels the actual ClickHouse fetch", async () => {
+  let signal: AbortSignal | null | undefined;
+  const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((_url, options) => {
+    signal = options?.signal;
+    return new Promise((_resolve, reject) => {
+      signal?.addEventListener("abort", () => reject(signal!.reason), { once: true });
+    });
+  });
+  try {
+    const ch = new ClickHouse({ url: "http://synthetic.invalid", user: "test", password: "", database: "tokenlayer" });
+    await expect(weeklyHistory(ch, 5)(observed("b"))).rejects.toThrow("history timeout");
+    expect(signal?.aborted).toBe(true);
+  } finally { fetchSpy.mockRestore(); }
+});
+
+test("settled history queries clear their timeout without later cancellation", async () => {
+  let signal: AbortSignal | null | undefined;
+  const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => {
+    signal = options?.signal;
+    return new Response("");
+  });
+  try {
+    const ch = new ClickHouse({ url: "http://synthetic.invalid", user: "test", password: "", database: "tokenlayer" });
+    expect(await weeklyHistory(ch, 5)(observed("b"))).toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(signal).toBeDefined();
+    expect(signal?.aborted).toBe(false);
+  } finally { fetchSpy.mockRestore(); }
 });
