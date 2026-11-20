@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { ClickHouse, RAW_BYTES } from "../../src/lib/clickhouse";
+import { DEFAULT_UNSENT_RETRY_MS, RetryingClickHouse, StoreUnreachableError } from "../../src/lib/clickhouse-retry";
 import { verifySessionSchema, migrateSessionSchema } from "../../src/lib/session-schema";
 import { applySchema } from "../../src/lib/schema";
 import { StreamingHistoryClient } from "../../scripts/history/stream";
@@ -172,5 +173,78 @@ describe("ClickHouse.exec", () => {
     await expect(client.exec("SELECT 1")).rejects.toThrow("241");
     s.stop(true);
     expect(seen[0].searchParams.get("wait_end_of_query")).toBe("1");
+  });
+});
+
+// R9: the M4 lost DNS for the hub's tailnet name in bursts (11-18 09:18-09:47Z, 11-19 06:10-12:41Z). Every
+// failed insert left the ship's journal ahead of its checkpoint, which became a re-send.
+describe("RetryingClickHouse unsent-request retry", () => {
+  const rejectWith = (message: string, code: string) =>
+    (() => Promise.reject(Object.assign(new Error(message), { code }))) as unknown as typeof fetch;
+  const dnsFailure = rejectWith("getaddrinfo ENOTFOUND hub.example", "ENOTFOUND");
+
+  test("a DNS failure is retried with backoff and the insert lands exactly once", async () => {
+    const { s, seen, client } = server(() => new Response(""));
+    const quick = new RetryingClickHouse(client.config, [1, 1, 1]);
+    const spy = spyOn(globalThis, "fetch");
+    spy.mockImplementationOnce(dnsFailure).mockImplementationOnce(dnsFailure);
+    try {
+      await quick.insert("session_events", [{ a: 1 }], "token-1");
+      expect(spy).toHaveBeenCalledTimes(3);
+      expect(seen).toHaveLength(1);
+      expect(seen[0].searchParams.get("insert_deduplication_token")).toBe("token-1");
+    } finally { spy.mockRestore(); s.stop(true); }
+  });
+
+  test("a refused connection that never recovers fails as StoreUnreachableError after every retry", async () => {
+    const dead = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
+    const url = `http://127.0.0.1:${dead.port}`;
+    dead.stop(true);
+    const spy = spyOn(globalThis, "fetch");
+    try {
+      const err = await new RetryingClickHouse({ url, user: "u", password: "p", database: "tokenlayer" }, [1, 1])
+        .insert("session_events", [{ a: 1 }]).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StoreUnreachableError);
+      expect(err).toMatchObject({ code: "ECONNREFUSED", attempts: 3 });
+      expect(spy).toHaveBeenCalledTimes(3);
+    } finally { spy.mockRestore(); }
+  });
+
+  test("an answer from the server is never retried, even an error", async () => {
+    const { s, seen, client } = server(() => new Response("down", { status: 503 }));
+    try {
+      await expect(new RetryingClickHouse(client.config, [1, 1]).exec("SELECT 1")).rejects.toThrow("HTTP 503");
+      expect(seen).toHaveLength(1);
+    } finally { s.stop(true); }
+  });
+
+  test("a reset after the request may have been read is not retried", async () => {
+    const spy = spyOn(globalThis, "fetch").mockImplementation(rejectWith("The socket connection was closed unexpectedly.", "ECONNRESET"));
+    try {
+      const err = await new RetryingClickHouse({ url: "http://hub.example", user: "u", password: "p", database: "tokenlayer" }, [1, 1])
+        .exec("SELECT 1").catch((e: unknown) => e);
+      expect(err).not.toBeInstanceOf(StoreUnreachableError);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally { spy.mockRestore(); }
+  });
+
+  test("the default backoff rides out about 14 s of DNS loss", () => {
+    expect(DEFAULT_UNSENT_RETRY_MS.reduce((a, b) => a + b, 0)).toBe(14_000);
+    expect(RetryingClickHouse.fromEnv({}).unsentRetryMs).toBe(DEFAULT_UNSENT_RETRY_MS);
+  });
+
+  // The retry lives in a ship-only subclass so the drain bundle (hub-local, ratchet row bundle-drain-bytes)
+  // does not carry it. The plain client therefore fails fast, and the ship must build the retrying one.
+  test("only the ship's client retries; the plain client fails on the first unsent request", async () => {
+    const spy = spyOn(globalThis, "fetch").mockImplementation(dnsFailure);
+    try {
+      const err = await new ClickHouse({ url: "http://hub.example", user: "u", password: "p", database: "tokenlayer" })
+        .exec("SELECT 1").catch((e: unknown) => e);
+      expect(err).not.toBeInstanceOf(StoreUnreachableError);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally { spy.mockRestore(); }
+    const shipMain = await Bun.file(new URL("../../src/ship/main.ts", import.meta.url)).text();
+    expect(shipMain).toContain("RetryingClickHouse.fromEnv(env)");
+    expect(RetryingClickHouse.fromEnv({ CLICKHOUSE_URL: "http://hub.example" }).config.url).toBe("http://hub.example");
   });
 });

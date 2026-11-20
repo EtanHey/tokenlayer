@@ -104,6 +104,12 @@ it was removed from the schema on 2026-11-19. A hub that already has the empty t
   unacknowledged suffix re-ships. Before R8 this replayed the whole file from offset 0, so every network blip on
   a Mac re-inserted its active sessions: 2.5M of 11.4M `session_events` rows (22%) on 2026-11-19, kept apart by
   the 1 GiB background-merge cap. Missing checkpoints, other generations and compressed files still replay.
+- A request that never left the Mac (DNS `ENOTFOUND`/`EAI_AGAIN`, or `ECONNREFUSED`) is retried after 1, 3 and
+  10 s, so a blip of up to about 14 s costs nothing. ClickHouse never saw the request, so the retry is safe for
+  any statement. A reset or timeout may come after the server read the request, so it is not retried. If the
+  store is still unreachable, the ship pass stops at that file: the other files' journals do not run ahead, and
+  the next pass resumes as above. The M4 resolves the hub only through Tailscale's MagicDNS resolver; its router
+  has no answer for `*.ts.net`, so a stopped or paused Tailscale shows up as `ENOTFOUND` (R9).
 - Version 3 checkpoints hash the entire acknowledged prefix using streaming 64 KiB buffers. Changed files
   verify that prefix before resuming; batch hashes extend incrementally, avoiding a full rehash per chunk.
   The verified prefix hash is reused to extend batches from their exact source buffers before insertion;
