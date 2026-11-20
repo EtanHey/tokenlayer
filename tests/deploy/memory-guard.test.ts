@@ -1,9 +1,16 @@
 import { expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
-import { render } from '../../scripts/deploy/deploy';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { clickhouseConfig, configureClient, render } from '../../scripts/deploy/deploy';
+import { parseEnv } from '../../src/lib/env';
 
 const GiB = 1024 ** 3;
-const xml = render(readFileSync('config/clickhouse.xml.template', 'utf8'), { HOME: '/Users/synthetic' });
+mkdirSync('.local', { recursive: true });
+const home = mkdtempSync(join(process.cwd(), '.local/memguard-'));
+configureClient('m1', 'http://127.0.0.1:8123', home);
+const writerPassword = parseEnv(readFileSync(join(home, '.config/tokenlayer/clickhouse-writer.env'), 'utf8')).CLICKHOUSE_PASSWORD!;
+const xml = clickhouseConfig(home);
 const block = (tag: string, within = xml) => within.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`))?.[1] ?? '';
 const profiles = block('profiles');
 const users = block('users');
@@ -25,15 +32,22 @@ test('the shared read user runs under the reader profile: 8 GiB per query, spill
   expect(block('max_temporary_data_on_disk_size_for_query', block('constraints', reader))).toBe(`<min>1</min><max>${8 * GiB}</max>`);
 });
 
-test('the writer user stays on the uncapped default profile with the same password source', () => {
+test('the writer user stays on the uncapped default profile, with its own password hash hidden from the preprocessed copy', () => {
   const writer = block('tokenlayer_writer', users);
   expect(block('profile', writer)).toBe('default');
   expect(block('default', profiles)).not.toContain('max_memory_usage');
-  expect(writer).toContain('<password_sha256_hex from_env="CLICKHOUSE_PASSWORD_SHA256" hide_in_preprocessed="true"/>');
+  // The reader's password no longer opens the uncapped login: the writer hash comes from clickhouse-writer.env.
+  expect(writer).not.toContain('from_env');
+  expect(writer).toContain(`<password_sha256_hex hide_in_preprocessed="true">${createHash('sha256').update(writerPassword).digest('hex')}</password_sha256_hex>`);
+  expect(block('tokenlayer', users)).toContain('<password_sha256_hex from_env="CLICKHOUSE_PASSWORD_SHA256" hide_in_preprocessed="true"/>');
   expect(writer).toContain('<networks><ip>127.0.0.1</ip></networks>');
 });
+test('the config cannot render without a writer hash', () => {
+  expect(() => render(readFileSync('config/clickhouse.xml.template', 'utf8'), { HOME: '/Users/synthetic' })).toThrow('WRITERHASH');
+});
 
-for (const agent of ['ship', 'drain']) test(`${agent} writes as tokenlayer_writer, overriding clickhouse.env`, () => {
+for (const agent of ['ship', 'drain']) test(`${agent} writes as tokenlayer_writer, with the writer env loaded last`, () => {
   const plist = readFileSync(`launchd/com.tokenlayer.${agent}.plist.template`, 'utf8');
   expect(plist).toMatch(/<key>CLICKHOUSE_USER<\/key>\s*<string>tokenlayer_writer<\/string>/);
+  expect(plist).toMatch(/__HOME__\/\.config\/tokenlayer\/clickhouse\.env:__HOME__\/\.config\/tokenlayer\/clickhouse-writer\.env<\/string>/);
 });
