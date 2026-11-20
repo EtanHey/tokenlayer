@@ -164,7 +164,8 @@ it was removed from the schema on 2026-11-19. A hub that already has the empty t
   No paths, messages or content. It writes at most once a minute while the class stays the same, and at once when it
   changes; a write that fails is logged once by class and retried next pass, with no unsent retries, so a down store
   never stalls the loop. Rows expire after 30 days. A `--backfill` never beats. The live rows
-  `ship_heartbeat_age_s_m1` / `_m4` read it (docs/ratchet.md).
+  `ship_heartbeat_age_s_m1` / `_m4` read it for silence, and `ship_heartbeat_failing_m1` / `_m4` for 15 min with no ok
+  pass (docs/ratchet.md).
 - Not shipped yet: T3 Code's own thread store (SQLite, see the PR-b body) and the stray Codex rollout at `~/.t3/*.jsonl`.
 
 Agents default to `v_session_events_meta` (an explicit metadata allowlist) and `v_requests`
