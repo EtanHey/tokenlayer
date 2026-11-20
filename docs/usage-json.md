@@ -38,8 +38,10 @@ about once a minute (`~/.t3/caches/<instance>.json` → `usageLimits`), read on 
 hub or no hub. Each has `pct` (the fullest window; on a tie, the one that resets last),
 `window`, `resets_at`, `observed_at`, `source` (`t3-cache:<instance>`), `stale` and
 `windows[]`. Only numbers, timestamps and short window ids are copied. `stale` is true
-when the observation is over 10 minutes old, the binding reset has passed, or there are
-no numbers; then the numbers are null and `last_error` says why. Kiro's cache carries no
+when the observation is over 10 minutes old, more than one minute in the future,
+or the binding reset has passed. These stale readings retain their numbers without
+`last_error`; consumers must gate those numbers on `stale`. Unavailable readings
+have null numbers, `stale: true` and a fixed `last_error`. Kiro's cache carries no
 usage at all (status, auth, version and models only), so `vendors.kiro` stays null with a
 `note` listing the cache's top-level key names.
 

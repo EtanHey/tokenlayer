@@ -12,6 +12,16 @@ export function weeklyHistory(ch: Pick<ClickHouse, "queryJSON">, timeoutMs = 500
   return async (c: Observation): Promise<LastWeekly | undefined> => {
     const credential = labelHash(c.auth_index);
     if (!/^[0-9a-f]{16}$/.test(credential)) return undefined;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const error = Error("history timeout");
+        reject(error);
+        controller.abort(error);
+      }, timeoutMs);
+      timer.unref?.();
+    });
     const rows = await Promise.race([
       ch.queryJSON<{ u: string; reset: string; status: string; ms: string }>(
         `SELECT ratelimit['${K}utilization'] AS u, ratelimit['${K}reset'] AS reset,
@@ -20,15 +30,16 @@ FROM tokenlayer.proxy_usage
 WHERE credential = '${credential}' AND ts > now() - INTERVAL 14 DAY
   AND ratelimit['${K}utilization'] != ''
 ORDER BY ts DESC LIMIT 1`,
+        controller.signal,
       ),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(Error("history timeout")), timeoutMs).unref?.()),
-    ]);
+      timeout,
+    ]).finally(() => clearTimeout(timer));
     const r = rows[0];
     if (!r) return undefined;
-    const u = Number(r.u), ms = Number(r.ms);
-    if (!Number.isFinite(u) || u < 0 || !r.status || !/^\d+$/.test(r.reset) || !Number.isFinite(ms))
+    const u = Number(r.u), ms = Number(r.ms), reset = Number(r.reset) * 1000;
+    if (!Number.isFinite(u) || u < 0 || !r.status || !/^\d+$/.test(r.reset) || !Number.isFinite(ms) || !Number.isFinite(new Date(ms).getTime()) ||
+        !Number.isFinite(reset) || reset <= 0)
       return undefined;
-    return { u, reset: Number(r.reset) * 1000, status: r.status, observed_at: new Date(ms).toISOString() };
+    return { u, reset, status: r.status, observed_at: new Date(ms).toISOString() };
   };
 }

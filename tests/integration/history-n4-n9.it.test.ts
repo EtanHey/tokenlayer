@@ -1,5 +1,5 @@
-import { expect, spyOn } from 'bun:test';
-import { test } from '../support/clickhouse-gate';
+import { expect, test, spyOn } from 'bun:test';
+import { test as clickhouseTest } from '../support/clickhouse-gate';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { historyFixtureDirectories } from '../fixtures/history-temp';
 import { join } from 'node:path';
@@ -22,7 +22,7 @@ const fixture = () => {
     const manifest = join(root, 'manifest.json'); writeFileSync(manifest, JSON.stringify({ machine: 'm4', sources: [source] }));
     return { root, history, manifest, options: { machine: 'm4', roots: [{ kind: 'codex' as const, dir: roots }], directory: history, liveStates: [], pilotOnly: true } };
 };
-test('N4 real owner discovery runs once per owner chunk, stays fresh, and checks every hash chunk', async () => {
+clickhouseTest('N4 real owner discovery runs once per owner chunk, stays fresh, and checks every hash chunk', async () => {
     const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), root = dir(), rows = Array.from({ length: 1000 }, (_, i) => row(i));
     const queries: string[] = [], exec = ClickHouse.prototype.exec;
     const capture = spyOn(ClickHouse.prototype, 'exec').mockImplementation(function(this: ClickHouse, sql: string) { queries.push(sql); return exec.call(this, sql); });
@@ -51,7 +51,7 @@ test('N4 real owner discovery runs once per owner chunk, stays fresh, and checks
         console.log(JSON.stringify({ N4: { rows: rows.length, ownerChunks: owners.length, hashChecks: checks.length, maxQueryBytes: Math.max(...queries.map(q => Buffer.byteLength(q))) } }));
     } finally { capture.mockRestore(); await local.stop(); }
 }, 60000);
-test('N4 real importer matrices carry the same explicit resource bounds', async () => {
+clickhouseTest('N4 real importer matrices carry the same explicit resource bounds', async () => {
     const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE }), f = fixture(), queries: string[] = [];
     const exec = ClickHouse.prototype.exec;
     const capture = spyOn(ClickHouse.prototype, 'exec').mockImplementation(function(this: ClickHouse, sql: string) { queries.push(sql); return exec.call(this, sql); });
@@ -63,7 +63,7 @@ test('N4 real importer matrices carry the same explicit resource bounds', async 
         expect(await local.client.exec('SELECT count() FROM tokenlayer.session_events FINAL')).toBe('32\n');
     } finally { capture.mockRestore(); await local.stop(); }
 }, 60000);
-test('N9 zero/unknown local space refuses before ledger append or HTTP; importer refuses before local writes', async () => {
+clickhouseTest('N9 zero/unknown local space refuses before ledger append or HTTP; importer refuses before local writes', async () => {
     const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema });
     try {
         for (const sample of [{ bsize: 4096n, bavail: 0n }, { bsize: 0n, bavail: 1n }, { bsize: 4096n }, undefined]) {
@@ -78,7 +78,7 @@ test('N9 zero/unknown local space refuses before ledger append or HTTP; importer
         expect(await local.client.exec('SELECT count() FROM tokenlayer.session_events FINAL')).toBe('0\n');
     } finally { await local.stop(); }
 }, 60000);
-test('N4 real owner result overflow fails closed without ledger; empty owner set skips hash checks', async () => {
+clickhouseTest('N4 real owner result overflow fails closed without ledger; empty owner set skips hash checks', async () => {
     const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), root = dir();
     try {
         const client = new StreamingHistoryClient(local.client.config, { ledger: join(root, 'ledger'), manifest: 'bounds', run: 'bounds', sessionId: 'native' });
@@ -111,7 +111,7 @@ test('N9 exact local floor includes pending bytes; append/rotation recheck witho
     expect(readFileSync(path)).toEqual(before);
     expect(existsSync(path + '.next')).toBe(false); expect(existsSync(join(root, 'audit'))).toBe(false);
 });
-test('N9 local-space drop after initial receipt stops guarded checkpoint writes with zero ingestion', async () => {
+clickhouseTest('N9 local-space drop after initial receipt stops guarded checkpoint writes with zero ingestion', async () => {
     const local = await startLocalClickHouse({ keepFreeSpaceBytes: RESERVE, prepare: applySchema }), f = fixture();
     const stateDir = join(f.history, sha256Hex(readFileSync(f.manifest, 'utf8'))), receipt = join(stateDir, 'receipts.ndjson');
     try {

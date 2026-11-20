@@ -24,10 +24,15 @@ function fixture() {
   writeFileSync(join(repo, 'version.txt'), 'two\n');
   git(repo, 'commit', '-qam', 'two');
   const two = git(repo, 'rev-parse', 'HEAD');
+  git(repo, 'update-ref', 'refs/remotes/origin/main', two); // main is at two; anything else is unreviewed
+  git(repo, 'checkout', '-qb', 'feat/unreviewed');
+  writeFileSync(join(repo, 'version.txt'), 'unreviewed\n');
+  git(repo, 'commit', '-qam', 'unreviewed');
+  const unmerged = git(repo, 'rev-parse', 'HEAD');
   writeFileSync(join(repo, 'version.txt'), 'uncommitted\n'); // a dirty checkout must never leak into a release
   const calls: string[][] = [];
   const deps = { install: (dir: string) => { calls.push(['install', dir]); }, kickstart: (label: string) => { calls.push(['kickstart', label]); } };
-  return { base, repo, root: join(base, 'app'), one, two, calls, deps };
+  return { base, repo, root: join(base, 'app'), one, two, unmerged, calls, deps };
 }
 const current = (root: string) => readlinkSync(join(root, 'current'));
 
@@ -61,6 +66,34 @@ test('install refuses a revision that is not a commit and changes nothing', asyn
     await expect(installRelease({ repo: f.repo, rev, root: f.root, ...f.deps })).rejects.toThrow();
   }
   expect(current(f.root)).toBe(f.one);
+});
+
+test('install refuses a commit that is not on origin/main, unless the caller allows unmerged code', async () => {
+  const f = fixture();
+  await installRelease({ repo: f.repo, rev: f.one, root: f.root, ...f.deps });
+  for (const rev of [f.unmerged, 'feat/unreviewed', f.unmerged.slice(0, 9)])
+    await expect(installRelease({ repo: f.repo, rev, root: f.root, ...f.deps })).rejects.toThrow('not on origin/main');
+  expect(current(f.root)).toBe(f.one);
+  expect(existsSync(join(f.root, f.unmerged))).toBe(false);
+  expect(f.calls).toEqual([['install', expect.any(String)]]);
+  await installRelease({ repo: f.repo, rev: f.unmerged, root: f.root, ...f.deps, allowUnmerged: true });
+  expect(current(f.root)).toBe(f.unmerged);
+});
+
+test('pin.ts install refuses an unmerged commit before it writes anything, and --allow-unmerged warns', () => {
+  const f = fixture();
+  const home = join(f.base, 'home');
+  mkdirSync(home);
+  mkdirSync(join(f.repo, 'scripts/deploy'), { recursive: true }); // the CLI archives the repo it sits in
+  writeFileSync(join(f.repo, 'scripts/deploy/pin.ts'), readFileSync('scripts/deploy/pin.ts'));
+  const pin = (...args: string[]) => spawnSync(process.execPath, [join(f.repo, 'scripts/deploy/pin.ts'), 'install', ...args], { env: { ...process.env, HOME: home }, encoding: 'utf8' });
+  const refused = pin(f.unmerged);
+  expect(refused.status).not.toBe(0);
+  expect(refused.stderr).toContain('not on origin/main');
+  expect(existsSync(join(home, '.config'))).toBe(false);
+  const allowed = pin(f.unmerged, '--allow-unmerged');
+  expect(allowed.stderr).toContain(`WARNING: ${f.unmerged} is not on origin/main`);
+  expect(allowed.stdout).toContain(`current: ${f.unmerged}`);
 });
 
 test('reinstalling an installed commit reuses it and only flips', async () => {
