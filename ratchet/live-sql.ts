@@ -1,7 +1,8 @@
 // SQL for the live ratchet rows (ratchet/live.ts), shared with their fixtures.
 
-// session_events is a ReplacingMergeTree partitioned by toYYYYMM(ts), and every version of a key is the same
-// line with the same ts, so versions never span partitions (0 of 8.84M keys did on 2026-11-19). Per-partition
+// session_events is a ReplacingMergeTree partitioned by toYYYYMMDD(ts) since R12 (toYYYYMM before), and every version
+// of a key is the same line with the same ts, so versions never span partitions (0 of 8.84M keys did monthly on
+// 2026-11-19; R12's runbook re-checks it per day, since an Antigravity replay mid-file can carry a different ts). Per-partition
 // FINAL is then exact, and it lets ClickHouse prune parts by ts. Plain FINAL cannot push the ts filter below
 // the merge and reads every part: 4906/4906 granules (~600 ms) against 219 (~45 ms) on 2026-11-19.
 export const FINAL_PER_PARTITION = 'do_not_merge_across_partitions_select_final=1';
