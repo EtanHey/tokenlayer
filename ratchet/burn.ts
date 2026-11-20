@@ -37,19 +37,28 @@ export const burnSQL = (nowS: number, windowS = BURN_WINDOW_S, lookbackS = BURN_
     if(base = 1, argMax(util, ts), max(util)) AS u, argMax(wreset, ts) AS reset, toUInt64(ceil(toUnixTimestamp64Milli(max(ts)) / 1000)) AS at
   FROM (
     SELECT account_hash, ts, toFloat64OrNull(ratelimit['${WEEK_UTILIZATION}']) AS util,
-      toUInt64OrZero(ratelimit['${WEEK_RESET}']) AS wreset,
+      toUInt64OrNull(ratelimit['${WEEK_RESET}']) AS wreset,
       toUInt8(ts <= toDateTime(${nowS - windowS}, 'UTC')) AS base,
       if(base = 1, 0, wreset) AS cycle,
       if(base = 1, 0, ${nowS} - 900 * (intDiv(${nowS * 1000} - toUnixTimestamp64Milli(ts), 900000) + 1)) AS bucket
     FROM tokenlayer.proxy_usage
     WHERE ts > toDateTime(${nowS - windowS - lookbackS}, 'UTC') AND ts <= toDateTime(${nowS}, 'UTC')
-      AND mapContains(ratelimit, '${WEEK_UTILIZATION}') AND util IS NOT NULL)
+      AND mapContains(ratelimit, '${WEEK_UTILIZATION}') AND util IS NOT NULL
+      AND mapContains(ratelimit, '${WEEK_RESET}') AND wreset IS NOT NULL
+      AND util >= 0 AND util <= 1 AND wreset > 0 AND wreset <= 8640000000000)
   GROUP BY account, base, bucket, cycle ORDER BY account, base DESC, bucket, reset
   FORMAT JSONEachRow`;
 
+// Do not coerce null or a missing numeric value into a valid zero reading.
+const readingNumber = (v: unknown): number =>
+  (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')) ? Number(v) : NaN;
+const validReading = (p: Point) => Number.isFinite(p.u) && p.u >= 0 && p.u <= 1
+  && Number.isSafeInteger(p.reset) && p.reset > 0 && p.reset <= 8640000000000
+  && Number.isFinite(p.at) && p.at > 0;
+
 export const parsePoints = (jsonEachRow: string): Point[] => jsonEachRow.split('\n').filter(Boolean).map(line => {
   const r = JSON.parse(line);
-  return { account: String(r.account), base: Number(r.base) ? 1 : 0, bucket: Number(r.bucket), u: Number(r.u), reset: Number(r.reset), at: Number(r.at) };
+  return { account: String(r.account), base: Number(r.base) ? 1 : 0, bucket: Number(r.bucket), u: readingNumber(r.u), reset: readingNumber(r.reset), at: readingNumber(r.at) };
 });
 
 /**
@@ -100,13 +109,17 @@ const clock = (s: number) => israelClock(new Date(s * 1000));
 const perHour = (rise: number, windowS: number) => at2(rise * 100 / (windowS / 3600));
 
 export function burnVerdict(points: Point[], reserve: Reserve, nowS: number): Verdict {
-  const value = perHour(burnRise(points, nowS - BURN_WINDOW_S), BURN_WINDOW_S);
-  const burst = perHour(burnRise(points, nowS - BURST_WINDOW_S), BURST_WINDOW_S);
+  const valid = points.filter(validReading);
+  const value = perHour(burnRise(valid, nowS - BURN_WINDOW_S), BURN_WINDOW_S);
+  const burst = perHour(burnRise(valid, nowS - BURST_WINDOW_S), BURST_WINDOW_S);
   const kept = `${fmt(reserve.pct)}% reserve${reserve.from === 'file' ? '' : ` (${reserve.from})`}`;
   // The in-use account: the latest reading. Its week, and its reset, set the target.
   const last = points.reduce<Point | undefined>((a, p) => (!a || p.at > a.at ? p : a), undefined);
-  if (!last) {
+  if (!last || !Number.isFinite(last.at) || last.at <= nowS - BURN_LOOKBACK_S) {
     return { value, threshold: null, fail: true, say: `no Claude weekly reading in ${BURN_LOOKBACK_S / 86400} days, so no target: Claude ran ${fmt(value)}%/h for the last ${BURN_WINDOW_S / 3600} h; ${kept}` };
+  }
+  if (!validReading(last)) {
+    return { value, threshold: null, fail: true, say: `invalid Claude weekly utilization/reset reading, so no target: Claude ran ${fmt(value)}%/h for the last ${BURN_WINDOW_S / 3600} h; ${kept}` };
   }
   // A reset that has passed with no reading since: a new week, all of it left, until the next weekly reset.
   const passed = last.reset <= nowS;
