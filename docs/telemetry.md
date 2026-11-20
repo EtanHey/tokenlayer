@@ -315,9 +315,14 @@ not a plain number refuses before connecting. It does the following:
    reads free disk every second and `KILL QUERY`s the copy once it falls under the floor plus
    2 GiB (merges already running finish after a kill), or after 3 failed reads in a row; it
    re-issues the KILL until the query is gone, and stops the run with an error if that is not
-   confirmed within 60 s. The run then stops `partial` and the archive part stays. Once every day is in and every kept key checks out, it drops that archive part.
+   confirmed within 60 s. Disk, KILL and process requests each have a cancellable 5 s deadline;
+   a timed-out disk request counts as a failed read, and Ctrl-C interrupts a pending read.
+   Confirmation requests also fit within the remaining 60 s budget. The copy itself has no
+   control-request deadline. The run then stops `partial` and the archive part stays. Once every day is in and every kept key checks out, it drops that archive part.
    Duplicate versions collapse as each day's parts merge.
-3. Drops the archive once it is empty and no insert older than the run is still running.
+3. Holds the archive while any relevant session INSERT is active, including writers admitted
+   during preflight and on resumed runs. Once none remain, refreshes the part list and drops
+   the archive only if it is still empty; late committed parts are copied on resume.
 
 Ctrl-C (or SIGTERM) kills the running copy on the server before the command exits; a second Ctrl-C
 exits at once. A run refuses to start while any `r12-` query still runs (a killed client's copy):
