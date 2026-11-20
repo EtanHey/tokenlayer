@@ -17,7 +17,7 @@ function fixture(raw: Buffer) {
       originMachine: "UNKNOWN", originProof: "UNKNOWN", originalPath: "UNKNOWN", sourceRoot: dir, rootKind: "native-gemini-cli-tmp",
       documentBytes: raw.length, documentHash: hash(raw), stat: reader.geminiStatPin(fs.lstatSync(path, { bigint: true })) } };
   const save = () => fs.writeFileSync(input, JSON.stringify(spec), { mode: 0o600 }); save();
-  const cli = () => Bun.spawnSync([process.execPath, resolve("src/metadata/gemini-main.ts"), input, out]);
+  const cli = () => Bun.spawnSync([process.execPath, resolve("src/metadata/gemini-main.ts"), input, out], { env: process.env });
   return { dir, path, input, out, spec, save, cli, clean: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 test("real CLI default refusal then explicit large profile preserves original bytes, spans, counters and privacy", () => {

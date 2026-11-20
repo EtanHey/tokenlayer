@@ -1,4 +1,5 @@
-import { expect, spyOn, test } from 'bun:test';
+import { expect, spyOn } from 'bun:test';
+import { test } from '../support/clickhouse-gate';
 import { statfsSync } from 'node:fs';
 import { startLocalClickHouse } from '../../src/lib/local-clickhouse';
 import { applySchema } from '../../src/lib/schema';
