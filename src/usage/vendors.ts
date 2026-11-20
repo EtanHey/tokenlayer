@@ -28,7 +28,7 @@ export function vendorReading(cache: unknown, now: number): VendorReading {
   // The binding window is the fullest; on a tie, the one that frees up last.
   const bind = [...windows].sort((a, b) => b.pct - a.pct || at(b.resets_at) - at(a.resets_at))[0];
   if (!bind) return empty(source, 'usage unavailable', observed_at);
-  const stale = !observed_at || now - at(observed_at) > VENDOR_STALE_MS || !!bind.resets_at && at(bind.resets_at) <= now;
+  const stale = !observed_at || at(observed_at) - now > 60_000 || now - at(observed_at) > VENDOR_STALE_MS || !!bind.resets_at && at(bind.resets_at) <= now;
   return { pct: bind.pct, window: bind.window, resets_at: bind.resets_at, observed_at, source, stale, windows };
 }
 
