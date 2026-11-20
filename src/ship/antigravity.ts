@@ -12,11 +12,33 @@ export function antigravitySession(dir: string, path: string, kind: SourceKind):
   return pattern.exec(relative(dir, path))?.[1] ?? "";
 }
 
-/** Only query workspace metadata, never payloads, prompts, auth files or opaque summary blobs. */
+/** Read only the native binding and workspace fields, never message or conversation tables. */
+function t3Cwd(dir: string, session: string): string {
+  const dbPath = join(dir, "../../statev2.sqlite");
+  if (!existsSync(dbPath)) return "";
+  let db: Database | undefined;
+  try {
+    db = new Database(dbPath, { readonly: true });
+    const rows = db.query<{ cwd: unknown }, [string]>(`SELECT DISTINCT
+      COALESCE(NULLIF(CASE WHEN json_type(t.payload_json, '$.worktreePath') = 'text'
+        THEN json_extract(t.payload_json, '$.worktreePath') END, ''), p.workspace_root) AS cwd
+      FROM orchestration_v2_projection_provider_threads b
+      JOIN orchestration_v2_projection_threads t ON t.thread_id = b.thread_id
+      JOIN projection_projects p ON p.project_id = t.project_id
+      WHERE b.driver = 'antigravity'
+        AND json_extract(b.payload_json, '$.nativeThreadRef.nativeId') = ?
+      LIMIT 2`).all(session);
+    // Conflicting bindings cannot establish attribution. Missing/older registries stay unknown.
+    return rows.length === 1 && typeof rows[0]!.cwd === "string" ? rows[0]!.cwd : "";
+  } catch { return ""; }
+  finally { db?.close(); }
+}
+
+/** Only query workspace metadata, never prompts, auth files or opaque summary blobs. */
 export function antigravityCwd(dir: string, path: string, session: string, kind: SourceKind): string {
   if (kind === "t3-antigravity") {
     const meta = join(path, "../../../../../conversations", `${session}.meta`);
-    if (!existsSync(meta)) return "";
+    if (!existsSync(meta)) return t3Cwd(dir, session);
     const { cwd } = JSON.parse(readFileSync(meta, "utf8"));
     return typeof cwd === "string" ? cwd : "";
   }
@@ -40,6 +62,6 @@ export function parseAntigravity(line: string, state: FileState) {
   if (state.lastTsMs <= 0) throw new Error("Antigravity record has no preceding timestamp");
   const uint = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.trunc(v) : 0;
   return { ...row, ts: toClickHouseTime(state.lastTsMs), session_id: state.sessionId, session_alias: "",
-    cwd: state.cwd, project: projectFromCwd(state.cwd), model: "", role: "", message_id: "",
+    cwd: state.cwd, project: projectFromCwd(state.cwd), model: typeof o.model === "string" ? o.model : "", role: "", message_id: "",
     input_tokens: uint(o.input_tokens), output_tokens: uint(o.output_tokens), cache_read_tokens: uint(o.cache_read_tokens) };
 }

@@ -267,6 +267,8 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             }
           }
           if (!cp) cp = fresh();
+          // Fill legacy blank attribution for new lines only; retain the acknowledged offset.
+          if (agy && !cp.parser.cwd) cp.parser.cwd = antigravityCwd(root.dir, path, session, root.kind);
           if (kiro) Object.assign(cp.parser, kiroMetadata(path, cp.parser));
           cp.identity = identity(st);
           cp.inode = st.ino;

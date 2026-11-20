@@ -90,6 +90,14 @@ it was removed from the schema on 2026-11-19. A hub that already has the empty t
   Harness is a file-level column, excluded from generation identity so late classification and state loss
   do not duplicate lines. On a returning inode whose head was rewritten in place, `harness` may change
   for unchanged archived lines when they are replayed.
+- Antigravity keeps each record's native `model`; missing models stay empty, including worker
+  records without a model. T3 cwd uses `conversations/<native-id>.meta` first. When absent,
+  the shipper opens `../../statev2.sqlite` relative to its Antigravity provider root read-only,
+  joins the native ID through T3 provider/thread/project metadata, and prefers `worktreePath`
+  over the project workspace root. Missing, unavailable or conflicting metadata stays unknown;
+  conversation databases and message tables are never queried. Blank checkpoint cwd is resolved
+  on append without resetting offsets. This change does not backfill existing blank rows;
+  attribution applies to new lines. Historical backfill requires a separate later operation.
 - A line is `(machine, path, generation, byte_offset, content_hash)`: the full SHA-256 covers exact source
   bytes including LF (and CR if present), before decoding. Different content cannot replace an archive
   even if generation/offset recur. Generation tracks device/inode/birthtime and rewrite lineage, not archive safety.
