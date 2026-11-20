@@ -31,7 +31,7 @@ and one `cleared` line when it turns green again; nothing while it stays the sam
 
 `claude_burn_2h` catches an idle Claude week (whatever is left at the weekly reset is lost). It reads the hub's own
 `anthropic-ratelimit-unified-7d-utilization` in `proxy_usage.ratelimit` (fractions; `7d_oi`, a per-model quota, is not
-counted): per account, the last reading before the window, then the max per 15-minute bucket. The week used in the last
+counted): per account, the last reading before the window, then the max per quota cycle and 15-minute bucket. A reset inside a bucket keeps both cycles in reset order. The week used in the last
 2 h is each account's rises summed over accounts (a new weekly cycle that began in the window counts its use; one that
 began earlier counts only the rise after its first reading). No request at all reads 0%/h. The target is orc's:
 
@@ -63,3 +63,15 @@ Long `*.property.test.ts` entries are excluded from default discovery. `bun run 
 runs them with `TOKENLAYER_PROPERTY_N=300`; the required `ci` job gives that step its own 10-minute budget.
 The full step retains all archive assertions and checks 300 completed operation sequences / 1,200 SIGKILLs.
 Ratchet commands and limits stay unchanged; their default measurements include the short smoke checks.
+
+### First-ingest storage (R2)
+
+Apply schema/004a_session_first_ingest.sql before enabling the updated lag reader. Its insert-triggered
+materialized view keeps a mergeable minimum per machine, event timestamp and content hash, independently
+of session_events replacement. Same-key and generation replays cannot advance it. The small fact table
+keeps one day by event time; imports outside that range do not populate it.
+
+Do not backfill it from surviving session_events versions: earlier ingestion times may already be gone.
+After initial schema installation, collect a complete 60-minute live window before treating this row as
+qualified evidence. The empty-window value remains 0; it does not establish warm-up or shipper liveness.
+Schema application and that warm-up are deployment gates, not proven by unit tests.
