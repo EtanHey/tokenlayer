@@ -10,10 +10,11 @@ import { evaluate, parseRows } from './table.mjs';
 export type Row = { id: string; command: string; runner: string; direction: 'min' | 'max' | 'pass'; ceiling: number; unit?: string; timeout_s: number };
 /**
  * value: null = MISSING (fails); 'skip' = not measurable right now (the M4 asleep), state held, nothing posted.
- * A probe may judge against its own threshold (claude_burn_2h reads orc's target file): `threshold` replaces the
- * row's ceiling, null = report only (never fails), and `say` replaces the posted value/threshold with plain words.
+ * A probe may judge against its own threshold: `threshold` replaces the row's ceiling, null = report only (never
+ * fails), and `say` replaces the posted value/threshold with plain words. A probe that judges two sides
+ * (claude_burn_2h: under-run on 2 h, over-run on 1 h) prints `fail`, which decides the row outright.
  */
-export type Measured = { value: number | null | 'skip'; threshold?: number | null; say?: string };
+export type Measured = { value: number | null | 'skip'; threshold?: number | null; say?: string; fail?: boolean };
 export type Result = Measured & { row: Row; override?: boolean };
 export type State = Record<string, 'fail' | 'pass'>;
 const LIVE = /^bun ratchet\/live\.ts ([\w.-]+)$/;
@@ -23,11 +24,12 @@ export const liveRows = (rows: Row[]) => rows.filter(r => r.runner === 'm1' && L
 export function plan(results: Result[], previous: State, now: Date) {
   const stamp = now.toISOString().replace(/\.\d{3}Z$/, 'Z');
   const state: State = {}, lines: string[] = [], reports: Record<string, string> = {};
-  for (const { row, value, override, threshold, say } of results) {
+  for (const { row, value, override, threshold, say, fail } of results) {
     if (value === 'skip') { if (previous[row.id]) state[row.id] = previous[row.id]!; continue; }
     if (say) reports[row.id] = say;
     const judged = threshold == null ? row : { ...row, ceiling: threshold };
-    const status = threshold === null || (value !== null && evaluate(judged, value)) ? 'pass' : 'fail';
+    const status = typeof fail === 'boolean' && value !== null ? (fail ? 'fail' : 'pass')
+      : threshold === null || (value !== null && evaluate(judged, value)) ? 'pass' : 'fail';
     state[row.id] = status;
     if (status === (previous[row.id] ?? 'pass')) continue;
     if (say) { lines.push(`### tokenlayer-ratchet → @tokenlayer-lead @orc — ${stamp} ${status === 'fail' ? 'FAIL' : 'cleared'} ${row.id}: ${say}${override ? ' (override)' : ''}`); continue; }
@@ -44,7 +46,8 @@ function measure(row: Row, repo: string): Measured {
   if (run.exitCode === 0 && last === 'skip') { console.error(`${row.id}: skipped, state held`); return { value: 'skip' }; }
   if (run.exitCode === 0 && last.startsWith('{')) {
     const m = JSON.parse(last) as Measured;
-    if (typeof m.value === 'number' && Number.isFinite(m.value) && (m.threshold === null || typeof m.threshold === 'number') && typeof m.say === 'string') return m;
+    if (typeof m.value === 'number' && Number.isFinite(m.value) && (m.threshold === null || typeof m.threshold === 'number') && typeof m.say === 'string'
+      && (m.fail === undefined || typeof m.fail === 'boolean')) return m;
   }
   // Only the exit status is logged: probe errors may carry connection details.
   if (run.exitCode !== 0 || !/^\d+(\.\d+)?(e[+-]?\d+)?$/.test(last)) { console.error(`${row.id}: measurement failed (exit ${run.exitCode})`); return { value: null }; }

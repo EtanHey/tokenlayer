@@ -29,22 +29,31 @@ A row that turns red appends one line to the orc outbox, `### tokenlayer-ratchet
 and one `cleared` line when it turns green again; nothing while it stays the same or while a probe prints `skip`. State: `~/.config/tokenlayer/ratchet-live-state.json`.
 `TOKENLAYER_RATCHET_OUTBOX` is required; `TOKENLAYER_RATCHET_OVERRIDE='{"row": value}'` forces values for a proof run (lines say `(override)`).
 
-`claude_burn_2h` catches an idle Claude week (whatever is left at the weekly reset is lost). It reads the hub's own
-`anthropic-ratelimit-unified-7d-utilization` in `proxy_usage.ratelimit` (fractions; `7d_oi`, a per-model quota, is not
-counted): per account, the last reading before the window, then the max per 15-minute bucket. The week used in the last
-2 h is each account's rises summed over accounts (a new weekly cycle that began in the window counts its use; one that
-began earlier counts only the rise after its first reading). No request at all reads 0%/h. The target is orc's:
+`claude_burn_2h` catches an idle Claude week (whatever is left at the weekly reset is lost) and a week burnt too fast.
+It reads the hub's own `anthropic-ratelimit-unified-7d-utilization` and `-7d-reset` in `proxy_usage.ratelimit`
+(fractions; `7d_oi`, the separate Fable quota, is not counted): per account, the last reading before the window, then
+the max per 15-minute bucket, counted back from now so the last hour starts on a bucket edge. The week used is each
+account's rises summed over accounts (a new weekly cycle that began in the window counts its use; one that began
+earlier counts only the rise after its first reading). No request at all reads 0%/h.
+
+The target is not a constant. Every run computes it from the in-use account (the latest reading):
+`target %/h = (week % left − reserve %) / hours until that account's weekly reset`, 0 at or under the reserve.
+A reset that has passed with no reading since is a new week: 100% left until the next weekly reset.
+The reserve is orc's, `reserve_pct` in `~/.config/tokenlayer/burn-target.json` (`TOKENLAYER_BURN_TARGET` overrides
+the path; other keys, like the old `pct_per_hour` and `until`, are not read):
 
 ```json
-{"pct_per_hour": 3, "set_by": "orc", "until": "2026-11-20T19:00:00Z"}
+{"reserve_pct": 8, "set_by": "orc"}
 ```
 
-in `~/.config/tokenlayer/burn-target.json` (`TOKENLAYER_BURN_TARGET` overrides the path). The row fails under half of
-`pct_per_hour`. No file, or a target past `until`: report only (the job log's `say` field carries the sentence, the row
-never fails). A malformed file is a broken probe (FAIL, value MISSING). No quiet hours. Its posts read in words:
-`FAIL claude_burn_2h: Claude ran 0.4%/h for the last 2 h against a 3%/h target (alarm under 1.5%/h); 45% of the week is
-left until Fri 21:00` (the in-use account, in Israel time). A probe judges against its own threshold by printing
-`{"value", "threshold", "say"}` as its last line; `threshold: null` means report only.
+No file or no `reserve_pct`: the default 8, and every line says the default is in use. A malformed file, or a
+`reserve_pct` outside 0 to under 100, is a broken probe (FAIL, value MISSING). No Claude reading in 8 days gives no
+target and fails. The row fails when the last 2 h ran under half the target, or the last hour over twice it.
+No quiet hours. Its posts read in words, times in Israel time with IST/IDT:
+`FAIL claude_burn_2h: under half the target: Claude ran 0%/h for the last 2 h and 0%/h for the last hour against a 1%/h
+target (alarm under 0.5%/h for 2 h or over 2%/h for 1 h); target = (45% of the week left − 8% reserve) / 37 h until the
+reset Sat 03:00 IST`. A probe judges against its own threshold by printing `{"value", "threshold", "say"}` as its last
+line; `threshold: null` means report only. A probe that judges two sides adds `"fail"`, which decides the row.
 
 Install from a merged tree (the job runs from a snapshot, so a worktree cleanup cannot break it). Set `OUTBOX` to the orc outbox file first; its path stays out of this public repo:
 
