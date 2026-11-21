@@ -15,6 +15,7 @@ import { compressedHash, inspectZstd, readZstd, type ZstdSpawner } from "./zst";
 import { sanitizeOutput } from "../lib/egress";
 import { antigravityCwd, antigravitySession, isAntigravity, parseAntigravity } from "./antigravity";
 
+import { cursorIdentity, cursorWorkspaces, parseCursor } from "./cursor";
 import { kiroMetadata, kiroSession, kiroT3Sessions, parseKiro } from "./kiro";
 
 export type ShipRoot = { kind: SourceKind; dir: string };
@@ -22,6 +23,7 @@ export type ShipRoot = { kind: SourceKind; dir: string };
 export type ShipOptions = {
   zstd?: { spawn?: ZstdSpawner; fingerprint?: typeof compressedHash };
   kiroT3StatePath?: string;
+  cursorT3StatePath?: string;
   machine: string;
   roots: ShipRoot[];
   clickhouse: ClickHouse;
@@ -137,6 +139,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
   if (opts.maxBatchJsonBytes !== undefined && (!Number.isSafeInteger(opts.maxBatchJsonBytes) || opts.maxBatchJsonBytes < 1 || opts.maxBatchJsonBytes > MAX_SERIALIZED_BATCH_BYTES)) throw Error("invalid maxBatchJsonBytes");
   const writeState = opts.writeState ?? saveState;
   const state: ShipState = loadState(opts.statePath);
+  let cursorPaths: Map<string, string> | undefined;
   let t3Kiro: Set<string> | undefined;
   // Separate write-ahead generation record retains revision lineage across progress checkpoint loss.
   const generationPath = `${opts.statePath}.generations`;
@@ -165,6 +168,18 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
         }
         if (opts.files && !opts.files.includes(physical)) continue;
         const agy = isAntigravity(root.kind);
+        const cursor = root.kind === "cursor";
+        if (cursor && !cursorPaths) {
+          try { cursorPaths = cursorWorkspaces(opts.cursorT3StatePath); }
+          catch {
+            // Registry metadata is optional. Keep shipping all sources with
+            // unknown Cursor attribution, and retry the registry next pass.
+            cursorPaths = new Map();
+            opts.log?.("warning: Cursor workspace registry unavailable; cwd/project unknown for this pass");
+          }
+        }
+        const cursorMeta = cursor ? cursorIdentity(root.dir, physical, cursorPaths) : null;
+        if (cursor && !cursorMeta) continue;
         const kiro = root.kind === "kiro";
         const session = kiro ? kiroSession(root.dir, physical) : agy ? antigravitySession(root.dir, physical, root.kind) : "";
         if ((agy || kiro) && !session) continue;
@@ -199,6 +214,7 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
             const checkpoint = freshCheckpoint(path, root.kind, st, head());
             if (cp?.retentionReplay) checkpoint.retentionReplay = true;
             if (agy) Object.assign(checkpoint.parser, { sessionId: session, cwd: antigravityCwd(root.dir, path, session, root.kind), lastTsMs: 0 });
+            if (cursorMeta) Object.assign(checkpoint.parser, cursorMeta);
             if (kiro) Object.assign(checkpoint.parser, { sessionId: session, ...kiroMetadata(path, cp?.parser), harness: kiroHarness });
             if (decoded) checkpoint.generation = decoded.digest.slice(0, 16);
             return checkpoint;
@@ -207,6 +223,12 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
           if (cp && !recorded) {
             generations.files[path] = structuredClone(cp);
             writeState(generationPath, generations);
+          }
+          if (cursorMeta && cp && cp.parser.cwd !== cursorMeta.cwd) {
+            const generation = cp.generation;
+            cp = fresh();
+            cp.generation = generation;
+            result.resets++;
           }
           if (kiro && cp && cp.parser.harness !== kiroHarness) {
             const generation = cp.generation;
@@ -317,7 +339,8 @@ export async function shipOnce(opts: ShipOptions): Promise<ShipResult> {
               content_hash: createHash("sha256").update(raw.subarray(l.offset - cp!.offset, l.offset - cp!.offset + l.bytes)).digest("hex"),
               line_bytes: l.bytes,
               [RAW_BYTES]: raw.subarray(l.offset - cp!.offset, l.offset - cp!.offset + l.bytes),
-              ...(kiro ? parseKiro(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes), parser)
+              ...(cursor ? parseCursor(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes), parser)
+                : kiro ? parseKiro(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes), parser)
                 : agy ? parseAntigravity(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes), parser)
                 : parseLine(raw.toString("utf8", l.offset - cp!.offset, l.offset - cp!.offset + l.bytes))),
             })).filter(row => !cp!.retentionReplay || retainSessionRow(row, retentionNow));

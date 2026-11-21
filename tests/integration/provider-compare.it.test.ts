@@ -45,3 +45,19 @@ test("comparison keeps UTC-day credits separate from rolling quota gauges and de
     expect(await ch.client.queryJSON("SELECT count() AS n FROM tokenlayer.v_provider_usage_compare WHERE note = ''")).toEqual([{ n: 0 }]);
   } finally { await ch.stop(); }
 }, 40000);
+
+test("comparison sums known nullable counters while all-unknown stays NULL and measured zero stays zero", async () => {
+  const ch = await startLocalClickHouse({ prepare: applySchema });
+  try {
+    const counters = { input_tokens: null, output_tokens: null, cache_read_tokens: null, cache_creation_tokens: null, reasoning_tokens: null };
+    await ch.client.insert("session_events", [
+      { ...counters, ts: "2026-11-18 00:00:00.000", output_tokens: 7 },
+      { ...counters, ts: "2026-11-18 00:00:01.000", input_tokens: 3, cache_read_tokens: 2, cache_creation_tokens: 1 },
+      { ...counters, ts: "2026-11-19 00:00:00.000" },
+      { ...counters, ts: "2026-11-20 00:00:00.000", output_tokens: 0 },
+    ].map((row, i) => ({ ...row, machine: "fixture", harness: "claude", path: "/nullable.jsonl", generation: "g1",
+      byte_offset: i, content_hash: `nullable-${i}`, type: "assistant", role: "assistant", message_id: `msg-${i}`, raw: "{}" })));
+    expect(await ch.client.queryJSON("SELECT day, tokens FROM tokenlayer.v_provider_usage_compare WHERE provider = 'claude' ORDER BY day"))
+      .toEqual([{ day: "2026-11-18", tokens: 13 }, { day: "2026-11-19", tokens: null }, { day: "2026-11-20", tokens: 0 }]);
+  } finally { await ch.stop(); }
+}, 40000);
