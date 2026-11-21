@@ -29,7 +29,7 @@ async function forms() {
   };
   createContext(context);
   const source = readFileSync('src/dashboard/app.js', 'utf8')
-    .replace(/^refresh\(\);$/m, '').replace(/^refreshSessions\(\);$/m, '');
+    .replace(/^refresh\(\);$/m, '').replace(/^refreshSessions\(\);$/m, '').replace(/^refreshTools\(\);$/m, '');
   runInContext(source + '\nrefresh = async function refreshed() {};', context);
   async function submit(id: string) {
     await forms['#' + id].onsubmit({ preventDefault: function preventDefault() {}, target: forms['#' + id] });

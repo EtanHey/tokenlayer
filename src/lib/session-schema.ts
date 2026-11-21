@@ -4,7 +4,7 @@ import { fixed, type ClickHouse } from "./clickhouse";
 
 const key = "machine, path, generation, byte_offset, content_hash";
 const definition = () => readFileSync(join(import.meta.dir, "../../schema/004_session_events.sql"), "utf8");
-const columnLines = () => [...definition().matchAll(/^    (\w+)\s+(\w+(?:\([^\n]*?\))?)(.*?),?$/gm)].filter((m) => m[1] !== "INDEX");
+const columnLines = () => [...definition().matchAll(/^    (\w+)\s+(\w+(?:\((?:[^()\n]|\([^()\n]*\))*\))?)(.*?),?$/gm)].filter((m) => m[1] !== "INDEX");
 /** Stored columns: what ship writes and what a rebuild copies. MATERIALIZED columns are derived from raw by the server. */
 const expectedTypes = () => columnLines().filter((m) => !/\bMATERIALIZED\b/.test(m[3]))
   .map((m) => ({ name: m[1], type: m[2] }));
@@ -33,6 +33,14 @@ export async function migrateSessionSchema(ch: ClickHouse): Promise<void> {
   // Additive F-1 upgrade: existing rows keep an empty alias without rebuilding the archive.
   await ch.exec("ALTER TABLE tokenlayer.session_events ADD COLUMN IF NOT EXISTS session_alias String CODEC(ZSTD(3))");
   await ch.exec("ALTER TABLE tokenlayer.session_events ADD COLUMN IF NOT EXISTS credits Nullable(Float64) DEFAULT NULL");
+  // Cursor native transcripts have no model/usage evidence. Preserve NULL rather than zero.
+  // Guard repeat applications; type-conversion cost must be checked at rollout.
+  const nullable = expectedTypes().filter(c => ["model", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens"].includes(c.name));
+  const installed = await ch.queryJSON<{ name: string; type: string }>("SELECT name, type FROM system.columns WHERE database='tokenlayer' AND table='session_events'");
+  for (const { name, type } of nullable) {
+    const old = installed.find(c => c.name === name)?.type;
+    if (old === (name === "model" ? "LowCardinality(String)" : "UInt64")) await ch.exec(`ALTER TABLE tokenlayer.session_events MODIFY COLUMN ${name} ${type}`);
+  }
   let current = true;
   try { await verifySessionSchema(ch); } catch { current = false; }
   if (current) {

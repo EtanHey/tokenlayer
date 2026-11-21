@@ -12,8 +12,7 @@ const PAD = "repeat('x', 100000)";
 describe.skipIf(!clickhouseBinary())("token-sum views run under a memory cap far below raw's size → real local ClickHouse", () => {
   let ch: LocalClickHouse;
   beforeAll(async () => {
-    ch = await startLocalClickHouse();
-    await applySchema(ch.client);
+    ch = await startLocalClickHouse({ prepare: applySchema });
     const columns = "machine, harness, path, generation, byte_offset, content_hash, ts, type, role, message_id, output_tokens, raw";
     // 2000 Claude lines, one message each, 100 KB of raw apiece.
     await ch.client.exec(`INSERT INTO tokenlayer.session_events (${columns}) SELECT 'm', 'claude', '/s/claude.jsonl', 'g1', number,

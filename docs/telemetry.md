@@ -50,6 +50,8 @@ it was removed from the schema on 2026-11-19. A hub that already has the empty t
 
 ## Shipper guarantees (`tokenlayer-ship`)
 
+Cursor native transcript discovery, UNKNOWN metadata, and raw archive semantics: [Cursor source](cursor.md).
+
 - Sources: `~/.claude/projects/**/*.jsonl` (includes `<session>/subagents/agent-*.jsonl`) and `~/.codex/sessions/**/*.{jsonl,jsonl.zst}` (including T3-origin Codex rollouts).
 - Compressed Codex rollouts require `zstd` on the shipper's PATH (`brew install zstd` on macOS).
   The launchd template includes Homebrew in PATH. If unavailable, the process emits one sanitized warning,

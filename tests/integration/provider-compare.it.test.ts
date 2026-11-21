@@ -5,9 +5,8 @@ import { startLocalClickHouse } from "../../src/lib/local-clickhouse";
 import { parseLine } from "../../src/ship/parse";
 
 test("comparison keeps UTC-day credits separate from rolling quota gauges and deduplicates Kiro turns", async () => {
-  const ch = await startLocalClickHouse();
+  const ch = await startLocalClickHouse({ prepare: applySchema });
   try {
-    await applySchema(ch.client);
     const put = async (path: string, harness: string, raw: unknown, extras = {}) => ch.client.insert("session_events", [{
       ...parseLine(JSON.stringify(raw)), machine: "fixture", path, harness, generation: "g1", byte_offset: 0,
       content_hash: "v1", line_bytes: 1, ingested_at: "2026-11-03 04:00:00.000", ...extras,
@@ -44,5 +43,21 @@ test("comparison keeps UTC-day credits separate from rolling quota gauges and de
       { day: "2026-11-04", credits_used: null, daily_allowance_used_pct: null, unknown_kiro_turns: 1 },
     ]);
     expect(await ch.client.queryJSON("SELECT count() AS n FROM tokenlayer.v_provider_usage_compare WHERE note = ''")).toEqual([{ n: 0 }]);
+  } finally { await ch.stop(); }
+}, 40000);
+
+test("comparison sums known nullable counters while all-unknown stays NULL and measured zero stays zero", async () => {
+  const ch = await startLocalClickHouse({ prepare: applySchema });
+  try {
+    const counters = { input_tokens: null, output_tokens: null, cache_read_tokens: null, cache_creation_tokens: null, reasoning_tokens: null };
+    await ch.client.insert("session_events", [
+      { ...counters, ts: "2026-11-18 00:00:00.000", output_tokens: 7 },
+      { ...counters, ts: "2026-11-18 00:00:01.000", input_tokens: 3, cache_read_tokens: 2, cache_creation_tokens: 1 },
+      { ...counters, ts: "2026-11-19 00:00:00.000" },
+      { ...counters, ts: "2026-11-20 00:00:00.000", output_tokens: 0 },
+    ].map((row, i) => ({ ...row, machine: "fixture", harness: "claude", path: "/nullable.jsonl", generation: "g1",
+      byte_offset: i, content_hash: `nullable-${i}`, type: "assistant", role: "assistant", message_id: `msg-${i}`, raw: "{}" })));
+    expect(await ch.client.queryJSON("SELECT day, tokens FROM tokenlayer.v_provider_usage_compare WHERE provider = 'claude' ORDER BY day"))
+      .toEqual([{ day: "2026-11-18", tokens: 13 }, { day: "2026-11-19", tokens: null }, { day: "2026-11-20", tokens: 0 }]);
   } finally { await ch.stop(); }
 }, 40000);

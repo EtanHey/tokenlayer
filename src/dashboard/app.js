@@ -12,27 +12,35 @@ let latestState = null,
 let ready = false,
   inflight = false,
   retryBody = null;
-async function api(path, body) {
+async function api(path, body, signal) {
   const r = await fetch(
     "/api/" + path,
     body
       ? {
+          signal,
           method: "POST",
           headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
           body: JSON.stringify(body),
         }
-      : {},
+      : { signal },
   );
   const data = await r.json();
   if (!r.ok) throw Error(data.error || "Request failed (" + r.status + ")");
   return data;
+}
+// Israel time with its zone beside it, from Asia/Jerusalem's offset on that date (ICU gives only "GMT+2"/"GMT+3").
+// Same rule as src/dashboard/israel-time.ts; tests/dashboard/israel-time.test.ts pins both.
+function israelZone(d) {
+  const off = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Jerusalem", timeZoneName: "shortOffset" })
+    .formatToParts(d).find((p) => p.type === "timeZoneName")?.value ?? "";
+  return off === "GMT+2" ? "IST" : off === "GMT+3" ? "IDT" : off;
 }
 function time(v) {
   if (!v) return "UNKNOWN";
   const d = new Date(typeof v === "number" ? v : /^\d+$/.test(v) ? Number(v) * 1000 : v);
   return isNaN(d)
     ? "UNKNOWN"
-    : d.toLocaleString("en-GB", { timeZone: "Asia/Jerusalem", timeZoneName: "short" });
+    : d.toLocaleString("en-GB", { timeZone: "Asia/Jerusalem" }) + " " + israelZone(d);
 }
 function meter(card, name, q) {
   card.append(
@@ -418,3 +426,90 @@ async function refreshSessions() {
 }
 $("#session-window").onchange = refreshSessions;
 refreshSessions();
+
+// All tools: one row per tool. Fetched on its own, so a slow ssh to an asleep M4 never holds the other panels.
+const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
+function when(v) {
+  const d = new Date(v);
+  if (!v || isNaN(d)) return "UNKNOWN";
+  const hours = (d - Date.now()) / 3600000;
+  const rel = hours < 0 ? "passed" : hours < 1 ? "in " + Math.max(1, Math.round(hours * 60)) + " min"
+    : hours < 48 ? "in " + Math.round(hours) + " h" : "in " + Math.round(hours / 24) + " d";
+  return d.toLocaleString("en-GB", { timeZone: "Asia/Jerusalem", weekday: "short", day: "numeric",
+    month: "short", hour: "2-digit", minute: "2-digit" }) + " " + israelZone(d) + " (" + rel + ")";
+}
+function useText(label, u) {
+  if (!u) return label + ": no data";
+  const parts = [];
+  if (u.sessions !== null) parts.push(compact.format(u.sessions) + (u.sessions === 1 ? " session" : " sessions"));
+  if (u.requests !== null) parts.push(compact.format(u.requests) + " req");
+  if (u.tokens !== null) parts.push(compact.format(u.tokens) + " tok");
+  if (u.credits !== null) parts.push(u.credits.toFixed(1) + " credits");
+  return label + ": " + (parts.join(" · ") || "none");
+}
+function toolRow(t) {
+  const li = document.createElement("li");
+  li.className = "tool";
+  li.dataset.mark = t.mark;
+  const head = Object.assign(text("div", ""), { className: "tool-name" });
+  head.append(text("strong", t.name));
+  if (t.mark !== "OK") head.append(Object.assign(text("span", t.mark), { className: "mark" }));
+  const pct = Object.assign(text("div", ""), { className: "tool-pct" });
+  pct.append(text("span", t.pct === null ? "UNKNOWN % used" : Math.round(t.pct) + "% of " + (t.window || "window")));
+  if (t.pct !== null) {
+    const m = document.createElement("meter");
+    Object.assign(m, { min: 0, max: 100, low: 80, high: 95, optimum: 0, value: t.pct });
+    m.setAttribute("aria-label", t.name + " used");
+    pct.append(m);
+  }
+  const reset = Object.assign(text("div", t.pct === null ? "Resets: UNKNOWN" : "Resets " + when(t.resets_at)),
+    { className: "tool-reset" });
+  const use = Object.assign(text("div", ""), { className: "tool-use" });
+  if (t.use) use.append(text("span", useText("24 h", t.use["24h"])), text("span", useText("7 d", t.use["7d"])));
+  else use.append(text("span", "24 h / 7 d use: no data"));
+  li.append(head, pct, reset, use);
+  if (t.why) li.append(Object.assign(text("p", t.why), { className: "tool-why" }));
+  if (t.note) li.append(Object.assign(text("small", t.note), { className: "tool-note" }));
+  return li;
+}
+let toolsInflight = false, toolsRows = [], toolsLastSuccess = null;
+async function refreshTools() {
+  if (toolsInflight) return;
+  toolsInflight = true;
+  const controller = new AbortController();
+  let deadline;
+  try {
+    // Bound the complete request, including body decoding. The race also releases the
+    // refresh gate when a fetch implementation fails to settle after abort.
+    const data = await Promise.race([
+      api("tools", undefined, controller.signal),
+      new Promise((_, reject) => {
+        deadline = setTimeout(() => {
+          reject(Error("request timed out"));
+          controller.abort();
+        }, 15000);
+      }),
+    ]);
+    toolsRows = data.rows;
+    toolsLastSuccess = Date.now();
+    $("#tools").replaceChildren(...data.rows.map(toolRow));
+    const m4 = data.m4;
+    $("#tools-source").textContent = "M4 usage.json: " +
+      ({ fresh: "read", asleep: "M4 asleep, showing the last reading", missing: "missing on the M4",
+        error: "could not be read" }[m4.state] || m4.state) +
+      (m4.generated_at ? " · written " + time(m4.generated_at) : "") + " · as of " + time(Date.now());
+  } catch (e) {
+    const age = toolsLastSuccess === null ? "no successful reading yet"
+      : "last success " + Math.max(0, Math.floor((Date.now() - toolsLastSuccess) / 1000)) + " s ago";
+    const why = "All tools unavailable: " + e.message + " · " + age;
+    $("#tools").replaceChildren(...toolsRows.map(t => toolRow({ ...t,
+      pct: null, window: null, resets_at: null, use: null, mark: "UNKNOWN", why,
+    })));
+    $("#tools-source").textContent = why;
+  } finally {
+    clearTimeout(deadline);
+    toolsInflight = false;
+  }
+}
+refreshTools();
+setInterval(refreshTools, 30000);

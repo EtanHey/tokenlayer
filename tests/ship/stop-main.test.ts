@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -18,8 +18,8 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) test(`main ${signal} finish
   const preload = join(dir, 'signal-receipt.ts'), state = join(dir, 'state.json');
   writeFileSync(preload, `process.on('${signal}', () => process.stdout.write('fixture-signal-received\\n'));`);
   const columns = [...readFileSync(resolve(import.meta.dir, '../../schema/004_session_events.sql'), 'utf8')
-    .matchAll(/^    (\w+)\s+(\w+(?:\([^\n]*?\))?)/gm)].filter(m => m[1] !== 'INDEX')
-    .map(m => ({ name: m[1], type: m[2] }));
+    .matchAll(/^    (\w+)\s+(\w+(?:\((?:[^()\n]|\([^()\n]*\))*\))?)/gm)].filter(m => m[1] !== 'INDEX')
+    .map(m => ({ name: m[1], type: m[2].trim() }));
   const admitted = deferred(), ack = deferred(), received = deferred();
   const inserts: string[] = [], heartbeats: { lines: number; result: string }[] = [];
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(req) {
@@ -75,5 +75,6 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) test(`main ${signal} finish
     await child.exited;
     await Promise.all([output, stderr]);
     server.stop(true);
+    rmSync(dir, { recursive: true, force: true });
   }
 }, 10000);

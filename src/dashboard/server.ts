@@ -1,4 +1,5 @@
 import { arrangement, cappedUntil, outsideDelta, sessionsSQL, weeklyCapped } from "./advice";
+import { israelClock } from "./israel-time";
 import { spillEnabled } from "../fable/core";
 import { status } from "../fable/status";
 import { migrate } from "../fable/baseline";
@@ -16,6 +17,7 @@ import { loadEnvFiles } from "../lib/env";
 import { labelHash } from "../lib/hash";
 import { writeErr } from "../lib/egress";
 import { ClickHouse } from "../lib/clickhouse";
+import { m4Usage, toolRows, claudeUseSQL, type M4Snapshot } from "./tools";
 const STALE_MS = 300000;
 const FABLE_MODEL = "claude-fable-5-2";
 export const coverage = [
@@ -66,7 +68,10 @@ export function createHandler(o: {
   path?: string;
   events?: string;
   page?: (token: string) => string;
+  /** The M4's usage.json, cached (tests inject a fixture reader). */
+  m4?: () => Promise<M4Snapshot>;
 }) {
+  const m4 = o.m4 ?? m4Usage();
   const path = o.path ?? statePath();
   const observations = new Map<string, { at: number; weekly: number | null; fable: number | null }>();
   const outside = new Map<string, { at: string; delta: number; window: string }[]>();
@@ -194,6 +199,7 @@ export function createHandler(o: {
           })) });
         }
         if (u.pathname === "/api/burn") return json(await burn());
+        if (u.pathname === "/api/tools") return json(await tools());
         if (u.pathname === "/api/recommendation") {
           const current = await accounts();
           return json({ arrangement: arrangement(current),
@@ -375,6 +381,16 @@ export function createHandler(o: {
       };
     }));
   }
+  async function tools() {
+    // A hub failure becomes one Claude UNKNOWN row; it must not hide the vendor rows.
+    const [snap, obs, use] = await Promise.all([m4(), o.hub.observations().catch(() => null),
+      o.ch.queryJSON<any>(claudeUseSQL).catch(() => null)]);
+    return {
+      rows: toolRows({ m4: snap, claude: obs, claudeUse: use }),
+      m4: { state: snap.state, generated_at: snap.usage?.generated_at ?? null,
+        fetched_at: snap.fetched_at === null ? null : new Date(snap.fetched_at).toISOString() },
+    };
+  }
   async function burn() {
     const rawRows = await o.ch.queryJSON<{
       credential: string;
@@ -496,9 +512,7 @@ export function recommend(c: any, thresholds: any = {}, now = Date.now()) {
 }
 function clock(reset: unknown) {
   const at = parseTime(reset);
-  return !Number.isFinite(at) ? "time unknown" : new Date(at).toLocaleString("en-GB", {
-    timeZone: "Asia/Jerusalem", weekday: "short", hour: "2-digit", minute: "2-digit"
-  });
+  return !Number.isFinite(at) ? "time unknown" : israelClock(new Date(at));
 }
 
 export function resolveSession(id: string) {
