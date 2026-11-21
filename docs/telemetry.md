@@ -15,7 +15,20 @@ Drain identity columns use hashes: `credential` = `labelHash(auth_index)`,
 Quota history (5h, 7d and Fable `7d_oi` utilization, resets, status) is the `ratelimit` map of `proxy_usage`:
 the hub's rate-limit headers from every served response. There is no per-credential snapshot table.
 `credentials_snap` (schema 003) was meant for steer snapshots, but steer was never deployed, so it never had a row;
-it was removed from the schema on 2026-11-19. A hub that already has the empty table keeps it until a lead drops it.
+it was removed from the schema on 2026-11-19. A hub that already has the table keeps it until a lead runs the guarded maintenance step:
+
+```sh
+bun run schema:drop-scratch
+bun run schema:drop-scratch --apply
+```
+
+Both commands use the same `CLICKHOUSE_*` environment and login as `schema:apply`.
+The default is a dry run. They print the BEFORE/AFTER table list (name, engine, total_rows),
+count `credentials_snap` exactly first, and refuse with a nonzero exit before any drop if it
+has a row. Otherwise they count `r7_session_events_narrow` and `r7_session_events_day`;
+`--apply` drops all three. Absent tables are harmless on rerun. Run only after review,
+with writers to these retired tables absent throughout the maintenance window; the count
+and DROP are separate statements, not a transaction. `schema:apply` does not recreate them.
 
 ## Drain guarantees
 
