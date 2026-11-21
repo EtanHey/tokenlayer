@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "steer": "bun src/steer/main.ts",
     "schema:apply": "bun src/lib/schema.ts",
+    "schema:drop-scratch": "bun src/lib/drop-scratch.ts",
     "schema:repartition": "bun src/lib/session-repartition.ts",
     "drain": "bun src/drain/main.ts",
     "ship": "bun src/ship/main.ts",
