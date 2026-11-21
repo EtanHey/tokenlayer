@@ -387,7 +387,7 @@ mkdir ~/.m1-heavy.lock 2>/dev/null || { echo "held by another lane"; exit 4; }
 echo "${LANE} took $(date +%H:%M)" >> ~/.m1-heavy.log
 [[ -z $next ]] || : > ~/.m1-heavy.next
 free=$(df -g / | awk 'NR==2{print $4}')
-(( free >= 44 )) || { echo "${LANE} released $(date +%H:%M)" >> ~/.m1-heavy.log; rmdir ~/.m1-heavy.lock; echo "df -g / reads $free, under 44"; exit 5; }`, 'apply', 'lock');
+(( free >= 40 )) || { echo "${LANE} released $(date +%H:%M)" >> ~/.m1-heavy.log; rmdir ~/.m1-heavy.lock; echo "df -g / reads $free, under 40"; exit 5; }`, 'apply', 'lock');
     if (take.code !== 0) { log(`STOP: cannot take the M1 heavy lock (${take.out}). Nothing changed.`); return { ok: false, changed, before }; }
     locked = true;
   }
