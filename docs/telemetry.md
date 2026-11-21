@@ -23,7 +23,10 @@ bun run schema:drop-scratch --apply
 ```
 
 Both commands use the same `CLICKHOUSE_*` environment and login as `schema:apply`.
-The default is a dry run. They print the BEFORE/AFTER table list (name, engine, total_rows),
+The default is a dry run. In both modes, they first scan object definitions in all databases
+for references to the three retired tables; any dependent object is named with the table it
+reads, and the command refuses before dropping anything. Re-apply current views before
+retrying if an installed view still reads a retired table. They print the BEFORE/AFTER table list (name, engine, total_rows),
 count `credentials_snap` exactly first, and refuse with a nonzero exit before any drop if it
 has a row. Otherwise they count `r7_session_events_narrow` and `r7_session_events_day`;
 `--apply` drops all three. Absent tables are harmless on rerun. Run only after review,

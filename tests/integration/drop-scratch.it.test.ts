@@ -73,6 +73,25 @@ describe.skipIf(!clickhouseBinary())("guarded scratch drop → real local ClickH
     }
   });
 
+  test("dependent views in this or another database refuse both modes without dropping anything", async () => {
+    await local.client.exec("CREATE DATABASE scratch_dependency");
+    await local.client.exec("CREATE VIEW tokenlayer.v_dep AS SELECT * FROM tokenlayer.credentials_snap");
+    await local.client.exec("CREATE VIEW scratch_dependency.v_dep AS SELECT * FROM tokenlayer.r7_session_events_day");
+    try {
+      for (const args of [[], ["--apply"]]) {
+        const result = await run(args);
+        expect(result.code).not.toBe(0);
+        expect(result.stdout).toContain("DEPENDENT tokenlayer.v_dep reads credentials_snap");
+        expect(result.stdout).toContain("DEPENDENT scratch_dependency.v_dep reads r7_session_events_day");
+        expect(result.stdout + result.stderr).toContain("STOP");
+        expect(await remaining()).toHaveLength(3);
+      }
+    } finally {
+      await local.client.exec("DROP VIEW tokenlayer.v_dep SYNC");
+      await local.client.exec("DROP DATABASE scratch_dependency SYNC");
+    }
+  });
+
   test("absent credentials is a no-op while existing scratch tables are removed", async () => {
     await local.client.exec("DROP TABLE tokenlayer.credentials_snap SYNC");
     const result = await run(["--apply"]);

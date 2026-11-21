@@ -2,6 +2,7 @@ import { ClickHouse, fixed } from "./clickhouse";
 import { installErrorHandlers, writeOut } from "./egress";
 
 const TABLES = ["credentials_snap", "r7_session_events_narrow", "r7_session_events_day"] as const;
+type Dependency = { database: string; name: string; create_table_query: string };
 type Table = { name: string; engine: string; total_rows: string | number | null };
 
 /** Explicit maintenance step; never called by schema:apply. Uses its same fixed database and login. */
@@ -16,6 +17,18 @@ export async function dropScratch(ch: ClickHouse, apply = false): Promise<void> 
   const before = await list();
   print("BEFORE", before);
   const present = new Set(before.map(table => table.name));
+  // View dependencies are not reliably tracked by ClickHouse. Scan definitions across ALL databases.
+  // Token boundaries also match quoted and database-qualified identifiers, without matching suffixes.
+  const objects = await ch.queryJSON<Dependency>(
+    "SELECT database, name, create_table_query FROM system.tables " +
+    "WHERE NOT (database = 'tokenlayer' AND name IN ('credentials_snap', 'r7_session_events_narrow', 'r7_session_events_day'))");
+  let dependent = false;
+  for (const object of objects) for (const table of TABLES) {
+    if (!new RegExp(`(^|[^a-z0-9_$])${table}([^a-z0-9_$]|$)`, "i").test(object.create_table_query)) continue;
+    writeOut(`DEPENDENT ${object.database}.${object.name} reads ${table}`);
+    dependent = true;
+  }
+  if (dependent) throw new Error("STOP: dependent objects exist; nothing dropped");
   for (const table of TABLES) {
     if (!present.has(table)) {
       writeOut(`${table} absent`);
@@ -32,7 +45,7 @@ export async function dropScratch(ch: ClickHouse, apply = false): Promise<void> 
     }
   }
   if (apply) {
-    for (const table of TABLES) await ch.exec(`DROP TABLE IF EXISTS tokenlayer.${table} SYNC`);
+    for (const table of TABLES) if (present.has(table)) await ch.exec(`DROP TABLE IF EXISTS tokenlayer.${table} SYNC`);
   } else {
     writeOut("DRY RUN: nothing dropped; use --apply to drop the three scratch tables");
   }
