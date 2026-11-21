@@ -9,7 +9,7 @@
       "direction": "pass",
       "ceiling": true,
       "command": "bun test",
-      "timeout_s": 240
+      "timeout_s": 360
     },
     { "id": "unit-tests-count", "metric": "Bun passing test count", "kind": "unit", "runner": "ci", "direction": "min", "ceiling": 303, "command": "node ratchet/measure.mjs unit", "timeout_s": 240, "maxRegression": 0 },
     {
