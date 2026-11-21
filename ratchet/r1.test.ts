@@ -64,17 +64,17 @@ test('50k-line synthetic fixture is deterministic and fixed', () => {
   expect(hash.digest('hex')).toBe('ed030351f809ba3f2c432f68c7ff915c018dc9da14223d50755c9c97123b7810');
 });
 
-// #211 changes token counters/model to Nullable; the frozen replay still has 50k rows.
+// #211 is on main; restore the 2% query budgets without migration allowances.
 const nullableMigration = [
-  ['burn-by-role-read_bytes', 1700204, 1900220, 0.118],
-  ['burn-by-role-result_bytes', 6090, 6878, 0.13],
-  ['cache-misses-read_bytes', 1542000, 1642000, 0.065],
-  ['cache-misses-result_bytes', 544, 673, 0.238],
+  ['burn-by-role-read_bytes', 1700204, 1700204 + 1700204 * 0.02, 0.02],
+  ['burn-by-role-result_bytes', 6090, 6090 + 6090 * 0.02, 0.02],
+  ['cache-misses-read_bytes', 1542000, 1542000 + 1542000 * 0.02, 0.02],
+  ['cache-misses-result_bytes', 544, 544 + 544 * 0.02, 0.02],
 ] as const;
-test('nullable query migration admits measured type overhead and rejects one extra byte', () => {
+test('nullable query migration retains 2% budgets and rejects one extra byte', () => {
   for (const [id, main, measured] of nullableMigration) {
     const row = rows.find(r => r.id === id);
-    expect(row?.allowance).toBe(measured - main);
+    expect(row?.allowance).toBeUndefined();
     expect(budget(row, main)).toBe(measured);
     expect(evaluate(row, measured, main)).toBe(true);
     expect(evaluate(row, measured + 1, main)).toBe(false);
