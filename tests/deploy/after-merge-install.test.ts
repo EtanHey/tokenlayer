@@ -138,6 +138,15 @@ describe('dry run', () => {
 describe('apply', () => {
   const applied = (calls: Call[]) => [...new Set(calls.filter(c => c.kind === 'apply' && c.id !== 'lock' && !c.script.includes('touch "$MARK/')).map(c => c.id))];
 
+  test('the generated apply script gates free disk at 40 GiB, not 44', async () => {
+    const { calls, exec } = mock();
+    await run({ ...o, ...quiet, apply: true, exec });
+    const script = calls.find(c => c.id === 'lock' && c.kind === 'apply')!.script;
+    expect(script).toContain('(( free >= 40 ))');
+    expect(script).toContain('under 40');
+    expect(script).not.toContain('44');
+  });
+
   test('stops at the first failed check: nothing after it runs, rollback for what changed, newest first, lock released', async () => {
     const { calls, exec } = mock(c => (c.kind === 'verify' && c.id === 'm1-schema' ? 1 : undefined));
     lines.length = 0;
