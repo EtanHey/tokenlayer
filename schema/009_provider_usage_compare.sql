@@ -28,7 +28,11 @@ WITH streams AS (
     ) AS raw_flags USING (machine, path, generation)
 ), token_totals AS (
     SELECT toDate(ts) AS day, provider,
-           sumOrNull(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens
+           -- A missing counter must not erase the measured counters on the same line.
+           -- Keep an entirely unknown line NULL rather than reporting measured zero.
+           sumOrNull(if(isNull(input_tokens) AND isNull(output_tokens) AND isNull(cache_read_tokens) AND isNull(cache_creation_tokens),
+                        NULL, coalesce(input_tokens, 0) + coalesce(output_tokens, 0) +
+                              coalesce(cache_read_tokens, 0) + coalesce(cache_creation_tokens, 0))) AS tokens
     FROM tokenlayer.v_session_events_context INNER JOIN streams USING (machine, path, generation)
     WHERE provider IN ('claude', 'codex', 'antigravity') AND ts > toDateTime64(0, 3, 'UTC')
     GROUP BY day, provider

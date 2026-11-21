@@ -64,13 +64,30 @@ test('50k-line synthetic fixture is deterministic and fixed', () => {
   expect(hash.digest('hex')).toBe('ed030351f809ba3f2c432f68c7ff915c018dc9da14223d50755c9c97123b7810');
 });
 
+// #211 changes token counters/model to Nullable; the frozen replay still has 50k rows.
+const nullableMigration = [
+  ['burn-by-role-read_bytes', 1700204, 1900220, 0.118],
+  ['burn-by-role-result_bytes', 6090, 6878, 0.13],
+  ['cache-misses-read_bytes', 1542000, 1642000, 0.065],
+  ['cache-misses-result_bytes', 544, 673, 0.238],
+] as const;
+test('nullable query migration admits measured type overhead and rejects one extra byte', () => {
+  for (const [id, main, measured] of nullableMigration) {
+    const row = rows.find(r => r.id === id);
+    expect(row?.allowance).toBe(measured - main);
+    expect(budget(row, main)).toBe(measured);
+    expect(evaluate(row, measured, main)).toBe(true);
+    expect(evaluate(row, measured + 1, main)).toBe(false);
+  }
+});
+
 test('deterministic query policy is tight; CI timing is report-only and M1 twins retain gates', () => {
   for (const name of ['sessions-between', 'burn-by-role', 'cache-misses']) {
     for (const metric of ['read_rows', 'read_bytes', 'result_rows', 'result_bytes', 'memory_usage']) {
       const row = rows.find(r => r.id === `${name}-${metric}`);
       expect(row?.runner).toBe('ci');
       expect(row?.reportOnly).not.toBe(true);
-      expect(row?.growth).toBe(metric === 'memory_usage' ? 0.05 : 0.02);
+      expect(row?.growth).toBe(nullableMigration.find(([id]) => id === row?.id)?.[3] ?? (metric === 'memory_usage' ? 0.05 : 0.02));
       expect(evaluate(row, 30000, 10000)).toBe(false);
     }
   }
