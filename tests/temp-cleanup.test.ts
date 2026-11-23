@@ -14,7 +14,12 @@ test.skipIf(process.env.TOKENLAYER_TEMP_GUARD_CHILD === '1')('full suite leaves 
       stdout: 'pipe', stderr: 'pipe', timeout: 180000,
     });
     const stderr = child.stderr.toString();
-    const diagnostics = stderr.split('\n').slice(-60).join('\n');
+    const lines = stderr.split('\n');
+    const firstFailure = lines.findIndex(line => line.includes('(fail)'));
+    const failures = lines.filter(line => line.includes('(fail)'));
+    const context = firstFailure < 0 ? lines.slice(-40)
+      : lines.slice(Math.max(0, firstFailure - 40), firstFailure + 41);
+    const diagnostics = [...failures, ...context, ...lines.slice(-8)].join('\n');
     expect(child.exitCode, diagnostics).toBe(0);
     const passed = Number(/(?:^|\n)\s*(\d+) pass\b/.exec(stderr)?.[1] ?? 0);
     expect(passed, diagnostics).toBeGreaterThanOrEqual(1000);
