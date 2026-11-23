@@ -1,3 +1,4 @@
+import { tmpdir } from 'node:os';
 import { test, expect, spyOn, afterEach } from 'bun:test';
 import * as fs from 'node:fs';
 import { join } from 'node:path';
@@ -9,7 +10,7 @@ const owned = new Set<string>();
 afterEach(() => { for (const path of owned) fs.rmSync(path, { recursive: true, force: true }); owned.clear(); });
 const sha = (b: Buffer | string) => createHash('sha256').update(b).digest('hex');
 function fixture(bytes = Buffer.from('\ufeff{\r\n  "x":"שלום🌍"\r\n}\tTAIL')) {
-  const dir = fs.mkdtempSync(join(fs.realpathSync('/tmp'), 'tokenlayer-reader-')); owned.add(dir);
+  const dir = fs.mkdtempSync(join(fs.realpathSync(tmpdir()), 'tokenlayer-reader-')); owned.add(dir);
   const source = join(dir, 'source'), out = join(dir, 'out');
   fs.writeFileSync(source, bytes, { mode: 0o600, flag: 'wx' });
   let calls = 0;

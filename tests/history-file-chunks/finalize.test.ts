@@ -1,3 +1,4 @@
+import { tmpdir } from 'node:os';
 import { test, expect, afterAll, afterEach, spyOn } from 'bun:test';
 import * as fs from 'node:fs';
 import { join } from 'node:path';
@@ -87,7 +88,7 @@ test('concrete FINAL checks full metadata and actual raw proof, strict coverage 
 });
 
 async function acquisition(bytes: Buffer) {
-  const dir = fs.mkdtempSync(join(fs.realpathSync(process.env.FINALIZE_TEST_ROOT ?? '/tmp'), 'finalize-')); owned.add(dir);
+  const dir = fs.mkdtempSync(join(fs.realpathSync(process.env.FINALIZE_TEST_ROOT ?? tmpdir()), 'finalize-')); owned.add(dir);
   const path = join(dir, 'source'), output = join(dir, 'acquired'), ledger = join(dir, 'ledger'); fs.writeFileSync(path, bytes, { flag: 'wx', mode: 0o600 });
   let calls = 0; const free = spyOn(custodyOps, 'free').mockImplementation(() => { calls++; return 64 * 1024 ** 3; });
   const r = acquireFile({ path, custodyMachine: 'owned', sourceFormat: 'opaque', wholeBytes: bytes.length, wholeHash: sha(bytes), stat: statPin(fs.statSync(path, { bigint: true })), method: 'owned-finalize', observedAt: '2026-11-07T00:00:00.000Z', evidenceHash: 'a'.repeat(64) }, output);
