@@ -23,7 +23,7 @@ const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(req): Pro
   if (sql.includes(' FINAL ')) return json([...sql.matchAll(/\('([a-f0-9]{64})','([a-f0-9]{64})'\)/g)].map(m => rows.get(m[1] + ':' + m[2])).filter(Boolean));
   return new Response('UNEXPECTED', { status: 400 });
 } });
-afterAll(async () => { await server.stop(true); console.log('CORRECTION_B_STOPPED ' + JSON.stringify({ root, requests, pending: server.pendingRequests })); });
+afterAll(async () => { await server.stop(true); fs.rmSync(root, { recursive: true, force: true }); console.log('CORRECTION_B_STOPPED ' + JSON.stringify({ root, requests, pending: server.pendingRequests })); });
 const cooperative: FinalAdmission = async b => ({ admitted: true, bindingHash: b.bindingHash });
 for (const fault of ['before-release', 'after-release', 'before-close-fsync', 'success']) test('pending close ownership: ' + fault, async () => {
   const dir = fs.mkdtempSync(join(root, 'case-')), source = join(dir, 'source'), acquired = join(dir, 'acquired'), ledger = join(dir, 'ledger'), bytes = Buffer.from('tiny');

@@ -6,10 +6,13 @@ import { join } from 'node:path';
 const secret = 'sk-syntheticEgressSentinel123456789';
 const root = join(import.meta.dir, '../..');
 async function run(main: string, env: Record<string, string> = {}, preload?: string, args: string[] = []) {
-  const proc = Bun.spawn([process.execPath, ...(preload ? ['--preload', preload] : []), `src/${main}/main.ts`, ...args], {
-    cwd: root, env: { PATH: process.env.PATH, HOME: tmpdir(), TOKENLAYER_ENV: '/dev/null', TOKENLAYER_ENV_FILES: '/dev/null', ...env }, stdout: 'pipe', stderr: 'pipe',
-  });
-  return { out: await new Response(proc.stdout).text(), err: await new Response(proc.stderr).text(), code: await proc.exited };
+  const home = mkdtempSync(join(tmpdir(), 'egress-home-'));
+  try {
+    const proc = Bun.spawn([process.execPath, ...(preload ? ['--preload', preload] : []), `src/${main}/main.ts`, ...args], {
+      cwd: root, env: { PATH: process.env.PATH, HOME: home, TOKENLAYER_ENV: '/dev/null', TOKENLAYER_ENV_FILES: '/dev/null', ...env }, stdout: 'pipe', stderr: 'pipe',
+    });
+    return { out: await new Response(proc.stdout).text(), err: await new Response(proc.stderr).text(), code: await proc.exited };
+  } finally { rmSync(home, { recursive: true, force: true }); }
 }
 function safe(result: { err: string }) {
   expect(result.err).toContain('[redacted]');

@@ -1,10 +1,10 @@
-import { expect, test, spyOn } from 'bun:test';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync as createTemp, rmSync as removeTemp } from 'node:fs';
+import { afterEach, expect, test, spyOn } from 'bun:test';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StreamingHistoryClient, RESERVE, MARGIN } from '../../scripts/history/stream';
 test('headroom charges reserve, margin and existing reservations exactly once; unknown fails closed', async () => {
-    const client = new StreamingHistoryClient({ url: 'unused', user: '', password: '', database: 'tokenlayer' }, { ledger: join(mkdtempSync(join(tmpdir(), 'history-guard-')), 'ledger'), manifest: 'fixture', run: 'fixture', sessionId: 'native' });
+    const client = new StreamingHistoryClient({ url: 'unused', user: '', password: '', database: 'tokenlayer' }, { ledger: join(ownedTemp(join(tmpdir(), 'history-guard-')), 'ledger'), manifest: 'fixture', run: 'fixture', sessionId: 'native' });
     const allocation = 12345;
     const query = spyOn(client, 'queryJSON');
     for (const reserve of [0, RESERVE]) {
@@ -20,3 +20,7 @@ test('headroom charges reserve, margin and existing reservations exactly once; u
     }
     query.mockRestore();
 });
+
+const ownedDirs = new Set<string>();
+function ownedTemp(prefix: string) { const dir = createTemp(prefix); ownedDirs.add(dir); return dir; }
+afterEach(() => { for (const dir of ownedDirs) removeTemp(dir, { recursive: true, force: true }); ownedDirs.clear(); });

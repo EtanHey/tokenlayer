@@ -1,4 +1,5 @@
-import { test, expect } from "bun:test";
+import { mkdtempSync as createTemp, rmSync as removeTemp } from 'node:fs';
+import { afterEach, test, expect } from "bun:test";
 import { createHandler } from "../../src/dashboard/server";
 // Provider-shaped, so a future redaction regex is exercised too (r5).
 const leak = "sk-ant-api03-" + "q".repeat(80);
@@ -32,9 +33,8 @@ test("identity, CSRF and safe failures", async () => {
   ).toBe(403);
 });
 test("GET contracts with fake hub and ClickHouse; invalid writes cannot mutate", async () => {
-  const { mkdtempSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
-  const dir = mkdtempSync(tmpdir() + "/dashboard-");
+  const dir = ownedTemp(tmpdir() + "/dashboard-");
   const handler = createHandler({
     logins: ["owner"],
     origin: "https://dash.test",
@@ -82,3 +82,7 @@ test("unsupported methods advertise allowed methods", async () => {
   expect(response.status).toBe(405);
   expect(response.headers.get("Allow")).toBe("GET, POST");
 });
+
+const ownedDirs = new Set<string>();
+function ownedTemp(prefix: string) { const dir = createTemp(prefix); ownedDirs.add(dir); return dir; }
+afterEach(() => { for (const dir of ownedDirs) removeTemp(dir, { recursive: true, force: true }); ownedDirs.clear(); });

@@ -35,10 +35,21 @@ const dirs: string[] = [];
 const procs: ReturnType<typeof Bun.spawn>[] = [];
 let socket: WebSocket | undefined;
 afterAll(async () => {
+  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ id: 0, method: "Browser.close" }));
+  for (const p of procs) {
+    const timer = setTimeout(() => { if (p.exitCode === null) p.kill("SIGTERM"); }, 3000);
+    try { await p.exited; } finally { clearTimeout(timer); }
+  }
   socket?.close();
-  for (const p of procs) p.kill();
-  await Promise.all(procs.map(p => p.exited));
-  for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) {
+    for (let attempt = 0;; attempt++) {
+      try { rmSync(d, { recursive: true, force: true }); break; }
+      catch (error) {
+        if (attempt >= 9 || !["ENOTEMPTY", "EBUSY", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+        await Bun.sleep(100);
+      }
+    }
+  }
 });
 
 function serve(snap: M4Snapshot) {
@@ -77,11 +88,12 @@ async function launch() {
     if (p.exitCode !== null) throw new Error(`Chrome exited before startup (exit ${p.exitCode})`);
     return ms;
   };
-  const dir = mkdtempSync(tmpdir() + "/dash-chrome-");
+  // Short profile name leaves room for Chrome's Linux singleton socket below TMPDIR.
+  const dir = mkdtempSync(tmpdir() + "/c-");
   dirs.push(dir);
   const p = Bun.spawn([chrome!, "--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + dir, "--no-first-run",
     "--no-default-browser-check", "--disable-gpu", "--disable-extensions", ...(process.platform === "linux" ? ["--no-sandbox"] : []),
-    "about:blank"], { stdout: "ignore", stderr: "ignore" });
+    "about:blank"], { env: { ...process.env, TMPDIR: dir, TMP: dir, TEMP: dir }, stdout: "ignore", stderr: "ignore" });
   procs.push(p);
   const portFile = join(dir, "DevToolsActivePort");
   while (!existsSync(portFile)) { remaining(); await Bun.sleep(50); }

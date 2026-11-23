@@ -1,4 +1,5 @@
-import { test, expect, spyOn } from 'bun:test';
+import { mkdtempSync as createTemp, rmSync as removeTemp } from 'node:fs';
+import { afterEach, test, expect, spyOn } from 'bun:test';
 import * as fs from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -7,7 +8,7 @@ import { acquireFile, statPin, type Receipt } from '../../src/history-file-chunk
 import { custodyOps } from '../../src/metadata/private-fs';
 
 for (const phase of ['precommit', 'postcommit'] as const) test(`outer close fault ${phase} preserves primary/result and attempts all anchors`, () => {
-  const dir = fs.realpathSync(fs.mkdtempSync(join(process.env.FILE_CHUNKS_TEST_ROOT ?? tmpdir(), `cleanup-${phase}-`)));
+  const dir = fs.realpathSync(ownedTemp(join(process.env.FILE_CHUNKS_TEST_ROOT ?? tmpdir(), `cleanup-${phase}-`)));
   const path = join(dir, 'source'), out = join(dir, 'out'), bytes = Buffer.from('owned-close-fixture');
   fs.writeFileSync(path, bytes, { flag: 'wx', mode: 0o600 });
   const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
@@ -38,3 +39,7 @@ for (const phase of ['precommit', 'postcommit'] as const) test(`outer close faul
   else { expect(error).toBe(''); expect(value).toEqual(JSON.parse(fs.readFileSync(join(out, 'manifest.json'), 'utf8'))); expect(value?.manifest.acquisitionComplete).toBe(true); }
   expect(skipped).toHaveLength(0); expect(closes).toBe(opens); expect(fs.readFileSync(path)).toEqual(bytes);
 });
+
+const ownedDirs = new Set<string>();
+function ownedTemp(prefix: string) { const dir = createTemp(prefix); ownedDirs.add(dir); return dir; }
+afterEach(() => { for (const dir of ownedDirs) removeTemp(dir, { recursive: true, force: true }); ownedDirs.clear(); });

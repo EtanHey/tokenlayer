@@ -1,12 +1,13 @@
-import { expect, test } from 'bun:test';
-import { mkdtempSync, writeFileSync, utimesSync } from 'node:fs';
+import { mkdtempSync as createTemp, rmSync as removeTemp } from 'node:fs';
+import { afterEach, expect, test } from 'bun:test';
+import { writeFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClickHouse } from '../../src/lib/clickhouse';
 import { shipOnce } from '../../src/ship/ship';
 import { loadState } from '../../src/ship/state';
 test('allowlist bypasses cutoff only for selected files; cap and stop preserve exact progress', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'history-options-'));
+    const dir = ownedTemp(join(tmpdir(), 'history-options-'));
     const path = join(dir, 'a.jsonl');
     const line = '{"type":"fixture"}\n';
     for (const name of ['a.jsonl', 'b.jsonl']) {
@@ -26,3 +27,7 @@ test('allowlist bypasses cutoff only for selected files; cap and stop preserve e
     expect(loadState(opts.statePath).files[path].offset).toBe(33 * line.length);
     expect(inserts).toBe(2);
 });
+
+const ownedDirs = new Set<string>();
+function ownedTemp(prefix: string) { const dir = createTemp(prefix); ownedDirs.add(dir); return dir; }
+afterEach(() => { for (const dir of ownedDirs) removeTemp(dir, { recursive: true, force: true }); ownedDirs.clear(); });
