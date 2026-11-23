@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, readFileSync, realpathSync } from "node:fs";
+import { mkdtempSync as createTemp, rmSync as removeTemp } from 'node:fs';
+import { afterEach, expect, test } from "bun:test";
+import { writeFileSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { origin, manifest, repoMap, dryRun, type Inventory } from "../../src/archaeology/pipeline";
@@ -50,7 +51,7 @@ test("conflicting explicit archive declarations cannot override UNKNOWN", async 
 });
 
 test("TSV replay keeps custody metadata and ignores self-declared origin proof", () => {
-  const dir = mkdtempSync(join(tmpdir(), "archive-origin-tsv-")), path = join(dir, "inventory.tsv");
+  const dir = ownedTemp(join(tmpdir(), "archive-origin-tsv-")), path = join(dir, "inventory.tsv");
   const source = { ...row(), origin: "m1", originMachine: "m4", originProof: "trusted", originalGeneration: "invented" };
   writeFileSync(path, Object.keys(source).join("\t") + "\n" + Object.values(source).join("\t") + "\n");
   const rows = inventory(path);
@@ -83,7 +84,7 @@ test("live collection is current custody; off-root reclassification loses origin
 });
 
 test("unknown archives stay inventoried without pre-read container hashing or decoding", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "archive-origin-sources-"));
+  const dir = ownedTemp(join(tmpdir(), "archive-origin-sources-"));
   const packed = join(dir, "session.jsonl.zst"), tar = join(dir, "archive.tar");
   writeFileSync(packed, "synthetic undecodable body"); writeFileSync(tar, "synthetic invalid tar");
   const entries = manifest([row({ source_kind: "archive_dir", member_path: packed }), row({ source_kind: "tarball_member", container: tar, member_path: "session.jsonl" })], []);
@@ -108,7 +109,7 @@ test("held tar metadata retains its invalid-member-hash diagnostic without a rea
 });
 
 test("CLI persists UNKNOWN origin and observed custody on replay without raw output", () => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "archive-origin-cli-")));
+  const dir = realpathSync(ownedTemp(join(tmpdir(), "archive-origin-cli-")));
   const source = row(), input = join(dir, "inventory.tsv"), existing = join(dir, "existing.tsv"), out = join(dir, "out");
   writeFileSync(input, Object.keys(source).join("\t") + "\n" + Object.values(source).join("\t") + "\n");
   writeFileSync(existing, "machine\tsession_id\tpath\tgeneration\tcontent_hash\tcount\n");
@@ -121,3 +122,7 @@ test("CLI persists UNKNOWN origin and observed custody on replay without raw out
   expect(data[header.indexOf("status")]).toBe("needs_fetch_or_export");
   expect(JSON.parse(readFileSync(join(out, "dry-run.json"), "utf8"))).toMatchObject({ import_rows: 0, needs_fetch: 1, groups: {} });
 });
+
+const ownedDirs = new Set<string>();
+function ownedTemp(prefix: string) { const dir = createTemp(prefix); ownedDirs.add(dir); return dir; }
+afterEach(() => { for (const dir of ownedDirs) removeTemp(dir, { recursive: true, force: true }); ownedDirs.clear(); });

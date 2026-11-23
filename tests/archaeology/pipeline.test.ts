@@ -1,5 +1,6 @@
-import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, statSync, rmSync } from "node:fs";
+import { mkdtempSync as createTemp, rmSync as removeTemp } from 'node:fs';
+import { afterEach, test, expect } from "bun:test";
+import { writeFileSync, statSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expectHeld } from "./hold";
@@ -9,7 +10,7 @@ import { classify, origin, repoMap, manifest, dryRun, sha256, shipperCovers, str
 
 const row = (overrides: Partial<Inventory> = {}): Inventory => ({ machine: "M4", source_kind: "archive_dir", container: "", member_path: "/Users/etanheyman/.claude-archive/projects/old/s.jsonl", session_id: "session", harness: "claude", bytes: "1", lines: "1", first_ts: "2026-01-01T00:00:00Z", last_ts: "2026-01-01T00:00:00Z", cwd: "/Users/etanheyman/Desktop/Gits/old/.worktrees/lane", sha256: "", mtime: "", ...overrides });
 test("canonical longest candidate and repo evidence survive HOLD without changing sources", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "archaeology-"));
+  const dir = ownedTemp(join(tmpdir(), "archaeology-"));
   try {
     const a = Buffer.from('{ "sessionId":"session", "timestamp":"2026-01-01T00:00:00Z", "type":"user" }\n');
     const b = Buffer.concat([a, Buffer.from('{"sessionId":"session","type":"assistant"}\n')]);
@@ -65,7 +66,7 @@ test("archive export stays held; current exact-path coverage and invalid UTF-8 r
 test("raw preserves a UTF-8 BOM while the hash covers its exact bytes", async () => {
   const bytes = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{"sessionId":"session","type":"user"}\n')]);
   await expectHeld(manifest([row({ bytes: String(bytes.length), sha256: sha256(bytes) })], []));
-  const path=join(mkdtempSync(join(tmpdir(),"bom-bytes-")),"session.jsonl");writeFileSync(path,bytes);
+  const path=join(ownedTemp(join(tmpdir(),"bom-bytes-")),"session.jsonl");writeFileSync(path,bytes);
   const { raw } = readCompleteLines(path, 0, 7);
   expect(raw.equals(bytes)).toBe(true);
   expect(parseLine(raw.toString()).raw).toBe(bytes.toString());
@@ -208,3 +209,7 @@ test("F-8 live coverage uses explicit machine roots independent of the M4 enviro
     expect(manifest([entry],[],roots)[0].source_kind).toBe("archive_dir");
   } finally {if(prior===undefined)delete process.env.TOKENLAYER_CLAUDE_DIR;else process.env.TOKENLAYER_CLAUDE_DIR=prior;}
 });
+
+const ownedDirs = new Set<string>();
+function ownedTemp(prefix: string) { const dir = createTemp(prefix); ownedDirs.add(dir); return dir; }
+afterEach(() => { for (const dir of ownedDirs) removeTemp(dir, { recursive: true, force: true }); ownedDirs.clear(); });

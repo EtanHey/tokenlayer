@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync as createTemp, rmSync as removeTemp } from 'node:fs';
+import { afterEach, expect, test } from "bun:test";
+import { existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { project } from "../../src/metadata/run";
@@ -7,7 +8,7 @@ import { hash } from "../../src/metadata/stream";
 
 for (const mode of ["collision", "past-EOF", "sidecar"] as const) {
   test(`R2-F1 raw upstream receipts reject ${mode} before output creation`, async () => {
-    const dir = mkdtempSync(join(tmpdir(), "raw-receipt-")), path = join(dir, "input");
+    const dir = ownedTemp(join(tmpdir(), "raw-receipt-")), path = join(dir, "input");
     const raw = '{"type":"session_meta","payload":{"id":"synthetic"}}\n';
     writeFileSync(path, raw);
     const coordinatesPath = join(dir, "coordinates"), out = join(dir, "out");
@@ -26,3 +27,7 @@ for (const mode of ["collision", "past-EOF", "sidecar"] as const) {
     expect(existsSync(out)).toBe(false);
   });
 }
+
+const ownedDirs = new Set<string>();
+function ownedTemp(prefix: string) { const dir = createTemp(prefix); ownedDirs.add(dir); return dir; }
+afterEach(() => { for (const dir of ownedDirs) removeTemp(dir, { recursive: true, force: true }); ownedDirs.clear(); });
