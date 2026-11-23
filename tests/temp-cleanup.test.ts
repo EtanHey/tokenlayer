@@ -10,7 +10,7 @@ function auditParent(ci = !!process.env.CI, platform: string = process.platform,
 
 test('Linux CI audit scratch leaves room for Chrome singleton sockets', () => {
   const parent = auditParent(true, 'linux', '/home/runner/work/tokenlayer/tokenlayer');
-  const socket = join(parent, 'guard-XXXXXX', '.com.google.Chrome.XXXXXX', 'SingletonSocket');
+  const socket = join(parent, 'guard-XXXXXX', 'c-XXXXXX', '.com.google.Chrome.XXXXXX', 'SingletonSocket');
   expect(Buffer.byteLength(socket)).toBeLessThan(108);
   expect(auditParent(false, 'linux', '/repo')).toBe('/repo/docs.local/temp-cleanup');
 });
