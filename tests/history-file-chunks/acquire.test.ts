@@ -1,4 +1,9 @@
-import { test, expect, spyOn } from 'bun:test';
+import { afterEach, test, expect, spyOn } from 'bun:test';
+const tempDirs = new Set<string>();
+afterEach(() => {
+  for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true });
+  tempDirs.clear();
+});
 import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +14,7 @@ import { encodeRow, RAW_BYTES } from '../../src/lib/clickhouse';
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 function fixture(bytes = Buffer.concat([Buffer.from('\ufeff{\r\n"x":"שלום🌍"}'), Buffer.alloc(CHUNK_BYTES, 0), Buffer.from([255, 128, 32, 9])])) {
   const dir = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), 'history-chunks-'))), path = join(dir, 'source');
+  tempDirs.add(dir);
   fs.writeFileSync(path, bytes);
   const spec = { path, custodyMachine: 'synthetic-m4', sourceFormat: 'opaque-file', wholeHash: sha(bytes), wholeBytes: bytes.length,
     stat: statPin(fs.lstatSync(path, { bigint: true })), method: 'synthetic-two-pass', observedAt: '2026-11-07T00:00:00.000Z', evidenceHash: 'a'.repeat(64) };

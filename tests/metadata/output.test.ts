@@ -1,4 +1,9 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+const tempDirs = new Set<string>();
+afterEach(() => {
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+  tempDirs.clear();
+});
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync, symlinkSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -8,6 +13,7 @@ import { hash } from "../../src/metadata/stream";
 import { Database } from "bun:sqlite";
 function input(rows=1, limits: Record<string,unknown>={}) {
   const dir=mkdtempSync(join(tmpdir(),"metadata-output-")), path=join(dir,"input");
+  tempDirs.add(dir);
   const raw=Array.from({length:rows},(_,i)=>JSON.stringify({type:"session_meta",payload:{id:`s-${i}`}})+"\n").join("");
   writeFileSync(path,raw);
   const source={path,inputSha256:hash(raw),memberHash:hash(raw),physicalRepresentationHash:hash(raw),
