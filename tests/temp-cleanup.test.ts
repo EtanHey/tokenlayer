@@ -2,8 +2,21 @@ import { expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 
+// Chrome's Linux singleton socket adds ~40 bytes below TMPDIR (sun_path is 108 bytes).
+// Keep CI scratch short; developer scratch remains inside the repository.
+function auditParent(ci = !!process.env.CI, platform: string = process.platform, repo = process.cwd()) {
+  return ci && platform === 'linux' ? '/tmp' : resolve(repo, 'docs.local/temp-cleanup');
+}
+
+test('Linux CI audit scratch leaves room for Chrome singleton sockets', () => {
+  const parent = auditParent(true, 'linux', '/home/runner/work/tokenlayer/tokenlayer');
+  const socket = join(parent, 'guard-XXXXXX', '.com.google.Chrome.XXXXXX', 'SingletonSocket');
+  expect(Buffer.byteLength(socket)).toBeLessThan(108);
+  expect(auditParent(false, 'linux', '/repo')).toBe('/repo/docs.local/temp-cleanup');
+});
+
 test.skipIf(process.env.TOKENLAYER_TEMP_GUARD_CHILD === '1')('full suite leaves isolated TMPDIR empty', () => {
-  const parent = resolve('docs.local/temp-cleanup');
+  const parent = auditParent();
   mkdirSync(parent, { recursive: true });
   const isolated = mkdtempSync(join(parent, 'guard-'));
   try {
