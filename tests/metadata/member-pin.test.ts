@@ -1,5 +1,10 @@
-import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync, statSync, renameSync, symlinkSync } from "node:fs";
+import { afterEach, expect, test } from "bun:test";
+const tempDirs = new Set<string>();
+afterEach(() => {
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+  tempDirs.clear();
+});
+import { rmSync, existsSync, mkdtempSync, readFileSync, writeFileSync, statSync, renameSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -9,6 +14,7 @@ import { project } from "../../src/metadata/run";
 const raw = '{"type":"session_meta","payload":{"id":"synthetic"}}\n';
 function fixture(text = raw) {
   const dir = mkdtempSync(join(tmpdir(), "member-pin-")), path = join(dir, "synthetic.jsonl.zst");
+  tempDirs.add(dir);
   const z = Bun.spawnSync(["zstd", "-q", "-c"], { stdin: Buffer.from(text), maxBuffer: 64 * 1024 ** 2 });
   expect(z.exitCode).toBe(0); writeFileSync(path, z.stdout);
   const s = statSync(path), physicalIdentity = { dev:s.dev, ino:s.ino, size:s.size, mtimeMs:s.mtimeMs, ctimeMs:s.ctimeMs };

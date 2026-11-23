@@ -1,5 +1,10 @@
-import { expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, readFileSync, statSync } from "node:fs";
+import { afterEach, expect, test } from "bun:test";
+const tempDirs = new Set<string>();
+afterEach(() => {
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+  tempDirs.clear();
+});
+import { rmSync, mkdtempSync, writeFileSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -8,6 +13,7 @@ import { project } from "../../src/metadata/run";
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 async function run(rows: unknown[], options: Record<string, unknown> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "metadata-test-"));
+  tempDirs.add(dir);
   const raw = rows.map(x => JSON.stringify(x) + "\n").join("");
   const input = join(dir, "input.ndjson"); writeFileSync(input, raw);
   const source = { path: input, inputSha256: sha(raw), format: "raw", provider: "codex",
