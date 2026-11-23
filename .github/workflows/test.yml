@@ -15,4 +15,5 @@ jobs:
           chmod +x "$RUNNER_TEMP/clickhouse-bin/clickhouse"
           echo "$RUNNER_TEMP/clickhouse-bin" >> "$GITHUB_PATH"
       - run: bun run typecheck
-      - run: bun test
+      - name: Full suite with isolated TMPDIR audit
+        run: bun scripts/test-temp-cleanup.ts

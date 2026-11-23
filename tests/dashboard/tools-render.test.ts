@@ -35,10 +35,21 @@ const dirs: string[] = [];
 const procs: ReturnType<typeof Bun.spawn>[] = [];
 let socket: WebSocket | undefined;
 afterAll(async () => {
+  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ id: 0, method: "Browser.close" }));
+  for (const p of procs) {
+    const timer = setTimeout(() => { if (p.exitCode === null) p.kill("SIGTERM"); }, 3000);
+    try { await p.exited; } finally { clearTimeout(timer); }
+  }
   socket?.close();
-  for (const p of procs) if (p.exitCode === null) p.kill("SIGTERM");
-  await Promise.all(procs.map(p => p.exited));
-  for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) {
+    for (let attempt = 0;; attempt++) {
+      try { rmSync(d, { recursive: true, force: true }); break; }
+      catch (error) {
+        if (attempt >= 9 || !["ENOTEMPTY", "EBUSY", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+        await Bun.sleep(100);
+      }
+    }
+  }
 });
 
 function serve(snap: M4Snapshot) {

@@ -1,4 +1,3 @@
-import { tmpdir } from 'node:os';
 import { test, expect, spyOn, afterEach } from 'bun:test';
 import * as fs from 'node:fs';
 import { join } from 'node:path';
@@ -13,7 +12,7 @@ afterEach(() => { for (const path of owned) fs.rmSync(path, { recursive: true, f
 const sha = (b: Buffer | string) => createHash('sha256').update(b).digest('hex');
 const pins: WriterPins = { scopeHash: '1'.repeat(64), ownerHash: '2'.repeat(64), windowHash: '3'.repeat(64), epochHash: '4'.repeat(64), schemaHash: '5'.repeat(64), configHash: '6'.repeat(64) };
 function fixture(bytes = Buffer.from('\ufeff{\r\n "x":"שלום🌍"}\tTAIL')) {
-  const dir = fs.mkdtempSync(join(fs.realpathSync(tmpdir()), 'tokenlayer-durable-')); owned.add(dir);
+  const dir = fs.mkdtempSync(join(fs.realpathSync('/tmp'), 'tokenlayer-durable-')); owned.add(dir);
   const source = join(dir, 'source'), out = join(dir, 'out'), ledger = join(dir, 'ledger');
   fs.writeFileSync(source, bytes, { flag: 'wx', mode: 0o600 }); let calls = 0;
   const free = spyOn(custodyOps, 'free').mockImplementation(() => { calls++; return 64 * 1024 ** 3; });
