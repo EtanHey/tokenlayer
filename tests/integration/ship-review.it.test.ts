@@ -1,3 +1,4 @@
+import { recentDay } from "../support/recent-day";
 import { expect, test } from "bun:test";
 import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, statSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -10,7 +11,7 @@ import { redactText } from "../../src/lib/redact";
 import { clickhouseBinary, startLocalClickHouse } from "../../src/lib/local-clickhouse";
 
 const root = join(import.meta.dir, "../../.local");
-const stamp = { timestamp: "2026-10-28T08:00:00Z" };
+const stamp = { timestamp: `${recentDay(3)}T08:00:00Z` };
 const tokenCount = { ...stamp, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { output_tokens: 230 }, last_token_usage: { output_tokens: 230 } } } };
 
 for (const recovery of ['state loss', 'returning inode']) test.skipIf(!clickhouseBinary())(`FINAL review: late T3 ${recovery} retains two rows`, async () => {
@@ -124,7 +125,7 @@ for (const version of ["legacy", "generation"]) for (const variant of [false, tr
         .replace("ORDER BY (machine, path, generation, byte_offset, content_hash)", "ORDER BY (machine, path, generation, byte_offset)").replace(/;\s*$/, "");
     await ch.client.exec(old);
     await ch.client.exec("SYSTEM STOP MERGES tokenlayer.session_events");
-    const rows = [0, 8].map(byte_offset => ({ machine: "m", harness: "claude", path: "/p", byte_offset, ts: "2026-10-28 08:00:00.000", raw: JSON.stringify({ a: byte_offset }) }));
+    const rows = [0, 8].map(byte_offset => ({ machine: "m", harness: "claude", path: "/p", byte_offset, ts: `${recentDay(3)} 08:00:00.000`, raw: JSON.stringify({ a: byte_offset }) }));
     await ch.client.insert("session_events", rows);
     await ch.client.insert("session_events", rows.map(row => ({ ...row, harness: "t3", raw: variant && row.byte_offset === 0 ? "{\"changed\":true}" : row.raw })));
     const count = () => ch.client.queryJSON<{ n: string }>("SELECT count() AS n FROM tokenlayer.session_events FINAL");

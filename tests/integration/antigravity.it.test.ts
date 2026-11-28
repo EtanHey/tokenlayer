@@ -1,3 +1,4 @@
+import { recentDay } from "../support/recent-day";
 import { afterAll, expect } from "bun:test";
 import { beforeAll, test } from "../support/clickhouse-gate";
 import { Database } from "bun:sqlite";
@@ -15,10 +16,10 @@ beforeAll(async () => {
   dir = mkdtempSync(join(import.meta.dir, "../../.local/agy-it-"));
   cli = join(dir, "cli/brain/native-cli/.system_generated/logs/transcript.jsonl");
   t3 = join(dir, "t3/hash/antigravity-acp/brain/native-t3/.system_generated/logs/transcript.jsonl");
-  put(cli, line("2026-10-28T08:00:00.123456Z") + line());
-  put(t3, line("2026-10-29T09:00:00Z"));
+  put(cli, line(`${recentDay(3)}T08:00:00.123456Z`) + line());
+  put(t3, line(`${recentDay(2)}T09:00:00Z`));
   put(join(dir, "t3/hash/antigravity-acp/conversations/native-t3.meta"), JSON.stringify({ cwd: "/Users/u/.t3/worktrees/brainlayer/topic", mode_id: "not-a-model" }));
-  put(join(dir, "t3/hash/antigravity-acp/copied-fixture.jsonl"), line("2026-10-29T00:00:00Z"));
+  put(join(dir, "t3/hash/antigravity-acp/copied-fixture.jsonl"), line(`${recentDay(2)}T00:00:00Z`));
   const db = new Database(join(dir, "cli/conversation_summaries.db"));
   db.run("CREATE TABLE conversation_summaries (conversation_id TEXT, workspace_uris TEXT, raw_summary BLOB)");
   db.run("INSERT INTO conversation_summaries VALUES (?, ?, ?)", ["native-cli", JSON.stringify(["file:///Users/u/Gits/tokenlayer/.local/wt-synthetic"]), null]);
@@ -31,16 +32,16 @@ test("Antigravity native ids, UTC times, joined cwd, empty model and daily harne
   expect((await shipOnce(opts)).lines).toBe(3);
   const rows = await ch.client.queryJSON("SELECT session_id, harness, project, model, ts FROM tokenlayer.session_events FINAL ORDER BY path, byte_offset");
   expect(rows).toEqual([
-    { session_id: "native-cli", harness: "antigravity", project: "tokenlayer", model: "", ts: "2026-10-28 08:00:00.123" },
-    { session_id: "native-cli", harness: "antigravity", project: "tokenlayer", model: "", ts: "2026-10-28 08:00:00.123" },
-    { session_id: "native-t3", harness: "t3", project: "brainlayer", model: "", ts: "2026-10-29 09:00:00.000" },
+    { session_id: "native-cli", harness: "antigravity", project: "tokenlayer", model: "", ts: `${recentDay(3)} 08:00:00.123` },
+    { session_id: "native-cli", harness: "antigravity", project: "tokenlayer", model: "", ts: `${recentDay(3)} 08:00:00.123` },
+    { session_id: "native-t3", harness: "t3", project: "brainlayer", model: "", ts: `${recentDay(2)} 09:00:00.000` },
   ]);
   expect(await ch.client.queryJSON("SELECT repo, model, harness, sessions FROM tokenlayer.v_sessions_daily ORDER BY repo")).toEqual([
     { repo: "brainlayer", model: "(none)", harness: "t3", sessions: 1 },
     { repo: "tokenlayer", model: "(none)", harness: "antigravity", sessions: 1 },
   ]);
   const raw = await ch.client.queryJSON<{ bytes: string }>("SELECT hex(raw) AS bytes FROM tokenlayer.session_events FINAL ORDER BY path, byte_offset");
-  expect(raw.map(r => r.bytes)).toEqual([line("2026-10-28T08:00:00.123456Z"), line(), line("2026-10-29T09:00:00Z")].map(s => Buffer.from(s).toString("hex").toUpperCase()));
+  expect(raw.map(r => r.bytes)).toEqual([line(`${recentDay(3)}T08:00:00.123456Z`), line(), line(`${recentDay(2)}T09:00:00Z`)].map(s => Buffer.from(s).toString("hex").toUpperCase()));
 });
 
 test("Antigravity append, checkpoint loss and rewrite keep native session counts stable", async () => {

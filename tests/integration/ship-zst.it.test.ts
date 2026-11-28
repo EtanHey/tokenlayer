@@ -1,3 +1,4 @@
+import { recentDay } from "../support/recent-day";
 import { expect } from "bun:test";
 import { test } from "../support/clickhouse-gate";
 import { mkdirSync, mkdtempSync, writeFileSync, unlinkSync, utimesSync } from "node:fs";
@@ -11,8 +12,8 @@ test("real FINAL: plain → zst → replay preserves events, sessions and every 
   const scratch = join(import.meta.dir, "../../.local"); mkdirSync(scratch, { recursive: true });
   const dir = mkdtempSync(join(scratch, "zst-it-")), path = join(dir,"rollout.jsonl");
   const bytes = Buffer.from([
-    JSON.stringify({type:"session_meta",timestamp:"2026-10-29T00:00:00Z",payload:{id:"child",session_id:"parent",originator:"T3 Code"}}),
-    JSON.stringify({type:"turn_context",timestamp:"2026-10-29T00:00:01Z",payload:{model:"fixture"}}),
+    JSON.stringify({type:"session_meta",timestamp:`${recentDay(2)}T00:00:00Z`,payload:{id:"child",session_id:"parent",originator:"T3 Code"}}),
+    JSON.stringify({type:"turn_context",timestamp:`${recentDay(2)}T00:00:01Z`,payload:{model:"fixture"}}),
   ].join("\r\n")+"\r\n");
   const opts = { machine:"m4", roots:[{kind:"codex" as const,dir}], statePath:join(dir,"state"),clickhouse:ch.client,rateBytesPerSec:0,batchBytes:64 };
   try {

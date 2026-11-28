@@ -1,3 +1,4 @@
+import { recentDay } from "../support/recent-day";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -68,7 +69,7 @@ describe.skipIf(!clickhouseBinary())("session restore → real ClickHouse and CL
 
   test("rejects corrupt, legacy, gapped, overlapping and conflicting archives before publishing", async () => {
     const raw = Buffer.from('{"type":"user"}\n');
-    const base = { machine: "bad", path: "/bad.jsonl", generation: "g", byte_offset: 0, line_bytes: raw.length, raw: raw.toString(), content_hash: hash(raw), ts: "2026-10-28 00:00:00.000" };
+    const base = { machine: "bad", path: "/bad.jsonl", generation: "g", byte_offset: 0, line_bytes: raw.length, raw: raw.toString(), content_hash: hash(raw), ts: `${recentDay(3)} 00:00:00.000` };
     const variants = [
       [{ content_hash: "legacy:" + hash(raw) }], [{ line_bytes: raw.length + 1 }], [{ content_hash: "0".repeat(64) }],
       [{ byte_offset: 1 }], [{}, { byte_offset: raw.length + 1 }], [{}, { byte_offset: 1 }],
