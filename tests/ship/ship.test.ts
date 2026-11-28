@@ -1,3 +1,4 @@
+import { FIXTURE_HOME, recentDay } from "../support/recent-day";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -35,9 +36,9 @@ function fakeClickHouse() {
 }
 
 const claudeLine = (i: number, entrypoint = "cli") =>
-  JSON.stringify({ type: "user", sessionId: "s-1", cwd: "/Users/u/Gits/golems", entrypoint, timestamp: `2026-10-28T08:00:0${i}.000Z`, message: { role: "user", content: `m${i}` } });
+  JSON.stringify({ type: "user", sessionId: "s-1", cwd: `${FIXTURE_HOME}/Gits/golems`, entrypoint, timestamp: `${recentDay(3)}T08:00:0${i}.000Z`, message: { role: "user", content: `m${i}` } });
 const codexMeta = (originator: string) =>
-  JSON.stringify({ timestamp: "2026-10-28T08:00:00.000Z", type: "session_meta", payload: { id: "c-1", cwd: "/Users/u/Gits/brainlayer", originator } });
+  JSON.stringify({ timestamp: `${recentDay(3)}T08:00:00.000Z`, type: "session_meta", payload: { id: "c-1", cwd: `${FIXTURE_HOME}/Gits/brainlayer`, originator } });
 
 let root: string;
 let db: ReturnType<typeof fakeClickHouse>;
@@ -296,7 +297,7 @@ describe("shipOnce", () => {
   });
 
   test("a file whose harness is decided late is reshipped so all its rows agree", async () => {
-    const queueOp = JSON.stringify({ type: "queue-operation", sessionId: "s-1", timestamp: "2026-10-28T08:00:00Z" });
+    const queueOp = JSON.stringify({ type: "queue-operation", sessionId: "s-1", timestamp: `${recentDay(3)}T08:00:00Z` });
     writeFileSync(claudeFile(), `${queueOp}\n`);
     await shipOnce(opts);
     expect(db.rows[0].harness).toBe("claude");
@@ -310,7 +311,7 @@ describe("shipOnce", () => {
   });
 
   test("a reshipped chunk with changed rows gets a new dedup token; an identical retry keeps it", async () => {
-    const queueOp = JSON.stringify({ type: "queue-operation", sessionId: "s-1", timestamp: "2026-10-28T08:00:00Z" });
+    const queueOp = JSON.stringify({ type: "queue-operation", sessionId: "s-1", timestamp: `${recentDay(3)}T08:00:00Z` });
     writeFileSync(claudeFile(), `${queueOp}\n`);
     await shipOnce({ ...opts, batchBytes: 1 });
     const first = db.tokens[0];
@@ -364,7 +365,7 @@ describe("shipOnce", () => {
       sessionId: "s-1",
       cwd: "/Users/u/Gits/golems",
       entrypoint: "cli",
-      timestamp: "2026-10-28T08:00:01Z",
+      timestamp: `${recentDay(3)}T08:00:01Z`,
       message: { role: "user", content: [{ type: "tool_result", content: [{ type: "text", text: `$ cat auth.json\n${authFile}\nexport ANTHROPIC_API_KEY=${key}` }] }] },
     });
     writeFileSync(claudeFile(), `${toolResult}\n{"broken": "Authorization: Bearer fakeBearer0123456789abcdef ${email}\n`);

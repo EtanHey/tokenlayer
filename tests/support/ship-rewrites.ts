@@ -1,3 +1,4 @@
+import { recentDay } from "./recent-day";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -98,7 +99,7 @@ export function registerRewriteTests(mode: "normal" | "property"): void {
         `SELECT generation, byte_offset, raw, harness FROM tokenlayer.session_events FINAL
          WHERE machine = '${name}' ORDER BY generation, byte_offset`);
       const source = (middle: string) => ["common", "original-middle", "tail"].map((s, i) =>
-        line(i === rewriteAt ? middle : s, { timestamp: "2026-10-28T08:00:00Z" })).join("\n") + "\n";
+        line(i === rewriteAt ? middle : s, { timestamp: `${recentDay(3)}T08:00:00Z` })).join("\n") + "\n";
       writeFileSync(file, `${line("old")}\n${line("old-tail")}\n`);
       await shipOnce(o);
       const old = await snapshot();
@@ -158,7 +159,7 @@ export function registerRewriteTests(mode: "normal" | "property"): void {
         const { file, o } = setup(`it-immutable-${trial}`, 128 + random() % 2048);
         o.saveEveryMs = -1;
         const source = (revision = 0) => Array.from({ length: 3 + random() % 4 }, (_, i) => line(`r${revision}-${i}-${"x".repeat(random() % 30)}`,
-          { entrypoint: "cli", timestamp: "2026-10-28T08:00:00Z" })).join("\n") + "\n";
+          { entrypoint: "cli", timestamp: `${recentDay(3)}T08:00:00Z` })).join("\n") + "\n";
         writeFileSync(file, source());
         writeFileSync(`${file}.parked`, source());
         const acknowledged = new Set<string>();
@@ -190,14 +191,14 @@ export function registerRewriteTests(mode: "normal" | "property"): void {
             rmSync(o.statePath, { force: true });
             if (random() % 2) rmSync(`${o.statePath}.generations`, { force: true });
           } else if (boundaries.includes(op)) {
-            appendFileSync(file, line(`crash-${revision}`, { entrypoint: "cli", timestamp: "2026-10-28T08:00:00Z" }) + "\n");
+            appendFileSync(file, line(`crash-${revision}`, { entrypoint: "cli", timestamp: `${recentDay(3)}T08:00:00Z` }) + "\n");
             await killAt(o, op, 1);
             kills++;
             await check();
           } else {
             const lines = readFileSync(file, "utf8").trimEnd().split("\n");
             const index = op === "head" ? 0 : op === "tail" ? lines.length - 1 : Math.floor(lines.length / 2);
-            lines[index] = line(`rewrite-${revision}-${"y".repeat(random() % 40)}`, { entrypoint: "cli", timestamp: "2026-10-28T08:00:00Z" });
+            lines[index] = line(`rewrite-${revision}-${"y".repeat(random() % 40)}`, { entrypoint: "cli", timestamp: `${recentDay(3)}T08:00:00Z` });
             writeFileSync(file, lines.join("\n") + "\n");
           }
           await ship();
@@ -296,7 +297,7 @@ export function registerRewriteTests(mode: "normal" | "property"): void {
 
       test("returning a previously rewritten inode cannot overwrite its original archive", async () => {
         const { file, o } = setup("it-returning-inode");
-        const source = (head: string) => [head, "tail"].map((s) => line(s, { timestamp: "2026-10-28T08:00:00Z" })).join("\n") + "\n";
+        const source = (head: string) => [head, "tail"].map((s) => line(s, { timestamp: `${recentDay(3)}T08:00:00Z` })).join("\n") + "\n";
         writeFileSync(file, source("old"));
         const inode = statSync(file).ino;
         await shipOnce(o);
