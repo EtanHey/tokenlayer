@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """MODEL_ONLY: routing assumptions and a proposed controller; no hub operations."""
-import argparse, hashlib, json, os, re, signal, subprocess, tempfile, time
+import argparse, hashlib, json, os, platform, re, signal, subprocess, tempfile, time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-SAFETY = "NoRejectedWhileOtherAllowed NoStaleAsCurrent FablePreference SoonestResetFirst SingleWriter"
+SAFETY = "NoFailWhileOtherAllowed NoKnownRejectedFirstTry NoStaleAsCurrent NoFalseActive FablePreference SoonestResetFirst SingleWriter"
+TEMPORAL = {"NoStrand", "ConvergesWhenFresh"}
 
 def sha(p):
     return hashlib.sha256(p.read_bytes()).hexdigest()
@@ -12,8 +13,9 @@ def sha(p):
 def classify(code, log, prop, temporal=False):
     lines = log.splitlines()
     completed = 'Model checking completed. No error has been found.'
-    expected = ([f'Error: Temporal property {prop} was violated.' if temporal else f'Error: Invariant {prop} is violated.',
-                 ('Error: The following behavior constitutes a counter-example:' if temporal else
+    diagnostic_property = "NoFailWhileOtherAllowed" if prop=="NoStrand" and code==12 else prop
+    expected = ([f'Error: Temporal property {prop} was violated.' if temporal and code==13 else f'Error: Invariant {diagnostic_property} is violated.',
+                 ('Error: The following behavior constitutes a counter-example:' if temporal and code==13 else
                   'Error: The behavior up to this point is:')] if prop else [])
     diagnostics = [line.strip() for line in lines if line.strip() != completed and
                    re.search(r'(?i)\b(?:warn(?:ing)?s?|errors?|fatal|exceptions?)\b|(?:Exception|Error)\b|\bpars(?:e|ing|er)\s+(?:failed|failure)\b', line)]
@@ -28,7 +30,7 @@ def classify(code, log, prop, temporal=False):
                 counts = (generated, distinct)
     valid = counts is not None and diagnostics == expected
     completions = [line for line in lines if line.strip() == completed]
-    valid &= (code == (13 if temporal else 12) and not completions if prop else
+    valid &= (code in ({12,13} if temporal else {12}) and not completions if prop else
               code == 0 and completions == [completed])
     return bool(valid), counts
 
@@ -45,11 +47,12 @@ def main():
     java = Path('/opt/homebrew/opt/openjdk/bin/java').resolve(strict=True)
     jar = args.jar.resolve(strict=True)
     version = subprocess.run([str(java), '-version'], capture_output=True, text=True, timeout=10)
-    assert sha(java) == pins['java_sha256'], 'JAVA_BINARY_PIN'
-    assert version.returncode == 0 and version.stderr == pins['java_version'], 'JAVA_PIN'
+    pin = next((p for p in pins['java_pins'] if sha(java)==p['sha256'] and
+                version.returncode==0 and version.stderr==p['version']), None)
+    assert pin is not None, 'JAVA_HOST_PIN'
     assert sha(jar) == pins['jar_sha256'], 'JAR_PIN'
-    tools = dict(java=str(java), java_sha256=sha(java), jar=str(jar), jar_sha256=sha(jar),
-                 java_version=version.stderr, classification='MODEL_ONLY_TARGET_PROPOSAL_CURRENT_NOT_GREEN')
+    tools = dict(machine=platform.node(), host_pin=pin['host'], java=str(java), java_sha256=sha(java), jar=str(jar), jar_sha256=sha(jar),
+                 java_version=version.stderr, classification='MODEL_ONLY_CURRENT_COUNTEREXAMPLES_TARGET_CHECKS_AND_DESIGN_FINDINGS')
     (run/'tools.json').write_text(json.dumps(tools, indent=2)+'\n')
     for p in HERE.iterdir():
         if p.is_file():
@@ -68,33 +71,59 @@ def main():
         probes.append(dict(actual=actual,expected=False))
     (run/'classifier-probes.json').write_text(json.dumps(probes,indent=2)+'\n')
     assert all(p['actual']==p['expected'] for p in probes), 'CLASSIFIER_PROBES'
-    cases = [("current-"+prop, False, prop) for prop in SAFETY.split()+["NoStrand"]]
-    cases += [("target", True, None)]
-    cases += [("target-"+p, True, p) for p in
-              ["WitnessReleaseInFlight", "WitnessRestartInFlight", "WitnessRetry"]]
-    baseline = (HERE/'Current.cfg').read_text().split()
-    assert baseline == ('SPECIFICATION Spec CONSTANT Target = FALSE INVARIANTS '+
-                        SAFETY+' PROPERTY NoStrand CHECK_DEADLOCK FALSE').split(), 'CURRENT_CFG_DRIFT'
+    # Target baseline failures are DESIGN_FINDING, never expected-green receipts.
+    cases = [("current-"+p, False, "routing", p, True, "violation") for p in
+             ["NoFailWhileOtherAllowed", "FablePreference", "SoonestResetFirst", "SingleWriter"]]
+    cases += [("current-"+p, False, "telemetry", p, True, "violation") for p in
+              ["NoStaleAsCurrent", "NoFalseActive"]]
+    cases += [("current-incident", False, "incident", "WitnessIncident", True, "violation")]
+    cases += [("current-"+p,False,"routing",p,True,"violation") for p in
+              ["WitnessAutoRetains","WitnessStoppedExclusions","WitnessCapFailure"]]
+    cases += [("target-combined", True, "routing", "SoonestResetFirst", True, "pass")]
+    cases += [("target-"+p, True,
+               "handover" if p=="SingleWriter" else "known" if p=="NoKnownRejectedFirstTry" else "progress" if p=="NoStrand" else "telemetry" if p in
+               {"NoStaleAsCurrent","NoFalseActive"} else "routing", p, True, "pass")
+              for p in SAFETY.split()+["NoStrand"]]
+    cases += [("target-restart-NoStrand",True,"restart","NoStrand",True,"pass"),
+              ("release-no-restart-NoStrand",True,"release-no-restart","NoStrand",True,"pass")]
+    cases += [("target-converges",True,"convergence","ConvergesWhenFresh",True,"pass"),
+              ("reliable-release-converges",True,"convergence-reliable","ConvergesWhenFresh",True,"pass"),
+              ("no-release-control",True,"convergence-reliable","ConvergesWhenFresh",False,"violation")]
+    cases += [("target-"+p, True, "release" if "Reset" not in p else "routing",p,True,"violation")
+              for p in ["WitnessReleaseInFlight","WitnessReleaseCompleted","WitnessReloadInFlight","WitnessRestartInFlight",
+                        "WitnessEnableFailure","WitnessDisableFailure","WitnessResetBound"]]
+    cases += [("mutant-handover", True, "handover", "SingleWriter", True, "violation"),
+              ("mutant-stale-display", True, "telemetry", "NoStaleAsCurrent", True, "violation"),
+              ("mutant-false-active", True, "telemetry", "NoFalseActive", True, "violation")]
     source = [p for directory in ("fable", "steer", "usage")
               for p in (HERE.parent.parent/"src"/directory).glob("*.ts")]
     source_hashes = {str(p.relative_to(HERE.parent.parent)): sha(p) for p in source}
     (run/"source-hashes.json").write_text(json.dumps(source_hashes, indent=2)+"\n")
     results = []
-    for name, target, prop in cases:
+    for name, target, scenario, prop, release, expected in cases:
         remaining = 900-(time.monotonic()-started)
         if remaining <= 0:
             raise TimeoutError('TOTAL_15_MINUTE_BUDGET')
         case = run/name
         case.mkdir()
         (case/'tmp').mkdir()
-        (case/'HubRouting.tla').write_bytes((run/'HubRouting.tla').read_bytes())
+        model=(run/'HubRouting.tla').read_text()
+        changes={
+          "mutant-handover": ('!.fable=FALSE, !.steer=FALSE, !.owner="new"',
+                               '!.fable=TRUE, !.steer=FALSE, !.owner="new"'),
+          "mutant-stale-display": ('IF Target THEN s.age[a][m]=0 ELSE TRUE', 'TRUE'),
+          "mutant-false-active": ('IF Target THEN Fresh(a,"Other") ELSE TRUE) /\\', 'TRUE) /\\')}
+        if name in changes:
+            old,new=changes[name]
+            assert model.count(old)==1, 'MUTANT_DRIFT'
+            model=model.replace(old,new)
+        (case/'HubRouting.tla').write_text(model)
         cfg = case/'Case.cfg'
-        if target and prop is None:
-            cfg.write_bytes((HERE/'Target.cfg').read_bytes())
-        else:
-            cfg.write_text('SPECIFICATION Spec\nCONSTANT Target='+str(target).upper()+'\n'+
-                ('PROPERTY ' if prop=='NoStrand' else 'INVARIANT ')+prop+
-                '\nCHECK_DEADLOCK FALSE\n')
+        cfg.write_text('SPECIFICATION Spec\nCONSTANTS Target='+str(target).upper()+
+            ' Scenario='+json.dumps(scenario)+' ReleaseEnabled='+str(release).upper()+'\n'+
+            ('PROPERTY ' if prop in TEMPORAL else 'INVARIANT ')+prop+'\nCHECK_DEADLOCK FALSE\n')
+        if name=='target-combined':
+            cfg.write_bytes((run/'Target.cfg').read_bytes())
         cmd = [str(java), '-Xmx512m', '-XX:ActiveProcessorCount=1', '-XX:+UseParallelGC',
                '-Djava.io.tmpdir='+str(case/'tmp'), '-cp', str(jar),
                'tlc2.TLC', '-workers', '1', '-seed', '1', '-fp', '0',
@@ -112,8 +141,11 @@ def main():
                 code = p.wait()
         log = (case/'tlc.log').read_text()
         assert len(log.encode()) <= 262144, 'BOUNDED_LOG_EXCEEDED'
-        ok, counts = classify(code, log, prop, prop=="NoStrand")
-        row = dict(name=name, expected_property=prop, exit=code, matched=ok and not timed_out,
+        violation, counts = classify(code, log, prop, prop in TEMPORAL)
+        passed, _ = classify(code, log, None)
+        finding = expected=="pass" and violation and not timed_out
+        ok = passed if expected=="pass" else violation
+        row = dict(name=name, scenario=scenario, release_enabled=release, expected_property=prop, expected=expected, design_finding=finding, exit=code, matched=ok and not timed_out,
                    timeout=timed_out, counts=counts, seconds=round(time.monotonic()-t0,3), command=cmd,
                    model_sha256=sha(case/'HubRouting.tla'),
                    config_sha256=sha(cfg), log_sha256=sha(case/'tlc.log'))
@@ -121,9 +153,11 @@ def main():
         results.append(row)
         print(f'{name}: exit={code} matched={row["matched"]} counts={counts}', flush=True)
     assert all(sha(HERE.parent.parent/p)==h for p,h in source_hashes.items()), 'SOURCE_DRIFT'
-    assert sha(java)==pins['java_sha256'] and sha(jar)==pins['jar_sha256'], 'TOOL_DRIFT'
-    summary = dict(classification='MODEL_ONLY_TARGET_PROPOSAL_CURRENT_NOT_GREEN', results=results,
+    assert sha(java)==pin['sha256'] and sha(jar)==pins['jar_sha256'], 'TOOL_DRIFT'
+    summary = dict(classification='MODEL_ONLY_CURRENT_COUNTEREXAMPLES_TARGET_CHECKS_AND_DESIGN_FINDINGS', results=results,
                    matched=sum(r['matched'] for r in results), total=len(results),
+                   design_findings=[r['name'] for r in results if r['design_finding']],
+                   invalid_runs=[r['name'] for r in results if not r['matched'] and not r['design_finding']],
                    seconds=round(time.monotonic()-started,3))
     (run/'summary.json').write_text(json.dumps(summary, indent=2)+'\n')
     print('EVIDENCE', run, flush=True)
