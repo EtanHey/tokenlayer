@@ -1,4 +1,4 @@
-import { snapshot } from './snapshot';
+import { accountFreshness, snapshot } from './snapshot';
 import { labelHash } from '../lib/hash';
 const HOUR = 3600000;
 export const projection = 'linear over last 60 min of hub quota observations';
@@ -64,11 +64,11 @@ export function enrich(input: unknown, previous: Sample[], now = Date.now()) {
         ? new Date(end).toISOString() : null};
     }
     const w = estimate('weekly',weekly), f = estimate('fable',fable);
-    return {...account, weekly_pct:weekly.pct, weekly_status:weekly.status, weekly_resets_at:weekly.resets_at,
+    return accountFreshness({...account, weekly_pct:weekly.pct, weekly_status:weekly.status, weekly_resets_at:weekly.resets_at,
       fable_pct:fable.pct, fable_status:fable.status, fable_resets_at:fable.resets_at,
       observed_at:weekly.observed_at, weekly_observed_at:weekly.observed_at, fable_observed_at:fable.observed_at,
       burn_weekly_pct_per_hour:w.burn, burn_fable_pct_per_hour:f.burn,
-      projected_weekly_empty_at:w.end, projected_fable_cap_at:f.end};
+      projected_weekly_empty_at:w.end, projected_fable_cap_at:f.end}, now);
   });
   return {...base, projection, accounts, history};
 }

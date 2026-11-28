@@ -17,7 +17,7 @@ test('priority wins, blocked credentials cannot be active, ties follow rank', ()
 });
 test('outage keeps accounts and timestamp, discards arbitrary errors', () => {
   const previous = snapshot(fixture, now);
-  expect(staleSnapshot(previous)).toEqual({...previous, stale:true, last_error:'hub unavailable'});
+  expect(staleSnapshot(previous)).toEqual({...previous, accounts:previous.accounts.map(a => ({...a, active:false, status:'stale', last_status:a.status, stale:true, observation_age_s:null})), stale:true, last_error:'hub unavailable'});
   expect(() => snapshot({files:[{id:'bad'}]}, now)).toThrow();
 });
 test('opaque labels and allowlist discard secrets even in credential IDs', () => {
@@ -44,7 +44,7 @@ for (const present of ['5h','7d']) test(`only ${present} signals mark the other 
     [`Anthropic-Ratelimit-Unified-${present}-Utilization`]:'0.12',
   }}}]},now);
   expect(data.accounts[0]![present === '5h' ? 'weekly' : 'five_hour']).toEqual({used_pct:null,resets_at:null,absent:true});
-  expect(staleSnapshot(data).accounts).toEqual(data.accounts);
+  expect(staleSnapshot(data, now).accounts).toEqual(data.accounts.map(a => ({...a, active:false, status:'stale', last_status:a.status, stale:true, observation_age_s:null})));
 });
 test('partial present signals stay unknown rather than absent', () => {
   const data = snapshot({files:[{id:'partial',provider:'claude',account_type:'oauth',quota:{signals:{'anthropic-ratelimit-unified-5h-status':'allowed'}}}]},now);
