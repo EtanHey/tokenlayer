@@ -34,7 +34,7 @@ test('real writer rejects corrupted private prior state during SSH outage', asyn
 test('stale projection drops unknown fields at every depth', () => {
   const seed = previous();
   const input = { ...seed, debug: 'opaque', accounts: seed.accounts.map(a => ({ ...a, detail: 'opaque', five_hour: { ...a.five_hour, debug: 'opaque' } })) };
-  expect(staleSnapshot(input)).toEqual({ ...seed, stale: true, last_error: 'hub unavailable' });
+  expect(staleSnapshot(input)).toEqual({ ...seed, accounts:seed.accounts.map(a => ({...a, active:false, status:'stale', last_status:a.status, stale:true, observation_age_s:null})), stale: true, last_error: 'hub unavailable' });
 });
 
 test('stale projection rejects invalid published field types', () => {

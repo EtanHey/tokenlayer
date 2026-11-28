@@ -24,9 +24,25 @@ Stale projection preserves the rollover marker and remains marked stale.
 Snapshot freshness describes collection time; unexpired utilization still comes
 from passive last-response headers, not a new upstream usage probe.
 Active means highest priority among healthy accounts, then earliest weekly reset,
-five-hour reset and credential ID, matching steer's tie order.
+five-hour reset and credential ID, matching steer's tie order, provided the account
+has a fresh observation. A stale winner is cleared; another account is not nominated
+as a routing recommendation.
 
-On failure, previous accounts and timestamp survive with stale=true and a fixed error.
+Each published account adds `stale`, `observation_age_s` and `last_status`.
+`ACCOUNT_STALE_MS` is five minutes: five 60-second writer cycles and twenty
+15-second drain cycles, matching the dashboard's existing Claude freshness bound.
+The newest valid `observed_at`, `weekly_observed_at` or `fable_observed_at` determines
+age in seconds. More than five minutes old, missing, or future-dated means
+`stale: true`, `status: "stale"` and `active: false`. Unknown age is null.
+`last_status` retains the last raw derived status (`allowed`, `rejected`, `unknown`).
+Percentages and individual window timestamps remain available as historical readings;
+a fresh Fable observation does not make an old weekly reading fresh. Readers using
+a particular window must still check that window's observation time.
+
+The top-level shape and whole-snapshot `stale` retain their existing meaning.
+On failure, previous accounts and timestamp survive with top-level stale=true and a
+fixed error; per-account ages are recomputed at publication time, including when
+loading a snapshot from before these additive fields existed.
 Before any successful retrieval the timestamp is null and accounts empty. Consumers
 must check stale. Writes use an exclusive temporary file, chmod 644 and atomic rename.
 SSH connects within 10 seconds and has an overall subprocess deadline of 25 seconds.
@@ -126,3 +142,24 @@ remaining allowance would require a broader writer rewrite, rather than
 removing a redundant dependency from this reader. No query cap is raised.
 The separate #203 tighten-back remains lead-owned; remeasure it after this
 successor rather than treating these feature measurements as its proof.
+
+## Readers in this repository
+
+- `src/usage/main.ts` reloads the previous file during an outage through
+  `src/usage/snapshot.ts`; that validator accepts the added fields and stale status,
+  allowlists the raw status, and recomputes freshness rather than freezing ages.
+- `src/dashboard/tools.ts` reads only `generated_at` and `vendors`, called by
+  `src/dashboard/server.ts` and rendered by `src/dashboard/app.js` / `page.ts`.
+  Claude dashboard readings come directly from the hub, with their own five-minute
+  check; these surfaces do not consume `accounts` from usage.json.
+- `ratchet/usage-age.ts`, dispatched by `ratchet/live.ts` for `usage_json_age_s`
+  (`ratchet/rows.json`), checks collection age and top-level `stale`. Its 120-second
+  ceiling measures writer health, independently of passive account observations.
+- `scripts/after-merge-install.ts` reads collection age, top-level `stale` and the
+  presence of `vendors` for installation verification. Account staleness is not a
+  writer/install failure. Neither this check nor the ratchet needs a schema change.
+- `tests/usage/{writer,vendors}.test.ts`, `tests/dashboard/tools.test.ts` and
+  `tests/ratchet/usage-age.test.ts` exercise those file readers using fixtures.
+
+Inventory: `rg -n 'usage\.json|usage_json_age_s'` (excluding ignored local files).
+Other matches document the snapshot, or refer to unrelated Jev `usage.jsonl` ledgers.

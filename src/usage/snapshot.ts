@@ -3,6 +3,20 @@ import { redactDeep } from '../lib/redact';
 import { assess } from '../steer/rank';
 import type { Credential } from '../steer/types';
 
+// Five writer cycles (60 s) and twenty drain cycles (15 s); matches dashboard Claude freshness.
+export const ACCOUNT_STALE_MS = 300_000;
+export function accountFreshness<T extends { status: string; active: boolean; observed_at?: unknown;
+  weekly_observed_at?: unknown; fable_observed_at?: unknown; last_status?: unknown }>(account: T, now: number) {
+  const times = [account.observed_at, account.weekly_observed_at, account.fable_observed_at]
+    .flatMap(v => typeof v === 'string' && Number.isFinite(Date.parse(v)) ? [Date.parse(v)] : []);
+  const newest = times.length ? Math.max(...times) : null;
+  const observation_age_s = newest === null ? null : Math.max(0, (now - newest) / 1000);
+  const stale = newest === null || newest > now || now - newest > ACCOUNT_STALE_MS;
+  const last_status = account.status === 'stale' && typeof account.last_status === 'string' ? account.last_status : account.status;
+  return {...account, stale, observation_age_s, last_status,
+    status: stale ? 'stale' : last_status, active: stale ? false : account.active};
+}
+
 function credentials(input: unknown): Credential[] {
   if (!input || typeof input !== 'object' || !('files' in input) || !Array.isArray(input.files)) throw new Error('invalid credentials');
   return input.files.map((c: unknown) => {
@@ -77,7 +91,7 @@ function window(value: unknown) {
   if (v.rolled_over !== undefined && (v.rolled_over !== true || v.used_pct !== 0 || v.resets_at !== null)) throw new Error('invalid rollover');
   return { used_pct: v.used_pct, resets_at: date(v.resets_at), ...(v.rolled_over === true ? {rolled_over:true} : {}), ...(v.absent === true ? {absent:true} : {}) };
 }
-export function staleSnapshot(input: unknown) {
+export function staleSnapshot(input: unknown, now = Date.now()) {
   const previous = record(input);
   if (previous.source !== 'cliproxy-hub' || typeof previous.stale !== 'boolean' || !Array.isArray(previous.accounts)
     || ('last_error' in previous && previous.last_error !== 'hub unavailable')) throw new Error('invalid previous snapshot');
@@ -88,7 +102,12 @@ export function staleSnapshot(input: unknown) {
     if (typeof a.label !== 'string' || !/^[a-f0-9]{16}$/.test(a.label)
       || typeof a.active !== 'boolean' || typeof a.disabled !== 'boolean'
       || typeof a.priority !== 'number' || !Number.isFinite(a.priority)
-      || !['allowed', 'rejected', 'unknown'].includes(a.status as string)) throw new Error('invalid snapshot account');
+      || !['allowed', 'rejected', 'unknown', 'stale'].includes(a.status as string)) throw new Error('invalid snapshot account');
+    if ('last_status' in a && !['allowed', 'rejected', 'unknown'].includes(a.last_status as string)) throw new Error('invalid last status');
+    if (a.status === 'stale' && !('last_status' in a)) throw new Error('missing last status');
+    if ('stale' in a && typeof a.stale !== 'boolean') throw new Error('invalid account freshness');
+    if ('observation_age_s' in a && a.observation_age_s !== null
+      && (typeof a.observation_age_s !== 'number' || !Number.isFinite(a.observation_age_s) || a.observation_age_s < 0)) throw new Error('invalid observation age');
     const extra: Record<string, unknown> = {};
     for (const key of ['weekly_pct','fable_pct','burn_weekly_pct_per_hour','burn_fable_pct_per_hour']) {
       if (!(key in a)) continue;
@@ -107,7 +126,7 @@ export function staleSnapshot(input: unknown) {
         throw new Error('invalid projection status');
       extra[key] = a[key];
     }
-    return { ...extra, label: a.label, active: a.active, five_hour: window(a.five_hour), weekly: window(a.weekly), status: a.status, priority: a.priority, disabled: a.disabled };
+    return accountFreshness({ ...extra, label: a.label, active: a.active, five_hour: window(a.five_hour), weekly: window(a.weekly), status: a.status as string, last_status: a.last_status, priority: a.priority, disabled: a.disabled }, now);
   });
   const method = 'linear over last 60 min of hub quota observations';
   if ('projection' in previous && previous.projection !== method) throw new Error('invalid projection method');
